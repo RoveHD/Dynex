@@ -1,4 +1,14 @@
-# DYNEX 1.0.3 · Prüfstatus
+# DYNEX 1.0.4 · Prüfstatus
+
+## Vollständige Deinstallation und nachträgliche Bereinigung (1.0.4)
+
+Die 86 Setupprüfungen und 12 Prüfungen der Benutzerbereinigung bestanden. Getestet sind neu angelegte, vorbestehende, gemeinsam genutzte und alte unbekannte Filter; Upgrade-Herkunft, MSI-Abbruch/Fehler, wiederholte Bereinigung, gesperrte Dateien, fremde Verknüpfungen sowie Junctions mit erhaltenem Ziel. Die Tests der Systemänderungen verwenden injizierte Abhängigkeiten und deinstallieren keinen echten Treiber. Eine reale schreibgeschützte Prüfung bestätigte die Produktmetadaten des installierten MSI und die über WMI gelesene Bootidentität. Der Desktopbuild bestand ohne Warnungen oder Fehler.
+
+Zusätzlich bestanden alle 98 Runtimeprüfungen mit isolierten Profilen und einem Ersatz für das native Paketgerät; darunter Fokuswechsel, Peer-Ablauf, Freigabe beim Beenden und Messfreigabe vor einem Downloadlimit. Damit sind für 1.0.4 insgesamt 196 fokussierte Prüfungen bestanden. Runtimeprotokoll: `artifacts/runtime-tests-1.0.4.log`.
+
+Neustartpflicht wird nicht aus verschwundenen Registryeinträgen abgeleitet: Im selben Windows-Start bleibt MSI-Code 3010 offen. Eine geänderte `Win32_OperatingSystem.LastBootUpTime` und bestätigte Filterabwesenheit erlauben nach dem Neustart wieder eine Neuinstallation. Fehlende WMI-Daten, umgeleitete Benutzerordner, unbekannte MSI-Identitäten und laufende Helper werden ausdrücklich diagnostiziert. Im Normalfall entfernt die letzte registrierte DYNEX-Installation ihren eigenen Filter; vorhandene fremde Filter werden erhalten. Alte Installationen ohne Herkunftsnachweis erfordern eine ausdrückliche Entscheidung.
+
+Der tatsächliche MSI-Ausbau einschließlich möglicher Netzwerkunterbrechung oder Neustart wurde nicht auf dem Arbeits-PC ausgeführt. Eine reale vollständige Installieren–Deinstallieren-Abnahme auf einem separaten Windows-Testsystem steht aus. Andere Programme, die den Filter nachträglich mitverwenden, können nicht vollständig automatisch inventarisiert werden. Bei Neustartpflicht bleibt bis zur nächsten bestätigten Bereinigung oder Einrichtung ein geschützter Wiederaufnahmebeleg bestehen.
 
 ## Paketfilter nur während Gaming (1.0.3)
 

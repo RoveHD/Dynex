@@ -70,8 +70,13 @@ internal static class PacketFilterSetup
     }
 
     internal static async Task<bool> InstallPackageAsync(string path, Action<string> progress, CancellationToken token = default)
+        => (await InstallPackageTrackedAsync(path, progress, token)).ExitCode == 3010;
+
+    internal sealed record InstallResult(int ExitCode, bool InstalledByThisCall);
+
+    internal static async Task<InstallResult> InstallPackageTrackedAsync(string path, Action<string> progress, CancellationToken token = default)
     {
-        if (IsInstalled) return false;
+        if (IsInstalled) return new(0, false);
         if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.Contains('"'))
             throw new InvalidDataException("Das Einrichtungspaket muss eine lokale absolute Datei sein.");
         // Keep the verified file read-locked through the elevated installation;
@@ -82,7 +87,7 @@ internal static class PacketFilterSetup
         verifiedPackage.Position = 0;
         VerifySignatureCore(path, verifiedPackage.SafeFileHandle.DangerousGetHandle());
         // Another setup may have completed while this package was downloaded.
-        if (IsInstalled) return false;
+        if (IsInstalled) return new(0, false);
         progress("Windows richtet die Downloadbegrenzung ein. Bitte die Windows-Rückfrage bestätigen …");
         var elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
         using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "msiexec.exe"))
@@ -94,7 +99,7 @@ internal static class PacketFilterSetup
         if (process.ExitCode == 1602) throw new OperationCanceledException("Die Einrichtung wurde abgebrochen.");
         if (process.ExitCode is not (0 or 3010)) throw new System.ComponentModel.Win32Exception(process.ExitCode, $"Die Windows-Einrichtung meldet Fehler {process.ExitCode}.");
         if (!IsInstalled) throw new IOException("Der Netzwerkfilter wurde noch nicht registriert.");
-        return process.ExitCode == 3010;
+        return new(process.ExitCode, true);
     }
 
     private static async Task<bool> HasExpectedHashAsync(string path, CancellationToken token)

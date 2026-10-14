@@ -22,8 +22,9 @@ installiert, bevor Messung und Netzwerkhelper starten. Die App schließt sich ni
 während einer laufenden Sitzung. Fenster schließen minimiert DYNEX weiterhin in
 den Infobereich; zum vollständigen Beenden dient dessen Menü. Nach der Installation
 öffnet DYNEX sich wieder, bei Windows-Autostart im Infobereich. Vorhandene
-Netzwerkvoraussetzungen werden übersprungen. Fehlt die private Heimnetz-Firewallfreigabe
-oder der Netzwerkfilter, richtet das Setup sie nach Windows-UAC-Bestätigung ein.
+Netzwerkvoraussetzungen mit vorhandenem Besitznachweis werden übersprungen. Fehlt die private Heimnetz-Firewallfreigabe,
+der Netzwerkfilter oder der für die spätere Deinstallation benötigte Nachweis, richtet das Setup dies nach Windows-UAC-Bestätigung ein.
+Bei Upgrades alter Versionen bleibt eine unbekannte Filterherkunft ausdrücklich unbekannt; vorhandene Filter werden dabei nicht neu installiert.
 Die gespeicherten Einstellungen bleiben erhalten.
 
 Die Funktion ist für die Installation unter `%LOCALAPPDATA%\Programs\DYNEX`

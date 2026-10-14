@@ -3,7 +3,9 @@
 
 DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanagement im privaten LAN. Die WPF-Oberfläche verwendet Schwarz, Dunkelrot `#C91F32` und Hellrot `#FF4655`.
 
-**Version 1.0.3.** Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindung mit ein. Fehlt der Netzwerkfilter, lädt es das offizielle Windows Packet Filter MSI direkt vom Hersteller, prüft Größe, festgelegten SHA-256 und Windows-Authenticode-Vertrauen und installiert es nach der Windows-UAC-Bestätigung. Eine gezielte Firewallregel erlaubt DYNEX UDP 39274 ausschließlich im privaten lokalen Subnetz. Bereits vorhandene Voraussetzungen werden übersprungen. Die Filtereinrichtung kann die Verbindung kurz unterbrechen; ein Neustart wird nicht erzwungen. Für die erstmalige Einrichtung ist Internet nötig.
+**Version 1.0.4.** Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindung mit ein. Fehlt der Netzwerkfilter, lädt es das offizielle Windows Packet Filter MSI direkt vom Hersteller, prüft Größe, festgelegten SHA-256 und Windows-Authenticode-Vertrauen und installiert es nach der Windows-UAC-Bestätigung. Eine gezielte Firewallregel erlaubt DYNEX UDP 39274 ausschließlich im privaten lokalen Subnetz. Das Setup dokumentiert, ob es den Filter neu installiert oder einen vorhandenen weiterverwendet. Die Filtereinrichtung kann die Verbindung kurz unterbrechen; ein Neustart wird nicht erzwungen. Für die erstmalige Einrichtung ist Internet nötig.
+
+**Vollständig entfernen:** Die Deinstallation bereinigt eigene Firewallfreigaben, Autostart, Einstellungen, Kopplungen, Update-Dateien und Verknüpfungen. Einen nachweislich von DYNEX installierten Netzwerkfilter entfernt sie über dessen offiziellen MSI-Uninstaller, sobald keine weitere registrierte DYNEX-Installation ihn benötigt. Für bereits deinstallierte ältere Versionen gibt es zusätzlich `DYNEX-Cleanup-1.0.4.exe`; es installiert DYNEX nicht erneut. Bei alten Filtern ohne Herkunftsnachweis fragt die Bereinigung ausdrücklich vor der Entfernung. [Ablauf und Grenzen](docs/installation.md#aktualisieren-und-entfernen).
 
 ## Schnellstart
 
@@ -35,6 +37,6 @@ Große Downloads werden erst nach mindestens 250 ms und 256 KiB berücksichtigt.
 
 Der NDISRD-Netzwerkfilter ist ein systemweiter NDIS-Filter. Andere Programme können denselben Adapter beanspruchen; bei erkannter Koexistenz-/Öffnungsstörung bricht DYNEX ab, statt den Adapter zu übernehmen. Installation, native Downloadbegrenzung, Prozessausnahme und Wiederfreigabe wurden auf einem PC praktisch geprüft. Steam-Download, laufender Sprachchat, Anti-Cheat und drei physische PCs im gemeinsamen Match sind noch nicht gemeinsam geprüft. DYNEX verspricht keine bestimmte Pingzahl oder garantierte WAN-Priorisierung; Routerwarteschlangen und Uploads werden nicht gesteuert.
 
-Die MSI-Datei wird nicht mit DYNEX weitergegeben. Der Hersteller nennt private/akademische Nutzung und Evaluation als kostenlos; kommerzielle Nutzung oder Weitergabe benötigt eine gesonderte Lizenzprüfung. DYNEX entfernt den Filter bei seiner Deinstallation nicht, weil andere Programme davon abhängen können.
+Die MSI-Datei wird nicht mit DYNEX weitergegeben. Der Hersteller nennt private/akademische Nutzung und Evaluation als kostenlos; kommerzielle Nutzung oder Weitergabe benötigt eine gesonderte Lizenzprüfung. Bereits vor DYNEX vorhandene Filter werden bei der Deinstallation erhalten. Eine ausdrücklich bestätigte Entfernung eines alten Filters kann andere Programme betreffen, die denselben Filter verwenden.
 
 Weitere Details: [Shaping](docs/shaping.md), [QoS](docs/qos.md), [Architektur](docs/architecture.md), [Backend](docs/ndis-backend.md) (falls im Quellpaket vorhanden) und [ausgeführte Tests](docs/TESTING.md).

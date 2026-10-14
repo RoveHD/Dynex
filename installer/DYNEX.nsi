@@ -6,7 +6,7 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.3"
+  !define APP_VERSION "1.0.4"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -47,6 +47,10 @@ Var UpdateTray
 Var PrerequisiteExit
 Var PrerequisiteMessage
 Var PrerequisiteLog
+Var CleanupMutex
+Var CleanupRestart
+Var CleanupDeleteFailed
+Var UpgradeLegacy
 
 Function ReleaseUpdateGate
   ${If} $UpdateMutex != 0
@@ -82,6 +86,16 @@ FunctionEnd
 
 Function .onInit
   StrCpy $UpdateMutex 0
+  StrCpy $UpgradeLegacy ""
+  ; Detect an existing installation before replacing its executable/registry.
+  ; Old installers have no filter receipt; an upgrade must not turn that
+  ; unknown history into a claim that the filter was independently installed.
+  IfFileExists "$INSTDIR\DYNEX.exe" 0 +2
+    StrCpy $UpgradeLegacy " --upgrade-legacy-installation"
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "InstallLocation"
+  ${If} $0 == "$INSTDIR"
+    StrCpy $UpgradeLegacy " --upgrade-legacy-installation"
+  ${EndIf}
   ${GetParameters} $3
   ${GetOptions} $3 "/DYNEXUPDATE=" $UpdateParent
   ${GetOptions} $3 "/DYNEXTRAY=" $UpdateTray
@@ -170,7 +184,7 @@ Section "DYNEX Anwendung" SEC_MAIN
   DetailPrint "Downloadbegrenzung und private Heimnetzverbindung einrichten ..."
   Delete "$INSTDIR\setup-result.txt"
   ClearErrors
-  ExecWait '"$INSTDIR\DYNEX.exe" --setup-prerequisites --setup-result "$INSTDIR\setup-result.txt"' $PrerequisiteExit
+  ExecWait '"$INSTDIR\DYNEX.exe" --setup-prerequisites --setup-result "$INSTDIR\setup-result.txt"$UpgradeLegacy' $PrerequisiteExit
   ${If} ${Errors}
     StrCpy $PrerequisiteExit 1
   ${EndIf}
@@ -205,35 +219,119 @@ SectionEnd
 Section "Uninstall"
   Call un.StopRunningDynex
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Die Deinstallation wird abgebrochen, damit laufende Dateien nicht beschädigt werden."
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Die Deinstallation wird abgebrochen, damit laufende Dateien nicht beschädigt werden."
+    SetErrorLevel 13
     Abort
   ${EndIf}
-  ; Remove only this installation's exact private-LAN rule. Shared NDISRD
-  ; remains installed for other applications. Cancelled UAC preserves the rule.
+  ; Keep the installed recovery entry point until all system and user cleanup
+  ; has succeeded. A cancelled UAC prompt must never become a successful uninstall.
+  StrCpy $CleanupRestart 0
+  Delete "$INSTDIR\uninstall-result.txt"
   ClearErrors
-  ExecWait '"$INSTDIR\DYNEX.exe" --remove-setup-firewall' $0
+  ExecWait '"$INSTDIR\DYNEX.exe" --uninstall-system' $0
+  ${If} ${Errors}
+    StrCpy $0 1
+  ${EndIf}
+  ${If} $0 == 5201
+    ; Older releases did not record who installed the shared filter. Never
+    ; infer permission to remove it from silent mode or a missing receipt.
+    IfSilent un_cleanup_failed
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Windows Packet Filter ist noch installiert. Ältere DYNEX-Versionen haben nicht gespeichert, ob er vorher schon vorhanden war.$\r$\n$\r$\nSoll dieses Netzwerkfilter-Paket jetzt ebenfalls entfernt werden? Die Verbindung kann kurz abbrechen. Andere Programme, die diesen Filter benötigen, können danach nicht mehr damit arbeiten." IDNO un_cleanup_failed
+    ClearErrors
+    ExecWait '"$INSTDIR\DYNEX.exe" --uninstall-system --confirm-legacy-filter-removal' $0
+    ${If} ${Errors}
+      StrCpy $0 1
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 == 3010
+    StrCpy $CleanupRestart 3010
+  ${ElseIf} $0 != 0
+    Goto un_cleanup_failed
+  ${EndIf}
+  StrCpy $PrerequisiteMessage "Systembereinigung abgeschlossen."
+  IfFileExists "$INSTDIR\uninstall-result.txt" 0 +4
+    FileOpen $PrerequisiteLog "$INSTDIR\uninstall-result.txt" r
+    FileReadUTF16LE $PrerequisiteLog $PrerequisiteMessage
+    FileClose $PrerequisiteLog
+  DetailPrint "$PrerequisiteMessage"
+  Delete "$INSTDIR\user-cleanup-result.txt"
+  ClearErrors
+  ExecWait '"$INSTDIR\DYNEX.exe" --remove-user-data' $0
   ${If} ${Errors}
     StrCpy $0 1
   ${EndIf}
   ${If} $0 != 0
     IfSilent +2
-      MessageBox MB_ICONEXCLAMATION|MB_OK "Die eigene DYNEX-Heimnetzregel konnte nicht entfernt werden (Fehler $0). Die Anwendung wird trotzdem deinstalliert. Der gemeinsam genutzte Netzwerkfilter bleibt erhalten."
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Die DYNEX-Benutzerdaten konnten nicht vollständig entfernt werden. Die Deinstallation bleibt für einen erneuten Versuch erhalten.$\r$\n$\r$\nDetails: $INSTDIR\user-cleanup-result.txt"
+    SetErrorLevel $0
+    Abort
   ${EndIf}
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DYNEX"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX"
-  DeleteRegKey HKCU "Software\DYNEX"
-  Delete "$SMPROGRAMS\DYNEX\DYNEX.lnk"
-  Delete "$SMPROGRAMS\DYNEX\Installation.lnk"
-  RMDir "$SMPROGRAMS\DYNEX"
-  Delete "$DESKTOP\DYNEX.lnk"
-  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Soll das lokale DYNEX-Profil mit Einstellungen und Kopplungsschlüsseln gelöscht werden? Bei Nein bleibt es für eine spätere Neuinstallation erhalten." IDNO keep_profile
-  RMDir /r "$LOCALAPPDATA\DYNEX"
-  keep_profile:
+  StrCpy $PrerequisiteMessage "DYNEX-Benutzerdaten wurden bereinigt."
+  IfFileExists "$INSTDIR\user-cleanup-result.txt" 0 +4
+    FileOpen $PrerequisiteLog "$INSTDIR\user-cleanup-result.txt" r
+    FileReadUTF16LE $PrerequisiteLog $PrerequisiteMessage
+    FileClose $PrerequisiteLog
+  DetailPrint "$PrerequisiteMessage"
   !insertmacro DeleteInstalledFiles
+  ; Additional files somebody placed in the program directory are preserved.
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX"
   Delete "$INSTDIR\setup-result.txt"
+  Delete "$INSTDIR\uninstall-result.txt"
+  Delete "$INSTDIR\user-cleanup-result.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
+  ${If} $CleanupRestart == 3010
+    IfSilent +2
+      MessageBox MB_ICONINFORMATION|MB_OK "DYNEX wurde entfernt. Windows muss noch neu gestartet werden, um die Entfernung des Netzwerkfilters abzuschließen. Es wird kein automatischer Neustart ausgelöst."
+  ${EndIf}
+  SetErrorLevel $CleanupRestart
+  Goto un_cleanup_done
+  un_cleanup_failed:
+    StrCpy $PrerequisiteMessage "Die Systembereinigung wurde nicht abgeschlossen (Fehler $0)."
+    IfFileExists "$INSTDIR\uninstall-result.txt" 0 +4
+      FileOpen $PrerequisiteLog "$INSTDIR\uninstall-result.txt" r
+      FileReadUTF16LE $PrerequisiteLog $PrerequisiteMessage
+      FileClose $PrerequisiteLog
+    DetailPrint "$PrerequisiteMessage"
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "$PrerequisiteMessage$\r$\n$\r$\nDie Deinstallation wurde angehalten. DYNEX und der Uninstaller bleiben für einen erneuten Versuch erhalten."
+    SetErrorLevel $0
+    Abort
+  un_cleanup_done:
 SectionEnd
+
+Function un.onInit
+  ; Reuse the startup gate understood by DYNEX and its background updater.
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\DYNEX.Update") p .r0 ?e'
+  Pop $1
+  StrCpy $CleanupMutex $0
+  ${If} $0 == 0
+  ${OrIf} $1 == 183
+    Call un.ReleaseCleanupGate
+    SetErrorLevel 11
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function un.ReleaseCleanupGate
+  ${If} $CleanupMutex != 0
+    System::Call 'kernel32::CloseHandle(p $CleanupMutex)'
+    StrCpy $CleanupMutex 0
+  ${EndIf}
+FunctionEnd
+
+Function un.onGUIEnd
+  Call un.ReleaseCleanupGate
+FunctionEnd
+
+Function un.onUninstSuccess
+  Call un.ReleaseCleanupGate
+FunctionEnd
+
+Function un.onUninstFailed
+  Call un.ReleaseCleanupGate
+FunctionEnd
 
 Function un.StopRunningDynex
   StrCpy $0 0

@@ -9,5 +9,7 @@
     <Compile Include="../../src/Dynex.Desktop/PacketFilterSetup.cs" Link="PacketFilterSetup.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerPrerequisites.cs" Link="InstallerPrerequisites.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerFirewall.cs" Link="InstallerFirewall.cs" />
+    <Compile Include="../../src/Dynex.Desktop/InstallerSystem.cs" Link="InstallerSystem.cs" />
+    <Compile Include="../../src/Dynex.Desktop/InstallerUserCleanup.cs" Link="InstallerUserCleanup.cs" />
   </ItemGroup>
 </Project>

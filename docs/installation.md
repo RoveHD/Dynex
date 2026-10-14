@@ -1,6 +1,6 @@
-# DYNEX 1.0.3 installieren und entfernen
+# DYNEX 1.0.4 installieren und entfernen
 
-Das Release-Setup `artifacts/DYNEX-Setup-1.0.3.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für fehlende Netzwerkvoraussetzungen fordert das Setup Administratorrechte an; Programme und Setup sind nicht codesigniert.
+Das Release-Setup `artifacts/DYNEX-Setup-1.0.4.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an; Programme und Setup sind nicht codesigniert. `artifacts/DYNEX-Cleanup-1.0.4.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
 
 ## Start im privaten LAN
 
@@ -28,17 +28,23 @@ DYNEX berücksichtigt große Netzwerkflüsse erst nach mindestens 250 ms Laufzei
 
 Die adaptive Pingreserve ist immer aktiv und hat keinen sichtbaren Ein-/Aus-Schalter. Eine gültige Leerlauf-Baseline des Gaming-Peers kann das Hintergrundbudget am Download-PC anpassen. Das verspricht keine feste Pingzahl oder bestimmte Verbesserung. Eine Prozesserkennung bestätigt keinen Multiplayerstatus oder aktives Match.
 
-Der Filter ist adapter- und systemweit. Andere VPN-, Sicherheits-, Virtualisierungs- oder Filtersoftware kann mit NDISRD um denselben Adapter konkurrieren. DYNEX darf einen belegten oder nicht eindeutig verfügbaren Filter nicht übernehmen; bei Konflikt bleibt die Begrenzung aus. Eine DYNEX-Deinstallation entfernt den NDISRD-Filter nicht: andere installierte Apps können davon abhängen.
+Der Filter ist adapter- und systemweit. Andere VPN-, Sicherheits-, Virtualisierungs- oder Filtersoftware kann mit NDISRD um denselben Adapter konkurrieren. DYNEX darf einen belegten oder nicht eindeutig verfügbaren Filter nicht übernehmen; bei Konflikt bleibt die Begrenzung aus. Die Deinstallation unterscheidet deshalb eigene, gemeinsam genutzte und bereits vorher vorhandene Filter.
 
 ## Aktualisieren und entfernen
 
 Vor Installation, Aktualisierung oder Deinstallation sendet das Setup `DYNEX.exe --shutdown` über die benutzerspezifische Shutdown-Steuerung. DYNEX meldet Erfolg erst nach geordnetem Beenden und Freigabe des Singletons. Das Setup wartet bis zu 20 Sekunden auf den bestätigten Abschluss und bricht bei Fehler oder Timeout ab. Es beendet keine fremden Prozesse zwangsweise.
 
-Die DYNEX-Deinstallation entfernt nur Paketdateien, DYNEX-Verknüpfungen, die DYNEX-Deinstallationsinformationen und den HKCU-Autostartwert `DYNEX`. Zusätzliche Dateien bleiben erhalten, wenn sie den Programmordner nicht leer werden lassen. Das lokale `%LOCALAPPDATA%\DYNEX`-Profil bleibt standardmäßig bestehen; das Setup fragt optional, ob es gelöscht werden soll.
+Die Deinstallation gibt zunächst die laufende Paketverarbeitung frei und bereinigt dann die Systemkomponenten. Das Setup speichert ab 1.0.4 einen administrativ geschützten Herkunftsnachweis unter `HKLM\SOFTWARE\DYNEX\Setup`, der Updates überdauert. Einen von DYNEX neu installierten Filter entfernt die letzte registrierte DYNEX-Installation über den offiziellen Windows-Installer. Ein nachweislich schon vorher vorhandener Filter bleibt erhalten. Auch ein noch von einer weiteren registrierten DYNEX-Installation benötigter Filter bleibt bestehen; das Ergebnis nennt diesen Grund.
 
-Wenn du den systemweiten Netzwerkfilter später nicht mehr benötigst, öffne **Einstellungen → Apps → Installierte Apps** in Windows und deinstalliere **Windows Packet Filter x64** über den offiziellen Windows-Deinstallationsweg. Prüfe zuerst, ob andere VPN-/Netzwerkprogramme den Filter benötigen. DYNEX führt diese Entfernung bewusst nicht automatisch aus. Eine Windows-Rückfrage oder ein erforderlicher Neustart richtet sich nach dem Zustand des Treibers und der Adapter.
+**Ältere Installationen:** Bis einschließlich 1.0.3 wurde die Herkunft nicht aufgezeichnet. Bei dem bekannten Windows-Packet-Filter-Paket ohne eindeutigen Nachweis fragt die Deinstallation einmal ausdrücklich nach der Entfernung. Bei Nein oder im unbeaufsichtigten Modus wird die Bereinigung angehalten. Das vermeidet eine unbemerkte Entfernung gemeinsam genutzter Komponenten. Andere unbekannte Filterpakete werden nicht per Name oder Registry-Löschung entfernt.
 
-Bei der Deinstallation entfernt DYNEX nach Windows-Bestätigung nur die eigene unveränderte Firewallregel. Wird die Bestätigung abgebrochen, bleibt die Regel erhalten und die Deinstallation weist darauf hin. Fremde Regeln, Routereinstellungen und der gemeinsam genutzte Netzwerkfilter bleiben bestehen.
+**Bereits deinstalliert:** Starte `DYNEX-Cleanup-1.0.4.exe` auf dem betroffenen PC unter dem Windows-Benutzer, der DYNEX installiert hatte. Das Programm bereinigt zurückgebliebene Komponenten für den festen damaligen Installationspfad. Es installiert keine Voraussetzungen und startet keine Messung oder Paketverarbeitung. Ist die DYNEX-App noch installiert, fordert es die normale Deinstallation an. Die gleiche Herkunftsprüfung und gegebenenfalls ausdrückliche Bestätigung gelten auch hier. Alternativ kann das bekannte Paket über **Windows-Einstellungen → Apps → Installierte Apps → Windows Packet Filter x64** mit dessen offiziellem Uninstaller entfernt werden; dies entfernt allein noch keine übrigen DYNEX-Daten.
+
+Die Bereinigung entfernt die eigene unveränderte Firewallregel, eigene Autostart- und Verknüpfungseinträge sowie das lokale `%LOCALAPPDATA%\DYNEX`-Profil einschließlich Einstellungen, Kopplungsschlüsseln, Setup-Cache und heruntergeladenen Updates. Fremde gleichnamige Einträge werden erhalten. Zusätzliche Dateien im Programmordner werden nicht pauschal gelöscht. Verzeichnisverknüpfungen werden nicht in andere Ordner verfolgt.
+
+**Fehler und Neustart:** Wird UAC abgebrochen oder kann eine eigene Systemänderung nicht entfernt werden, meldet die normale Deinstallation einen Fehler und lässt App und Uninstaller für einen erneuten Versuch bestehen. Details stehen in `uninstall-result.txt` beziehungsweise `user-cleanup-result.txt` im Programmordner. Die Filterentfernung kann die Verbindung kurz unterbrechen. Windows-Installer-Code 3010 bedeutet, dass Windows noch neu gestartet werden muss; DYNEX startet den PC nicht automatisch neu. Ein Fehler mitten in der Bereinigung kann bedeuten, dass einzelne Schritte bereits erfolgreich waren; erneute Ausführung ist vorgesehen.
+
+DYNEX setzt keine kompletten Netzwerkadapter oder Netzwerkprofile zurück und ändert weder Router-, MTU-, DNS- noch globale QoS-Einstellungen. Andere Programme, die einen früher von DYNEX installierten oder ausdrücklich zur Entfernung bestätigten Filter nachträglich mitverwenden, lassen sich nicht vollständig automatisch ermitteln. Vor der bestätigten Entfernung sollte dieser gemeinsame Bedarf geprüft werden.
 
 ## Lizenz und Grenzen
 

@@ -1,6 +1,14 @@
 using System.ComponentModel;
 using Dynex.Desktop;
 
+if (args is ["--probe-boot"])
+{
+    var identity = WindowsInstallerSystem.ReadBootIdentity();
+    Console.WriteLine("Read-only Windows boot identity: " + (identity ?? "unavailable"));
+    Environment.ExitCode = identity is null ? 1 : 0;
+    return;
+}
+
 if (args is ["--probe-firewall"])
 {
     try { Console.WriteLine("Read-only firewall state: " + InstallerFirewall.IsConfigured()); }
@@ -17,7 +25,7 @@ void Check(bool value, string name)
 }
 
 var calls = 0;
-var result = await InstallerPrerequisites.RunAsync(() => true, () => true, () => { calls++; return Task.FromResult(0); });
+var result = await InstallerPrerequisites.RunAsync(() => true, () => true, () => { calls++; return Task.FromResult(0); }, () => true);
 Check(result.ExitCode == 0 && calls == 0, "existing prerequisites skip download, UAC and machine mutations");
 
 var filter = false;
@@ -123,6 +131,7 @@ try { InstallerFirewall.FindRule(new MissingRules(new System.Runtime.InteropServ
 catch (System.Runtime.InteropServices.COMException) { unrelated = true; }
 Check(unrelated, "unrelated COM lookup error cannot masquerade as a missing rule");
 
+await UninstallChecks.RunAsync(Check);
 Console.WriteLine($"PASS: {checks} setup checks; no download, elevation, driver installation or firewall mutation performed.");
 
 public sealed class MissingRules(Exception error)

@@ -14,7 +14,8 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         try
         {
-            if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall")
+            if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall"
+                or "--uninstall-system" or "--uninstall-machine" or "--cleanup-removed-installation" or "--cleanup-machine" or "--remove-user-data")
             {
                 // This process is launched by NSIS before the first normal app
                 // start. Do not create mutexes, profiles or network workers.

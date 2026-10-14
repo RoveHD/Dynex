@@ -1,6 +1,6 @@
 # Downloadbegrenzung und Grenzen
 
-DYNEX 1.0.3 verwendet einen separaten, erforderlichen `Dynex.Shaper.exe`-Helper. Er kommuniziert mit dem regulär installierten NDISRD-Netzwerkfilter direkt über Windows `DeviceIoControl`; es wird weder `ndisapi.dll` noch WinDivert verwendet. Die Desktop-App selbst muss nicht erhöht laufen. Downloadbegrenzung und [QoS für Spiele und Sprachchat](qos.md) laufen nur während ein erkanntes Spiel auf diesem oder einem verbundenen PC im Vordergrund ist. Ohne Gaming wird die Capture-Sitzung freigegeben; der installierte Treiber wird dabei nicht deinstalliert.
+DYNEX 1.0.4 verwendet einen separaten, erforderlichen `Dynex.Shaper.exe`-Helper. Er kommuniziert mit dem regulär installierten NDISRD-Netzwerkfilter direkt über Windows `DeviceIoControl`; es wird weder `ndisapi.dll` noch WinDivert verwendet. Die Desktop-App selbst muss nicht erhöht laufen. Downloadbegrenzung und [QoS für Spiele und Sprachchat](qos.md) laufen nur während ein erkanntes Spiel auf diesem oder einem verbundenen PC im Vordergrund ist. Ohne Gaming wird die Capture-Sitzung freigegeben; der installierte Treiber wird dabei nicht deinstalliert. Die vollständige Deinstallation und nachträgliche Bereinigung sind in [Installation](installation.md#aktualisieren-und-entfernen) beschrieben.
 
 ## Einmalige Einrichtung und Aktivierung
 

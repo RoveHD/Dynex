@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.3'
+    [string]$Version = '1.0.4'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,11 +86,13 @@ Set-Content -LiteralPath $installManifest -Value $install -Encoding Ascii
 
 $cleanup = [System.Collections.Generic.List[string]]::new()
 $cleanup.Add('!macro DeleteInstalledFiles')
-$cleanup.Add('  Delete "$INSTDIR\DYNEX.exe"')
+$cleanup.Add('  StrCpy $CleanupDeleteFailed 0')
 foreach ($set in @(@{ Path = $shaperOut; Target = 'shaper' }, @{ Path = $docsOut; Target = 'docs' })) {
     foreach ($item in Get-ChildItem -LiteralPath $set.Path -File -Recurse) {
         $relative = $item.FullName.Substring($set.Path.Length).TrimStart([char[]]'\\')
         $cleanup.Add(('  Delete "$INSTDIR\{0}\{1}"' -f $set.Target, $relative))
+        $cleanup.Add(('  IfFileExists "$INSTDIR\{0}\{1}" 0 +2' -f $set.Target, $relative))
+        $cleanup.Add('    StrCpy $CleanupDeleteFailed 1')
     }
 }
 foreach ($set in @(@{ Path = $shaperOut; Target = 'shaper' }, @{ Path = $docsOut; Target = 'docs' })) {
@@ -101,10 +103,24 @@ foreach ($set in @(@{ Path = $shaperOut; Target = 'shaper' }, @{ Path = $docsOut
 }
 $cleanup.Add('  RMDir "$INSTDIR\shaper"')
 $cleanup.Add('  RMDir "$INSTDIR\docs"')
+$cleanup.Add('  ${If} $CleanupDeleteFailed != 0')
+$cleanup.Add('    IfSilent +2')
+$cleanup.Add('      MessageBox MB_ICONEXCLAMATION|MB_OK "Einige DYNEX-Programmdateien konnten nicht gelöscht werden. Schließe Programme, die diese Dateien geöffnet haben, und starte die Deinstallation erneut."')
+$cleanup.Add('    SetErrorLevel 1')
+$cleanup.Add('    Abort')
+$cleanup.Add('  ${EndIf}')
+# Keep the cleanup entry point until all other owned files have been removed.
+$cleanup.Add('  Delete "$INSTDIR\DYNEX.exe"')
+$cleanup.Add('  ${If} ${FileExists} "$INSTDIR\DYNEX.exe"')
+$cleanup.Add('    IfSilent +2')
+$cleanup.Add('      MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX.exe ist noch geöffnet oder geschützt. Die Deinstallation kann erneut gestartet werden."')
+$cleanup.Add('    SetErrorLevel 1')
+$cleanup.Add('    Abort')
+$cleanup.Add('  ${EndIf}')
 $cleanup.Add('!macroend')
 $uninstallManifest = Join-Path $publishRoot 'uninstall-files.nsh'
 Assert-ArtifactPath $uninstallManifest
-Set-Content -LiteralPath $uninstallManifest -Value $cleanup -Encoding Ascii
+Set-Content -LiteralPath $uninstallManifest -Value $cleanup -Encoding utf8BOM
 
 $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
 if (-not $nsis) {
@@ -120,3 +136,12 @@ Write-Host "Erzeuge Installer: $setup"
 if ($LASTEXITCODE -ne 0) { throw "NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 if (-not (Test-Path $setup)) { throw 'NSIS meldete Erfolg, aber die Setup-EXE fehlt.' }
 Write-Host "Fertig: $setup"
+
+# Standalone recovery for older DYNEX versions that have already been removed.
+# This contains only the app's dedicated cleanup entry points, no MSI or driver.
+$cleanupSource = Join-Path $repoRoot 'installer/DYNEX-Cleanup.nsi'
+$cleanupExe = Join-Path $repoRoot "artifacts/DYNEX-Cleanup-$Version.exe"
+& $nsisPath "/DAPP_VERSION=$Version" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$cleanupExe" $cleanupSource
+if ($LASTEXITCODE -ne 0) { throw "Cleanup-NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
+if (-not (Test-Path -LiteralPath $cleanupExe)) { throw 'NSIS hat kein Bereinigungsprogramm erzeugt.' }
+Write-Host "Fertig: $cleanupExe"

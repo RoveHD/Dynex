@@ -469,7 +469,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.3", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "1.0.4", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
