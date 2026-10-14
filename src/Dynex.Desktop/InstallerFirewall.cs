@@ -24,8 +24,8 @@ internal static class InstallerFirewall
             policy = CreatePolicy();
             rules = policy.Rules;
             ThrowIfBlocked(ReadApplicationBlocks(rules), ApplicationPath);
-            rule = rules.Item(RuleName(ApplicationPath));
-            return Matches(rule);
+            rule = FindRule(rules, RuleName(ApplicationPath));
+            return rule is not null && Matches(rule);
         }
         catch (COMException) { return false; }
         finally { Release(rule); Release(rules); Release(policy); }
@@ -46,8 +46,7 @@ internal static class InstallerFirewall
             // Diagnose it before any mutation; do not relax user or company policy.
             ThrowIfBlocked(ReadApplicationBlocks(rules), ApplicationPath);
             var name = RuleName(ApplicationPath);
-            try { existing = rules.Item(name); }
-            catch (COMException error) when (error.HResult == unchecked((int)0x80070002)) { }
+            existing = FindRule(rules, name);
             if (existing is not null && Matches(existing)) return;
             if (existing is not null) rules.Remove(name);
             rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", throwOnError: true)!)!;
@@ -63,8 +62,8 @@ internal static class InstallerFirewall
             rule.EdgeTraversal = false;
             rule.Enabled = true;
             rules.Add(rule);
-            installed = rules.Item(name);
-            if (!Matches(installed)) throw new IOException("Die DYNEX-Heimnetzregel konnte nicht bestätigt werden.");
+            installed = FindRule(rules, name);
+            if (installed is null || !Matches(installed)) throw new IOException("Die DYNEX-Heimnetzregel konnte nicht bestätigt werden.");
         }
         finally { Release(installed); Release(rule); Release(existing); Release(rules); Release(policy); }
     }
@@ -139,8 +138,8 @@ internal static class InstallerFirewall
         {
             policy = CreatePolicy();
             rules = policy.Rules;
-            try { rule = rules.Item(RuleName(ApplicationPath)); }
-            catch (COMException error) when (error.HResult == unchecked((int)0x80070002)) { return; }
+            rule = FindRule(rules, RuleName(ApplicationPath));
+            if (rule is null) return;
             // Preserve rules somebody else has modified, and never touch any
             // other application's rules or the shared system-wide filter.
             if (Matches(rule)) rules.Remove(RuleName(ApplicationPath));
@@ -154,6 +153,15 @@ internal static class InstallerFirewall
         string.Equals((string)rule.RemoteAddresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase) &&
         (int)rule.Direction == 1 && (int)rule.Profiles == 2 && (int)rule.Action == 1 &&
         (bool)rule.Enabled && !(bool)rule.EdgeTraversal;
+
+    internal static object? FindRule(object rules, string name)
+    {
+        try { return ((dynamic)rules).Item(name); }
+        // Dynamic COM maps this HRESULT to FileNotFoundException on .NET 9.
+        // Missing is normal on first install; all other errors remain failures.
+        catch (Exception error) when (error.HResult == unchecked((int)0x80070002) &&
+            error is COMException or FileNotFoundException) { return null; }
+    }
 
     private static dynamic CreatePolicy() => Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", throwOnError: true)!)!;
     private static void Release(object? value) { if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value); }

@@ -1,6 +1,13 @@
 using System.ComponentModel;
 using Dynex.Desktop;
 
+if (args is ["--probe-firewall"])
+{
+    try { Console.WriteLine("Read-only firewall state: " + InstallerFirewall.IsConfigured()); }
+    catch (Exception error) { Console.Error.WriteLine(error); Environment.ExitCode = 1; }
+    return;
+}
+
 var checks = 0;
 void Check(bool value, string name)
 {
@@ -103,4 +110,22 @@ bool RacingFirewall()
 result = await InstallerPrerequisites.RunAsync(() => true, RacingFirewall, () => Task.FromResult(1));
 Check(result.ExitCode != 0 && result.Message.Contains(block.Name), "policy change during elevated setup preserves concrete blocker diagnosis");
 
+Check(InstallerFirewall.FindRule(new MissingRules(new FileNotFoundException("Schnellcachedaten")), "new-rule") is null,
+    "missing firewall Item mapped to FileNotFoundException is normal first-install state");
+Check(InstallerFirewall.FindRule(new MissingRules(new System.Runtime.InteropServices.COMException("Missing", unchecked((int)0x80070002))), "new-rule") is null,
+    "missing firewall Item mapped to COMException remains supported");
+var denied = false;
+try { InstallerFirewall.FindRule(new MissingRules(new UnauthorizedAccessException("denied")), "new-rule"); }
+catch (UnauthorizedAccessException) { denied = true; }
+Check(denied, "firewall lookup access denied cannot masquerade as a missing rule");
+var unrelated = false;
+try { InstallerFirewall.FindRule(new MissingRules(new System.Runtime.InteropServices.COMException("COM failure", unchecked((int)0x80004005))), "new-rule"); }
+catch (System.Runtime.InteropServices.COMException) { unrelated = true; }
+Check(unrelated, "unrelated COM lookup error cannot masquerade as a missing rule");
+
 Console.WriteLine($"PASS: {checks} setup checks; no download, elevation, driver installation or firewall mutation performed.");
+
+public sealed class MissingRules(Exception error)
+{
+    public object Item(string name) => throw error;
+}
