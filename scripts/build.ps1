@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.1'
+    [string]$Version = '1.0.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,8 +60,9 @@ if ($unexpectedPayload) { throw "Der Shaper-Publish enthält einen nicht erlaubt
 Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $publishRoot 'DYNEX.exe') -Force
 Remove-Item -LiteralPath $desktopOut -Recurse -Force
 
-# The helper engine is required; the independently licensed NDISRD MSI is
-# downloaded and installed only after the user explicitly requests setup in DYNEX.
+# The helper engine is required. DYNEX setup automatically obtains the official
+# independently licensed NDISRD MSI directly from its publisher when missing;
+# the installer-only CLI verifies its pinned digest and Authenticode signature.
 # Never bundle that MSI, a kernel driver, WinDivert files, or native engine DLLs.
 
 # Ship the available project documentation alongside the application.

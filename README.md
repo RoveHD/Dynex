@@ -3,13 +3,13 @@
 
 DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanagement im privaten LAN. Die WPF-Oberfläche verwendet Schwarz, Dunkelrot `#C91F32` und Hellrot `#FF4655`.
 
-**Version 1.0.1.** Das Setup enthält DYNEX samt erforderlichem Helper, aber keinen Netzwerkfilter-Installer, Kernel-Treiber, WinDivert oder native Filter-DLL. Der Filter wird nur nach ausdrücklicher Einrichtung in DYNEX geladen: Die App lädt das offizielle Windows Packet Filter MSI, prüft den festgelegten SHA-256 und Windows-Authenticode-Vertrauen und startet die interaktive Windows-Einrichtung mit UAC. Das kann die Netzwerkverbindung kurz unterbrechen; ein Neustart wird nicht erzwungen.
+**Version 1.0.2.** Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindung mit ein. Fehlt der Netzwerkfilter, lädt es das offizielle Windows Packet Filter MSI direkt vom Hersteller, prüft Größe, festgelegten SHA-256 und Windows-Authenticode-Vertrauen und installiert es nach der Windows-UAC-Bestätigung. Eine gezielte Firewallregel erlaubt DYNEX UDP 39274 ausschließlich im privaten lokalen Subnetz. Bereits vorhandene Voraussetzungen werden übersprungen. Die Filtereinrichtung kann die Verbindung kurz unterbrechen; ein Neustart wird nicht erzwungen. Für die erstmalige Einrichtung ist Internet nötig.
 
 ## Schnellstart
 
 1. Installiere DYNEX auf den PCs im selben privaten LAN und starte die App. AutoLAN, Windows-Autostart und Spiele-/Sprachchat-Priorisierung sind standardmäßig eingeschaltet. Neue DYNEX-Identitäten werden beim ersten Kontakt im privaten LAN vertraut. Ein Gruppencode ist für den normalen Start nicht nötig.
 2. DYNEX ermittelt die Downloadgeschwindigkeit beim ersten Start einmal automatisch. Der Speedtest wartet, bis auf diesem PC und den verbundenen DYNEX-PCs kein Spiel erkannt wird. Erst nach einer erfolgreich gespeicherten Messung werden Downloadlimits freigegeben. Der Wert bleibt bei Neustarts erhalten; über **Einstellungen → Allgemein → Erneut messen** lässt er sich manuell aktualisieren. Das Hintergrundbudget beträgt standardmäßig 65 %; pro erkanntem Gaming-PC wird automatisch `min(10 Mbit/s, 5 % der Kapazität)` reserviert.
-3. Richte den Netzwerkfilter einmal über die **Einrichten**-Aktion in DYNEX ein und bestätige die offizielle Windows-Installer-UAC-Abfrage. Danach aktiviert **Spiele & Sprachchat priorisieren und große Downloads begrenzen** den Netzwerkschutz.
+3. Bestätige die Windows-Rückfrage während des Setups. Ein zusätzlicher Einrichtungsschritt in DYNEX ist danach nicht nötig. Unter **Einstellungen → Netzwerk** stehen der vollständige Verbindungsstatus und eine Verknüpfung zu den Windows-Netzwerkeinstellungen. Stelle dein eigenes Heimnetz auf beiden PCs auf **Privat**. Vorübergehende Erkennungsfehler werden erneut geprüft.
 
 Die optionale private Gruppe bleibt für bewusst gemeinsame Kopplung verfügbar. Details und Rückweg stehen in [Installation](docs/installation.md).
 

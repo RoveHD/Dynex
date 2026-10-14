@@ -304,6 +304,7 @@ foreach (var outcome in new[] { "success", "cleanup-error", "stale-eof", "closed
     Check(pump.SentBytes < 150000 && pump.BypassedBytes == 64, "voice/game bypass overtakes saturated download queue");
 }
 NdisPacketDevice.ValidateAbi();
+NdisLifecycleChecks.Run(Check);
 {
     var delivered = new ConcurrentQueue<int>();
     var source = new FakeDevice(packet => delivered.Enqueue(packet.Length));

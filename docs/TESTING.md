@@ -1,4 +1,12 @@
-# DYNEX 1.0.1 · Prüfstatus
+# DYNEX 1.0.2 · Prüfstatus
+
+## Integrierte Einrichtung, AutoLAN und Adapterwechsel (1.0.2)
+
+Am 14.10.2026 bestanden 434 automatisierte Prüfungen: 36 Setup-, 141 Core-, 86 Runtime- und 171 Shaper-Checks. Die Setup-Prüfungen verwenden injizierte Abhängigkeiten und prüfen vorhandene Komponenten, Fehler, Abbruch und Neustartbedarf sowie die eng begrenzte Firewallregel. Sie installieren keinen Treiber und ändern keine Windows-Firewall. AutoLAN prüft Profile, verschlüsselte UDP-Loopback-Verbindungen und die Erholung nach vorübergehenden Netzwerkfehlern. Eine reale Verbindung zwischen zwei physischen PCs ist damit noch nicht nachgewiesen.
+
+Die Shaper-Prüfungen führen die echte Dispose-Logik mit simulierten nativen IOCTL-Antworten aus: Fehler 87 bei einem alten Adapterhandle gilt nur dann als freigegeben, wenn eine vollständige neue Adapterliste dessen Verschwinden bestätigt. Vorhandene Handles, unvollständige Listen und andere Fehler bleiben Fehler. Ein neu erschienener Adapter wird dabei nicht verändert. Ein echter Windows-Adapterwechsel wurde nicht ausgelöst.
+
+Der Desktop-Release-Build bestand ohne Warnungen oder Fehler. Der WPF-Smoke unter `artifacts/qa-ui-1.0.2` bestand für Übersicht und alle Einstellungsseiten bei sieben Größen von 900×650 bis 2560×1440. Die neuen Netzwerkfehler-Ansichten wurden bei 900×650 visuell kontrolliert: vollständiger Hinweis, Navigation zu den Netzwerkeinstellungen und Windows-Netzwerkknopf passen ohne Seitenscrollen. Die Runtime-Suite prüft den konkreten Netzwerk-Wartegrund statt der irreführenden Spielpausenmeldung. Protokolle: `artifacts/runtime-tests-1.0.2.log`, `artifacts/autolan-repair-core-tests.log` und `artifacts/qa-ui-1.0.2/pages-result.txt`.
 
 ## Downloadlimit nur bei Spiel im Fokus (1.0.1)
 

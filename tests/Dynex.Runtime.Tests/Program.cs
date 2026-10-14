@@ -480,7 +480,9 @@ await Scenario("peer start failure leaves speedtests waiting", async () =>
     blockedPort.ExclusiveAddressUse = true;
     blockedPort.Bind(new IPEndPoint(IPAddress.Loopback, runtime.PeerPort));
     await runtime.StartAsync().WaitAsync(timeout);
-    await Until(() => runtime.Snapshot?.Devices.Count == 1 && runtime.SpeedTestMessage.Contains("zuverlässig"));
+    await Until(() => runtime.Snapshot?.Devices.Count == 1 && runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
+    Check(runtime.SpeedTestMessage.StartsWith("Speedtest noch nicht möglich:") && runtime.Snapshot!.NetworkProblem is not null,
+        "failed discovery reports a network problem instead of pretending a game is open");
     var manual = runtime.MeasureCapacityAsync();
     Check(service.Calls == 0 && runtime.IsSpeedTestWaiting && !runtime.Settings.AutomaticSpeedTestAttempted && !manual.IsCompleted,
         "failed LAN start never treats an unknown peer state as a safe idle network");

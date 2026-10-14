@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -215,6 +216,11 @@ public partial class MainWindow : Window
 
     private async void SpeedTest_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        if (_runtime.IsSpeedTestWaiting && _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network)
+        {
+            ShowSettings("network");
+            return;
+        }
         await _runtime.MeasureCapacityAsync();
         RenderCapacity();
     });
@@ -227,8 +233,13 @@ public partial class MainWindow : Window
         CapacityBox.Text = settings.CapacityMeasuredAtUtc.HasValue
             ? settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture) : "—";
         CapacityBox.Opacity = settings.CapacityMeasuredAtUtc.HasValue ? 1 : 0.6;
-        SpeedTestButton.IsEnabled = !running && !waiting;
-        SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? "Wartet auf Spielpause" : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
+        SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
+        SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
+        {
+            SpeedTestWaitReason.Network => "Netzwerk prüfen",
+            SpeedTestWaitReason.OpenGame => "Spiel noch geöffnet",
+            _ => "Prüfung läuft …"
+        } : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
         SpeedTestProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         var measured = settings.CapacityMeasuredAtUtc is { } at
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}. "
@@ -266,18 +277,26 @@ public partial class MainWindow : Window
         {
             await RunUiAction(async () =>
             {
-                var restart = await PacketFilterSetup.InstallAsync(message => SetupHint.Text = message);
-                if (restart)
+                await _runtime.StopAsync();
+                SetupHint.Text = "Windows richtet Downloadbegrenzung und Heimnetzverbindung ein …";
+                var result = await InstallerPrerequisites.RunAsync();
+                if (result.ExitCode == 3010)
                 {
-                    ErrorText.Text = "Einrichtung abgeschlossen. Windows benötigt einen Neustart, bevor die Begrenzung eingeschaltet wird.";
+                    ErrorText.Text = result.Message;
                     return;
                 }
+                if (result.ExitCode != 0) throw new InvalidOperationException(result.Message);
                 await _runtime.SaveSettingsAsync(_runtime.Settings with { DriverEnabled = true });
                 DriverCheck.IsChecked = true;
-                ErrorText.Text = "Einrichtung abgeschlossen. Die Downloadbegrenzung wird gestartet.";
+                ErrorText.Text = "Einrichtung abgeschlossen. DYNEX verbindet deine PCs und priorisiert Spiele und Sprachchat.";
             });
         }
-        finally { _settingUp = false; SetupButton.IsEnabled = true; }
+        finally
+        {
+            _settingUp = false; SetupButton.IsEnabled = true;
+            try { await _runtime.StartAsync(); }
+            catch (Exception error) { ErrorText.Text += " DYNEX konnte nicht neu starten: " + error.Message; }
+        }
     }
     private async void RevealCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -320,6 +339,13 @@ public partial class MainWindow : Window
         catch (Exception ex) { ErrorText.Text = $"Aktion fehlgeschlagen: {ex.Message}"; }
     }
 
+    private void NetworkHelp_Click(object sender, RoutedEventArgs e) => ShowSettings("network");
+    private async void WindowsNetwork_Click(object sender, RoutedEventArgs e) => await RunUiAction(() =>
+    {
+        Process.Start(new ProcessStartInfo("ms-settings:network-status") { UseShellExecute = true });
+        return Task.CompletedTask;
+    });
+
     private void RenderSnapshot(RuntimeSnapshot s)
     {
         RenderCapacity();
@@ -331,8 +357,9 @@ public partial class MainWindow : Window
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
         LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
         var installed = PacketFilterSetup.IsInstalled;
-        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : _runtime.Settings.DriverEnabled ? "WARTET" : "AUS";
+        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : _runtime.Settings.DriverEnabled ? "NICHT BESTÄTIGT" : "AUS";
         DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
+        DriverDetail.ToolTip = s.DriverState;
         ProtectionStatusText.Text = (s.DriverActive, s.QosActive) switch
         {
             (true, true) => "NETZWERKSCHUTZ · PRIORISIERUNG UND DOWNLOADLIMIT AKTIV",
@@ -353,7 +380,7 @@ public partial class MainWindow : Window
         else
         {
             QosStatusText.Text = "Priorisierung noch nicht aktiv";
-            QosDetailText.Text = "Spiele & Sprachchat werden beim Einschalten bevorzugt.";
+            QosDetailText.Text = _runtime.Settings.DriverEnabled ? "Der Netzwerkfilter hat die Priorisierung noch nicht bestätigt." : "In den Einstellungen einschalten, um Spiele und Sprachchat zu bevorzugen.";
         }
         QosDetailText.ToolTip = "Erkannte Pakete werden auf diesem PC bevorzugt weitergegeben; ausgehend zusätzlich für QoS markiert. Der Router muss diese Markierungen unterstützen. Zähler gelten für die aktuelle Filtersitzung und bestätigen keine Priorität im Router.";
         DriverCheck.IsEnabled = s.DriverAvailable && installed && !_settingUp;
@@ -366,6 +393,11 @@ public partial class MainWindow : Window
         _deviceSnapshot = s.Devices;
         RenderDevicePage();
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
+        NetworkStatus.ToolTip = s.NetworkStatus;
+        NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 ? Visibility.Visible : Visibility.Collapsed;
+        NetworkHelpText.Text = s.NetworkProblem ?? (s.Devices.Count < 2
+            ? "Noch kein anderer PC verbunden. DYNEX muss auf beiden PCs laufen und das Windows-Netzwerk auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
+            : $"{s.Devices.Count} PCs verbunden. Die Verbindung wird automatisch überwacht.");
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
             ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
             : "Sobald ein Spiel im Fokus ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
@@ -375,6 +407,11 @@ public partial class MainWindow : Window
                     s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem PC eingeschaltet sein." : "")
             : "Spiel- und Sprachchatpakete umgehen die Downloadwarteschlange. DYNEX muss auf jedem beteiligten PC laufen.";
         PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
+        if (s.NetworkProblem is not null)
+        {
+            SharedBudgetText.Text = "PC-Verbindung nicht bereit · Netzwerk prüfen";
+            CoordinationText.Text = s.NetworkProblem;
+        }
         DrawHistory(s.History);
         HistoryCompare.Text = $"Ohne Begrenzung: {CompareHistory(s.History, false)}\nMit Begrenzung: {CompareHistory(s.History, true)}";
         HistoryCompare.ToolTip = "Vergleich gemessener Internet-Pings. Unterschiedliche Werte allein beweisen noch keine Verbesserung durch DYNEX.";

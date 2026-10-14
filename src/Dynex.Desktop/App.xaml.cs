@@ -14,6 +14,14 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         try
         {
+            if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall")
+            {
+                // This process is launched by NSIS before the first normal app
+                // start. Do not create mutexes, profiles or network workers.
+                try { Shutdown(await InstallerPrerequisites.ExecuteAsync(e.Args)); }
+                catch { Shutdown(1); } // NSIS reports a failed CLI instead of a successful normal-app exit.
+                return;
+            }
             if (!await DesktopLifecycle.InitializeAsync(e.Args))
             {
                 Shutdown(DesktopLifecycle.ExitCode);

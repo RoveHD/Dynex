@@ -183,6 +183,7 @@ internal static class DesktopLifecycle
             Capture(window, Path.Combine(directory, "settings-1000.png"));
             await VerifyPagesAsync(window, runtime, directory);
             VerifyDevicePaging(window, runtime);
+            VerifyNetworkHelp(window, runtime, directory);
             var diagnostic = await runtime.ExportDiagnosticsAsync();
             File.Copy(diagnostic, Path.Combine(directory, "live-diagnostics.json"), true);
             await VerifyUpdateCheckboxAsync(window, runtime);
@@ -227,7 +228,7 @@ internal static class DesktopLifecycle
         {
             ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "ManualLimitBox"],
             ["games"] = ["ModeCombo", "RunningProcessesBox", "AddProcessButton", "ProcessesBox"],
-            ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox"],
+            ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton"],
             ["updates"] = ["AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"]
         };
         foreach (var (width, height) in sizes)
@@ -282,6 +283,32 @@ internal static class DesktopLifecycle
         if (bounds.Left < -1 || bounds.Top < -1 || bounds.Right > page.ActualWidth + 1 || bounds.Bottom > page.ActualHeight + 1)
             throw new Exception($"{controlName} passt nicht in {pageName} bei {window.Width}x{window.Height}: {bounds}, Seite {page.ActualWidth}x{page.ActualHeight}.");
     }
+    private static void VerifyNetworkHelp(MainWindow window, DynexRuntime runtime, string directory)
+    {
+        var snapshot = runtime.Snapshot ?? throw new Exception("Snapshot für Netzwerkhinweis fehlt.");
+        var render = typeof(MainWindow).GetMethod("RenderSnapshot", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        const string problem = "Automatische PC-Verbindung nicht verfügbar. Ethernet: öffentliches Windows-Netzwerk. DYNEX verbindet PCs nur in einem privaten Windows-Netzwerk.";
+        try
+        {
+            window.Width = 900; window.Height = 650; window.ShowOverview();
+            render.Invoke(window, [snapshot with { NetworkProblem = problem, NetworkStatus = problem }]);
+            window.UpdateLayout();
+            var help = (System.Windows.Controls.Button)window.FindName("NetworkHelpButton");
+            if (!help.IsVisible || !((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).Text.Contains("öffentliches"))
+                throw new Exception("Netzwerkproblem ist nicht sichtbar und erreichbar.");
+            AssertVisibleControl(window, "OverviewPage", "NetworkHelpButton");
+            Capture(window, Path.Combine(directory, "network-problem-overview-900.png"));
+            help.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+            window.UpdateLayout();
+            if (!((FrameworkElement)window.FindName("NetworkSettingsSection")).IsVisible ||
+                ((System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText")).Text != problem)
+                throw new Exception("Netzwerkhilfe öffnet nicht den vollständigen Fehlergrund.");
+            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "ExternalBox", "PairingBox"]);
+            Capture(window, Path.Combine(directory, "network-problem-settings-900.png"));
+        }
+        finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
+    }
+
     private static void VerifyDevicePaging(MainWindow window, DynexRuntime runtime)
     {
         var snapshot = runtime.Snapshot ?? throw new Exception("Snapshot für Geräteseiten fehlt.");

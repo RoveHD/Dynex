@@ -11,6 +11,7 @@ public sealed class AutoLanPeerService : IPeerService
     private static readonly IPAddress Multicast = IPAddress.Parse("239.255.39.74");
     private readonly DynexSettings _settings;
     private readonly string _privateKey;
+    private readonly Func<(AutoLanBinding[] Bindings, string? Error)> _readScope;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly Dictionary<Guid, Session> _channels = new();
@@ -27,18 +28,24 @@ public sealed class AutoLanPeerService : IPeerService
     private bool _subscribed;
     private volatile bool _disposed;
     private string? _networkStatus;
+    private string? _receiveError;
     private State _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
 
     public event Action? PeersChanged;
     public string? NetworkStatus => Volatile.Read(ref _networkStatus);
 
     public AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64)
+        : this(settings, signingPrivateKeyBase64, AutoLanNetworkScope.Read) { }
+
+    internal AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64,
+        Func<(AutoLanBinding[] Bindings, string? Error)> readScope)
     {
         settings.Validate(false);
         if (AutoLanIdentity.GetDeviceId(signingPrivateKeyBase64) != settings.DeviceId)
             throw new ArgumentException("AutoLAN Geräte-ID muss vom Identitätsschlüssel abgeleitet sein.");
         _settings = settings with { DirectPeers = settings.DirectPeers.Select(p => new IPEndPoint(p.Address, p.Port)).ToArray() };
         _privateKey = signingPrivateKeyBase64;
+        _readScope = readScope;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -60,6 +67,7 @@ public sealed class AutoLanPeerService : IPeerService
                 socket.Bind(new IPEndPoint(_settings.LoopbackOnly ? IPAddress.Loopback : IPAddress.Any, _settings.Port));
                 lock (_gate) { _crypto = new(_privateKey); _sequence = 0; }
                 Volatile.Write(ref _networkStatus, null);
+                Volatile.Write(ref _receiveError, null);
                 RefreshScope(socket, true);
                 _socket = socket;
                 _stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -178,7 +186,9 @@ public sealed class AutoLanPeerService : IPeerService
                 {
                     if (token.IsCancellationRequested) break;
                     if (e.SocketErrorCode is SocketError.MessageSize or SocketError.ConnectionReset or SocketError.ConnectionRefused) continue;
-                    SetError("AutoLAN-Empfang: " + e.Message); break;
+                    var error = "AutoLAN-Empfang: " + e.Message;
+                    Volatile.Write(ref _receiveError, error);
+                    SetError(error); break;
                 }
             }
         }
@@ -238,15 +248,16 @@ public sealed class AutoLanPeerService : IPeerService
     private void RefreshScope(Socket socket, bool force)
     {
         if (_settings.LoopbackOnly) return;
-        var (current, error) = AutoLanNetworkScope.Read();
+        var (current, error) = _readScope();
         var previous = Volatile.Read(ref _bindings);
-        if (!force && previous.SequenceEqual(current))
-        { if (error is not null) SetError(error); return; }
+        if (!force && previous.SequenceEqual(current) && NetworkStatus == (error ?? Volatile.Read(ref _receiveError))) return;
+        // Retry memberships after a transport failure even if the IP/profile did not change.
+        // Otherwise a single resume/send failure can keep discovery marked unhealthy forever.
         foreach (var binding in previous)
             try { socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.DropMembership, new MulticastOption(Multicast, binding.Address)); }
             catch (SocketException) { }
         Volatile.Write(ref _bindings, current);
-        Volatile.Write(ref _networkStatus, error);
+        Volatile.Write(ref _networkStatus, error ?? Volatile.Read(ref _receiveError));
         foreach (var binding in current)
             try { socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership, new MulticastOption(Multicast, binding.Address)); }
             catch (SocketException e) { SetError("AutoLAN Multicast: " + e.Message + " · Subnetz-Broadcast bleibt aktiv."); }

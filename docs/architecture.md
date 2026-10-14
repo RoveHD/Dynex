@@ -1,12 +1,12 @@
 # DYNEX · Dynamic Network Experience
 
-Entscheidungsstand 14.10.2026, Version 0.3.0: native Windows-WPF-App mit AutoLAN, lokaler Prozess- und Steam-Spielerkennung sowie einem separaten Helper zur Begrenzung großer Downloadverbindungen. Der Helper verwendet den unabhängig installierten Windows Packet Filter (NDISRD) direkt über Windows-IOCTLs. Die ausdrücklich gestartete Filtereinrichtung benötigt Administratorrechte; der reguläre Desktop läuft ohne Erhöhung. WinDivert wird nicht mehr verwendet. Bestehende Sicherheitsblockaden bleiben unverändert.
+Entscheidungsstand 14.10.2026, Version 1.0.2: native Windows-WPF-App mit AutoLAN, lokaler Prozess- und Steam-Spielerkennung sowie einem separaten Helper zur Begrenzung großer Downloadverbindungen. Der Helper verwendet den unabhängig installierten Windows Packet Filter (NDISRD) direkt über Windows-IOCTLs. Das Hauptsetup übernimmt fehlende Netzwerkvoraussetzungen nach Windows-UAC-Bestätigung; der reguläre Desktop läuft ohne Erhöhung. WinDivert wird nicht mehr verwendet. Bestehende Sicherheitsblockaden bleiben unverändert.
 
 ## LAN-Vertrauen und Kommunikation
 
 AutoLAN ist standardmäßig für Windows-Privatnetzwerke aktiv. DYNEX entdeckt andere laufende DYNEX-PCs automatisch; ein Gruppencode ist zum Start nicht erforderlich. Die erste neue Peer-Identität im privaten LAN wird automatisch vertraut. Das ist eine bewusste Vertrauensannahme für dieses LAN: Geräte, denen das private Netzwerk zugänglich ist, können beim ersten Kontakt in die DYNEX-Kommunikation aufgenommen werden. Wer eine bewusst abgegrenzte gemeinsame Gruppe möchte, kann optional weiterhin eine private Gruppe verwenden.
 
-Die Peer-Kommunikation verwendet ECDSA zur Identitäts-/Signaturprüfung, ECDH zur Ableitung eines Schlüssels pro Peer und AES-GCM für authentifizierte Verschlüsselung. Sie basiert nicht auf einem globalen, für alle Peers gemeinsam verwendeten Gruppenschlüssel. Konkrete Paketfelder und Replay-Schutz sind in [protocol.md](protocol.md) beschrieben. Kommunikation und Discovery ändern weder Routerkonfiguration noch Firewall stillschweigend.
+Die Peer-Kommunikation verwendet ECDSA zur Identitäts-/Signaturprüfung, ECDH zur Ableitung eines Schlüssels pro Peer und AES-GCM für authentifizierte Verschlüsselung. Sie basiert nicht auf einem globalen, für alle Peers gemeinsam verwendeten Gruppenschlüssel. Konkrete Paketfelder und Replay-Schutz sind in [protocol.md](protocol.md) beschrieben. Kommunikation und Discovery ändern keine Systemregeln. Das Setup richtet nach Windows-Bestätigung eine eigene anwendungsspezifische Firewallfreigabe für UDP 39274 im privaten lokalen Subnetz ein; Routerkonfiguration und Netzwerkprofil bleiben erhalten.
 
 ## Budget und Spielstatus
 

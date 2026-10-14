@@ -1,6 +1,6 @@
-# DYNEX 0.3.1 installieren und entfernen
+# DYNEX 1.0.2 installieren und entfernen
 
-Das Release-Setup `artifacts/DYNEX-Setup-0.3.1.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Administratorrechte und eine separate .NET-Laufzeit sind für die App-Installation nicht nötig; Programme und Setup sind nicht codesigniert.
+Das Release-Setup `artifacts/DYNEX-Setup-1.0.2.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für fehlende Netzwerkvoraussetzungen fordert das Setup Administratorrechte an; Programme und Setup sind nicht codesigniert.
 
 ## Start im privaten LAN
 
@@ -10,13 +10,15 @@ Der Speedtest startet automatisch genau einmal. Auch nach Fehler oder Abbruch gi
 
 Der lokale Windows-PC-Name wird automatisch verwendet. Die Anschlusskapazität wird einmal gemessen und gespeichert. Ab 0.3.1 stimmen die PCs ihre unterschiedlichen Messwerte automatisch ab und teilen den kleinsten daraus errechneten Downloadtopf. Die Reserve je Gaming-PC beträgt automatisch `min(10 Mbit/s, 5 % der Kapazität)`; das Standard-Hintergrundbudget beträgt 65 %. Installiere die aktuelle Version auf jedem beteiligten PC und schalte jeweils die Downloadbegrenzung ein. Ein bereits eingerichteter Netzwerkfilter muss beim App-Update nicht erneut installiert werden.
 
-## Netzwerkfilter einmalig einrichten
+## Netzwerkeinrichtung im Setup
 
-DYNEX enthält selbst weder die MSI noch NDISRD-Treiberdateien, ndisapi.dll oder WinDivert-Dateien. Wähle in DYNEX **Einrichten**. Die App lädt das offizielle Windows Packet Filter x64 MSI in das Benutzerprofil, prüft Dateigröße und festen SHA-256 und lässt Windows die Authenticode-Signatur prüfen. Eine nicht passende Hash- oder Signaturprüfung bricht ab.
+Das DYNEX-Setup prüft den Netzwerkfilter und eine eigene Firewallfreigabe. Fehlt der Filter, lädt es das offizielle Windows Packet Filter x64 MSI direkt vom Hersteller in den Cache des installierenden Benutzers. Dateigröße, fester SHA-256 und Authenticode-Signatur werden vor Ausführung geprüft; die erhöhte Phase prüft erneut und hält die geprüfte Datei bis zum Installationsende gesperrt. Das MSI und der Kernel-Treiber werden nicht im DYNEX-Paket weiterverteilt.
 
-Danach startet DYNEX den offiziellen MSI-Installer interaktiv mit UAC. Lies dessen Bestätigung und bestätige nur, wenn du die Installation des NDISRD-Netzwerkfilters möchtest. Das ist eine systemweite Änderung: Windows registriert einen NDIS-Filter an Netzwerkadaptern; während der Einrichtung kann die Verbindung kurz unterbrochen werden. DYNEX erzwingt keinen Neustart; Windows kann einen Neustart als erforderlich melden.
+Eine Windows-UAC-Bestätigung erlaubt die nötigen Systemänderungen. Der offizielle MSI-Installer läuft mit Fortschrittsanzeige ohne zusätzlichen Einrichtungsassistenten. Die Verbindung kann kurz unterbrochen werden. Bereits registrierte Filter werden übersprungen und nicht neu installiert. Ein nötiger Neustart wird als Ergebnis 3010 angezeigt; DYNEX erzwingt ihn nicht. Bei Abbruch, fehlendem Internet oder einem Fehler meldet das Setup eine unvollständige Einrichtung und einen Fehlercode. Details stehen unter `%LOCALAPPDATA%\Programs\DYNEX\setup-result.txt`; Setup erneut starten oder die Einrichtung in DYNEX verwenden.
 
-Die MSI-Installation ist unabhängig vom per-user DYNEX-Setup. Sie ist kein stiller Bestandteil von Update oder App-Start. Die Filteraktivierung findet erst statt, wenn der Benutzer danach **Downloadbegrenzung einschalten** einschaltet. Fehlt der Helper, verweigert Windows den Zugriff oder kann der Adapterfilter nicht sicher geöffnet werden, bleibt das Limit inaktiv und DYNEX zeigt einen Fehler.
+Die eigene Firewallregel gilt nur für die installierte DYNEX.exe, eingehendes UDP 39274, das Windows-Profil Privat und Absender im lokalen Subnetz. Öffentliche und Domänennetze werden dadurch nicht freigegeben. DYNEX ändert das Netzwerkprofil nicht automatisch. Ist das Heimnetz in Windows noch öffentlich, zeigt die App den konkreten Grund und öffnet auf Wunsch die Windows-Netzwerkeinstellungen. Auf allen beteiligten PCs muss DYNEX laufen. Routerseitige Client-Isolation oder zusätzliche Firewallregeln können die Verbindung weiterhin verhindern.
+
+Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbarer PC-Verbindung und einem tatsächlich offenen Spiel. Ohne erfolgreiche Messung werden keine Downloadlimits aktiviert. Ein Netzwerkfehler wird nicht als Spielpause bezeichnet.
 
 ## Wirkungsbereich
 
@@ -34,7 +36,7 @@ Die DYNEX-Deinstallation entfernt nur Paketdateien, DYNEX-Verknüpfungen, die DY
 
 Wenn du den systemweiten Netzwerkfilter später nicht mehr benötigst, öffne **Einstellungen → Apps → Installierte Apps** in Windows und deinstalliere **Windows Packet Filter x64** über den offiziellen Windows-Deinstallationsweg. Prüfe zuerst, ob andere VPN-/Netzwerkprogramme den Filter benötigen. DYNEX führt diese Entfernung bewusst nicht automatisch aus. Eine Windows-Rückfrage oder ein erforderlicher Neustart richtet sich nach dem Zustand des Treibers und der Adapter.
 
-DYNEX ändert keine Routereinstellungen und legt keine Firewallregel still an. Für AutoLAN kann UDP 39274 im privaten lokalen Subnetz nötig sein; erlaube es bei einer Windows-Abfrage nur im privaten Netzwerk.
+Bei der Deinstallation entfernt DYNEX nach Windows-Bestätigung nur die eigene unveränderte Firewallregel. Wird die Bestätigung abgebrochen, bleibt die Regel erhalten und die Deinstallation weist darauf hin. Fremde Regeln, Routereinstellungen und der gemeinsam genutzte Netzwerkfilter bleiben bestehen.
 
 ## Lizenz und Grenzen
 

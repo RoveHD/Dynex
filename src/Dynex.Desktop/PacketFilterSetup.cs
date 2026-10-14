@@ -3,11 +3,12 @@ using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using Microsoft.Win32;
 
 namespace Dynex.Desktop;
 
-/// <summary>Explicit, user-initiated setup of the official independent filter.</summary>
+/// <summary>Verified setup of the official independent filter, also used by DYNEX setup.</summary>
 internal static class PacketFilterSetup
 {
     private const string DownloadUrl = "https://github.com/wiresock/ndisapi/releases/download/v3.6.2/Windows.Packet.Filter.3.6.2.1.x64.msi";
@@ -24,6 +25,12 @@ internal static class PacketFilterSetup
     }
 
     public static async Task<bool> InstallAsync(Action<string> progress, CancellationToken token = default)
+    {
+        if (IsInstalled) return false;
+        return await InstallPackageAsync(await PreparePackageAsync(progress, token), progress, token);
+    }
+
+    internal static async Task<string> PreparePackageAsync(Action<string> progress, CancellationToken token = default)
     {
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DYNEX", "setup");
         Directory.CreateDirectory(directory);
@@ -58,6 +65,15 @@ internal static class PacketFilterSetup
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
+        VerifySignature(path);
+        return path;
+    }
+
+    internal static async Task<bool> InstallPackageAsync(string path, Action<string> progress, CancellationToken token = default)
+    {
+        if (IsInstalled) return false;
+        if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.Contains('"'))
+            throw new InvalidDataException("Das Einrichtungspaket muss eine lokale absolute Datei sein.");
         // Keep the verified file read-locked through the elevated installation;
         // another process cannot replace it between verification and msiexec.
         await using var verifiedPackage = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -65,14 +81,18 @@ internal static class PacketFilterSetup
             throw new InvalidDataException("Das Einrichtungspaket wurde vor der Prüfung verändert.");
         verifiedPackage.Position = 0;
         VerifySignatureCore(path, verifiedPackage.SafeFileHandle.DangerousGetHandle());
-        progress("Bitte die offizielle Windows-Einrichtung abschließen. DYNEX wartet …");
+        // Another setup may have completed while this package was downloaded.
+        if (IsInstalled) return false;
+        progress("Windows richtet die Downloadbegrenzung ein. Bitte die Windows-Rückfrage bestätigen …");
+        var elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
         using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "msiexec.exe"))
         {
-            UseShellExecute = true, Verb = "runas", Arguments = $"/i \"{path}\" /norestart"
+            UseShellExecute = !elevated, Verb = elevated ? "" : "runas", CreateNoWindow = elevated,
+            Arguments = $"/i \"{path}\" /passive /norestart"
         }) ?? throw new IOException("Die Windows-Einrichtung konnte nicht gestartet werden.");
         await process.WaitForExitAsync(token);
         if (process.ExitCode == 1602) throw new OperationCanceledException("Die Einrichtung wurde abgebrochen.");
-        if (process.ExitCode is not (0 or 3010)) throw new IOException($"Die Windows-Einrichtung meldet Fehler {process.ExitCode}.");
+        if (process.ExitCode is not (0 or 3010)) throw new System.ComponentModel.Win32Exception(process.ExitCode, $"Die Windows-Einrichtung meldet Fehler {process.ExitCode}.");
         if (!IsInstalled) throw new IOException("Der Netzwerkfilter wurde noch nicht registriert.");
         return process.ExitCode == 3010;
     }

@@ -33,6 +33,19 @@ public sealed unsafe class NdisPacketDevice : IPacketDevice
     private nint _receiveBuffer, _sendBuffer;
     private int _closed, _nextAdapter;
     private bool _receiving, _cleanupDone, _notificationsDisposed;
+    private readonly IoControl? _ioOverride;
+
+    // Injectable transport for isolated native-lifecycle tests; production always
+    // calls DeviceIoControl on the real, version-checked driver handle.
+    internal unsafe delegate uint IoControl(int index, void* input, int inputLength, void* output, int outputLength);
+    internal NdisPacketDevice(IoControl io, params nint[] capturedAdapters)
+    {
+        ValidateAbi();
+        _ioOverride = io;
+        _captureMode = 3;
+        foreach (var handle in capturedAdapters)
+            _adapters.Add(new Adapter(handle) { Owned = true, EventAttached = true, CaptureStarted = true });
+    }
 
     public uint DriverVersion { get; }
     public string? CleanupError { get; private set; }
@@ -216,7 +229,7 @@ public sealed unsafe class NdisPacketDevice : IPacketDevice
         lock (_gate)
         {
             _stopped.Set();
-            if (_driver is { IsInvalid: false, IsClosed: false })
+            if (_ioOverride is not null || _driver is { IsInvalid: false, IsClosed: false })
             {
                 foreach (var adapter in _adapters)
                 {
@@ -236,6 +249,22 @@ public sealed unsafe class NdisPacketDevice : IPacketDevice
                         {
                             var handle = adapter.Handle;
                             Io(6, &handle, 8, null, 0);
+                        }
+                    }
+                    catch (Win32Exception e) when (e.NativeErrorCode == 87)
+                    {
+                        // A driver rebind can invalidate a previously captured
+                        // adapter handle. Never send reset/event/flush commands to
+                        // its replacement, and never equate ERROR_INVALID_PARAMETER
+                        // alone with successful release. Only the driver's fresh
+                        // complete handle inventory can establish that it is gone.
+                        try
+                        {
+                            if (AdapterStillPresent(adapter.Handle)) CleanupError ??= e.Message;
+                        }
+                        catch (Exception verificationError)
+                        {
+                            CleanupError ??= e.Message + " Adapterwechsel konnte nicht bestätigt werden: " + verificationError.Message;
                         }
                     }
                     catch (Exception e) { CleanupError ??= e.Message; }
@@ -278,15 +307,43 @@ public sealed unsafe class NdisPacketDevice : IPacketDevice
         var notification = new AdapterEvent { Adapter = adapter, Event = value };
         Io(7, &notification, 16, null, 0);
     }
-    private void Io(int index, void* input, int inputLength, void* output, int outputLength)
+    private bool AdapterStillPresent(nint handle)
     {
+        var list = new byte[AdapterListSize];
+        uint returned;
+        fixed (byte* buffer = list) returned = Io(1, buffer, AdapterListSize, buffer, AdapterListSize);
+        return AdapterListContains(list, returned, handle);
+    }
+
+    internal static bool AdapterListContains(ReadOnlySpan<byte> list, uint returned, nint handle)
+    {
+        if (handle == 0 || returned < 4 || returned > list.Length)
+            throw new InvalidDataException("Unvollständige NDIS-Adapterliste.");
+        var count = BinaryPrimitives.ReadUInt32LittleEndian(list);
+        if (count > MaxAdapters || count > 0 && returned < HandlesOffset + count * 8)
+            throw new InvalidDataException("Unvollständige oder ungültige NDIS-Adapterhandles.");
+        var found = false;
+        for (var i = 0; i < count; i++)
+        {
+            var candidate = (nint)BinaryPrimitives.ReadInt64LittleEndian(list.Slice(HandlesOffset + i * 8, 8));
+            if (candidate == 0) throw new InvalidDataException("Ungültiges leeres NDIS-Adapterhandle.");
+            found |= candidate == handle;
+        }
+        return found;
+    }
+
+    private uint Io(int index, void* input, int inputLength, void* output, int outputLength)
+    {
+        if (_ioOverride is not null) return _ioOverride(index, input, inputLength, output, outputLength);
         // Official Common.h: CTL_CODE(0x8300, 0x830 + index, METHOD_BUFFERED, FILE_ANY_ACCESS).
         var code = 0x83000000u | ((0x830u + (uint)index) << 2);
-        if (_driver is null || !DeviceIoControl(_driver, code, input, (uint)inputLength, output, (uint)outputLength, out _, 0))
+        ObjectDisposedException.ThrowIf(_driver is null, this);
+        if (!DeviceIoControl(_driver, code, input, (uint)inputLength, output, (uint)outputLength, out var returned, 0))
         {
             var error = Marshal.GetLastPInvokeError();
             throw new Win32Exception(error, $"NDISRD IOCTL {index}: {new Win32Exception(error).Message}");
         }
+        return returned;
     }
 
     private static SafeFileHandle OpenDriver()

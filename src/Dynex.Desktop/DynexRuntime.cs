@@ -39,6 +39,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     private string? peerStartError;
     private TaskCompletionSource monitoringPulse = NewPulse();
     public bool IsSpeedTestWaiting { get; private set; }
+    public SpeedTestWaitReason SpeedTestWaitingFor { get; private set; }
     private static TaskCompletionSource NewPulse() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsSpeedTestRunning { get; private set; }
     public string SpeedTestMessage { get; private set; } = "";
@@ -118,7 +119,8 @@ public sealed class DynexRuntime : IAsyncDisposable
     private Task BeginSpeedTest(bool automatic = false)
     {
         IsSpeedTestWaiting = true;
-        SpeedTestMessage = "Speedtest wartet auf den Spielstatus im LAN.";
+        SpeedTestWaitingFor = SpeedTestWaitReason.Monitoring;
+        SpeedTestMessage = "DYNEX prüft Spiele und die Verbindung zu deinen PCs …";
         lock (speedTestSync) speedTestCancellation = new CancellationTokenSource();
         speedTestTask = MeasureCapacityCoreAsync(automatic, speedTestCancellation.Token);
         PublishSpeedTestSnapshot();
@@ -158,6 +160,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                 if (discoveryReady && !GamingBlocksSpeedTest())
                 {
                     IsSpeedTestWaiting = false;
+                    SpeedTestWaitingFor = SpeedTestWaitReason.None;
                     IsSpeedTestRunning = true;
                     SpeedTestMessage = "Download-Speedtest läuft · maximal 10 Sekunden / 256 MiB. Die lokale Begrenzung pausiert.";
                     PublishSpeedTestSnapshot();
@@ -197,11 +200,17 @@ public sealed class DynexRuntime : IAsyncDisposable
                     if (started && !stopping) await StartWorkerAsync();
                     protectionPaused = false;
                 }
-                SpeedTestMessage = !discoveryAvailable
-                    ? "Speedtest wartet: Der Spielstatus und die LAN-Verbindung konnten noch nicht zuverlässig geprüft werden."
-                    : discoveryReady
-                    ? "Automatischer Speedtest wartet, bis auf diesem und verbundenen PCs kein Spiel mehr offen ist."
-                    : "Speedtest wartet auf den Spielstatus im LAN.";
+                var networkProblem = peerStartError ?? peers?.NetworkStatus;
+                SpeedTestWaitingFor = networkProblem is not null ? SpeedTestWaitReason.Network
+                    : !monitoringReady ? SpeedTestWaitReason.Monitoring
+                    : !discoveryReady ? SpeedTestWaitReason.Discovery : SpeedTestWaitReason.OpenGame;
+                SpeedTestMessage = SpeedTestWaitingFor switch
+                {
+                    SpeedTestWaitReason.Network => "Speedtest noch nicht möglich: " + networkProblem,
+                    SpeedTestWaitReason.Monitoring => "DYNEX prüft Spiele und Netzwerk. Der Speedtest startet anschließend automatisch.",
+                    SpeedTestWaitReason.Discovery => "DYNEX sucht die anderen PCs im Netzwerk. Der Speedtest startet nach dem Statusabgleich.",
+                    _ => "Speedtest startet automatisch, sobald kein Spiel mehr offen ist. Auch ein Spiel im Hintergrund zählt."
+                };
                 PublishSpeedTestSnapshot();
                 lifecycle.Release(); gateHeld = false;
                 await pulse.WaitAsync(token);
@@ -219,6 +228,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                 speedTestLoadStarted = false;
                 IsSpeedTestRunning = false;
                 IsSpeedTestWaiting = false;
+                SpeedTestWaitingFor = SpeedTestWaitReason.None;
                 lock (speedTestSync) { speedTestCancellation?.Dispose(); speedTestCancellation = null; }
                 // The artificial load must not become an adaptive latency baseline.
                 if (protectionPaused)
@@ -340,7 +350,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         decision.SharedCapacityMbps, decision.SharedBudgetComplete,
                         (ConfirmedShare(driver.Active, driver.Mbps) ? 1 : 0) +
                         remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps)),
-                        driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets);
+                        driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -451,7 +461,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.1", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "1.0.2", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));

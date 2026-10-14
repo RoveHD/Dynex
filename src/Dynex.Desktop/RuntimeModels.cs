@@ -1,6 +1,7 @@
 namespace Dynex.Desktop;
 
 public enum GamingMode { Auto, On, Off }
+public enum SpeedTestWaitReason { None, Monitoring, Network, Discovery, OpenGame }
 
 public sealed record UserSettings
 {
@@ -35,4 +36,5 @@ public sealed record RuntimeSnapshot(
     bool DriverAvailable = false, double? SharedDownloadBudgetMbps = null,
     int ParticipantCount = 1, int GamingCount = 0, double? SharedCapacityMbps = null,
     bool SharedBudgetComplete = false, int ConfirmedParticipantCount = 0,
-    bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0);
+    bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0,
+    string? NetworkProblem = null);

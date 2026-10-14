@@ -28,29 +28,49 @@ internal sealed record AutoLanBinding(IPAddress Address, IPAddress Mask, int Int
 
 internal static class AutoLanNetworkScope
 {
+    internal sealed record Candidate(Guid? AdapterId, string Name, AutoLanBinding Binding);
+
     internal static (AutoLanBinding[] Bindings, string? Error) Read()
     {
         if (!OperatingSystem.IsWindows()) return ([], "AutoLAN benötigt Windows-Privatnetzprofile; außerhalb Windows nur expliziter Loopback-Testmodus.");
         try
         {
-            var trusted = GetPrivateAdapters();
-            var bindings = NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not (NetworkInterfaceType.Tunnel or NetworkInterfaceType.Loopback) &&
-                    Guid.TryParse(n.Id, out var id) && trusted.Contains(id))
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses
-                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && a.PrefixLength is >= 8 and <= 30 && LanAddress.IsAllowed(a.Address, false))
-                    .Select(a => new AutoLanBinding(a.Address, a.IPv4Mask, n.GetIPProperties().GetIPv4Properties().Index)))
-                .Distinct().Take(16).ToArray();
-            return (bindings, bindings.Length == 0 ? "AutoLAN wartet auf ein aktives privates Windows-IPv4-LAN. Öffentliche/ unbekannte Profile werden ausgeschlossen." : null);
+            var profiles = GetAdapterProfiles();
+            var candidates = NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not (NetworkInterfaceType.Tunnel or NetworkInterfaceType.Loopback))
+                .SelectMany(n =>
+                {
+                    var properties = n.GetIPProperties();
+                    var id = Guid.TryParse(n.Id, out var parsed) ? parsed : (Guid?)null;
+                    return properties.UnicastAddresses
+                        .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && a.PrefixLength is >= 8 and <= 30 && LanAddress.IsAllowed(a.Address, false))
+                        .Select(a => new Candidate(id, n.Name, new(a.Address, a.IPv4Mask, properties.GetIPv4Properties().Index)));
+                }).ToArray();
+            return Select(candidates, profiles);
         }
         catch (Exception e) when (e is COMException or NetworkInformationException or InvalidOperationException or InvalidCastException or ArgumentException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
         { return ([], "AutoLAN kann private Windows-Netzprofile nicht prüfen: " + e.Message); }
     }
 
-    [SupportedOSPlatform("windows")]
-    private static HashSet<Guid> GetPrivateAdapters()
+    internal static (AutoLanBinding[] Bindings, string? Error) Select(Candidate[] candidates, IReadOnlyDictionary<Guid, int> profiles)
     {
-        var adapters = new HashSet<Guid>();
+        int Category(Candidate candidate) => candidate.AdapterId is { } id && profiles.TryGetValue(id, out var category) ? category : -1;
+        var bindings = candidates.Where(c => Category(c) == 1).Select(c => c.Binding).Distinct().Take(16).ToArray();
+        if (bindings.Length != 0) return (bindings, null);
+        if (candidates.Length == 0) return ([], "Keine aktive LAN-Verbindung mit privater IPv4-Adresse gefunden. Ethernet oder WLAN verbinden.");
+        var details = candidates.DistinctBy(c => c.AdapterId).Take(4).Select(c => $"{c.Name}: {Category(c) switch
+        {
+            0 => "öffentliches Windows-Netzwerk",
+            2 => "Windows-Domänennetzwerk",
+            _ => "Windows-Netzwerkprofil unbekannt"
+        }}");
+        return ([], "Automatische PC-Verbindung nicht verfügbar. " + string.Join("; ", details) + ". DYNEX verbindet PCs nur in einem privaten Windows-Netzwerk.");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static Dictionary<Guid, int> GetAdapterProfiles()
+    {
+        var adapters = new Dictionary<Guid, int>();
         var type = Type.GetTypeFromCLSID(new Guid("DCB00C01-570F-4A9B-8D69-199FDBA5723B"), true)!;
         dynamic manager = Activator.CreateInstance(type)!;
         object? networks = null;
@@ -62,10 +82,15 @@ internal static class AutoLanNetworkScope
                 object? connections = null;
                 try
                 {
-                    if ((int)network.GetCategory() != 1) continue; // NLM_NETWORK_CATEGORY_PRIVATE only
+                    var category = (int)network.GetCategory();
                     connections = network.GetNetworkConnections();
                     foreach (dynamic connection in (IEnumerable)connections)
-                        try { adapters.Add(((INetworkConnection)connection).GetAdapterId()); }
+                        try
+                        {
+                            var id = ((INetworkConnection)connection).GetAdapterId();
+                            // Ambiguous profiles must not grant private-network trust.
+                            adapters[id] = adapters.TryGetValue(id, out var previous) && previous != category ? -1 : category;
+                        }
                         finally { Release(connection); }
                 }
                 finally { Release(connections); Release(network); }

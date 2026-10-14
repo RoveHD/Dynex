@@ -7,6 +7,7 @@
     <AssemblyName>Dynex.Shaper</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Dynex.Shaper.Tests" />
     <None Update="native/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

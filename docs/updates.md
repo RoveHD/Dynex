@@ -21,8 +21,10 @@ Ein vollständig geladenes Update wird **beim nächsten regulären Programmstart
 installiert, bevor Messung und Netzwerkhelper starten. Die App schließt sich nicht
 während einer laufenden Sitzung. Fenster schließen minimiert DYNEX weiterhin in
 den Infobereich; zum vollständigen Beenden dient dessen Menü. Nach der Installation
-öffnet DYNEX sich wieder, bei Windows-Autostart im Infobereich. Ein Update installiert
-keinen neuen Netzwerkfilter und ändert die gespeicherten Einstellungen nicht.
+öffnet DYNEX sich wieder, bei Windows-Autostart im Infobereich. Vorhandene
+Netzwerkvoraussetzungen werden übersprungen. Fehlt die private Heimnetz-Firewallfreigabe
+oder der Netzwerkfilter, richtet das Setup sie nach Windows-UAC-Bestätigung ein.
+Die gespeicherten Einstellungen bleiben erhalten.
 
 Die Funktion ist für die Installation unter `%LOCALAPPDATA%\Programs\DYNEX`
 verfügbar. Entwicklungsstarts, kopierte EXEs und isolierte Prüfungen starten keinen

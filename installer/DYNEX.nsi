@@ -6,7 +6,7 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.1"
+  !define APP_VERSION "1.0.2"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -44,6 +44,9 @@ ShowUnInstDetails show
 Var UpdateParent
 Var UpdateMutex
 Var UpdateTray
+Var PrerequisiteExit
+Var PrerequisiteMessage
+Var PrerequisiteLog
 
 Function ReleaseUpdateGate
   ${If} $UpdateMutex != 0
@@ -161,6 +164,38 @@ Section "DYNEX Anwendung" SEC_MAIN
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "NoRepair" 1
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  ; The desktop's dedicated CLI does not start normal application workers or
+  ; read settings. Only missing system prerequisites request one UAC elevation.
+  ; The official MSI is fetched directly from its publisher, never redistributed.
+  DetailPrint "Downloadbegrenzung und private Heimnetzverbindung einrichten ..."
+  Delete "$INSTDIR\setup-result.txt"
+  ClearErrors
+  ExecWait '"$INSTDIR\DYNEX.exe" --setup-prerequisites --setup-result "$INSTDIR\setup-result.txt"' $PrerequisiteExit
+  ${If} ${Errors}
+    StrCpy $PrerequisiteExit 1
+  ${EndIf}
+  StrCpy $PrerequisiteMessage "Die Netzwerkeinrichtung konnte nicht abgeschlossen werden. Starte das DYNEX-Setup erneut."
+  IfFileExists "$INSTDIR\setup-result.txt" 0 prerequisite_result_missing
+    FileOpen $PrerequisiteLog "$INSTDIR\setup-result.txt" r
+    IfErrors prerequisite_result_missing
+    FileReadUTF16LE $PrerequisiteLog $PrerequisiteMessage
+    FileClose $PrerequisiteLog
+    Goto prerequisite_result_ready
+  prerequisite_result_missing:
+    StrCpy $PrerequisiteExit 1
+  prerequisite_result_ready:
+  DetailPrint "$PrerequisiteMessage"
+  ${If} $PrerequisiteExit == 3010
+    ; Report restart-required without requesting or forcing a restart.
+    IfSilent +2
+      MessageBox MB_ICONINFORMATION|MB_OK "$PrerequisiteMessage"
+    SetErrorLevel 3010
+  ${ElseIf} $PrerequisiteExit != 0
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "$PrerequisiteMessage$\r$\n$\r$\nDetails: $INSTDIR\setup-result.txt"
+    SetErrorLevel $PrerequisiteExit
+    Abort
+  ${EndIf}
 SectionEnd
 
 Section /o "Desktop-Verknüpfung" SEC_DESKTOP
@@ -173,6 +208,17 @@ Section "Uninstall"
     MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Die Deinstallation wird abgebrochen, damit laufende Dateien nicht beschädigt werden."
     Abort
   ${EndIf}
+  ; Remove only this installation's exact private-LAN rule. Shared NDISRD
+  ; remains installed for other applications. Cancelled UAC preserves the rule.
+  ClearErrors
+  ExecWait '"$INSTDIR\DYNEX.exe" --remove-setup-firewall' $0
+  ${If} ${Errors}
+    StrCpy $0 1
+  ${EndIf}
+  ${If} $0 != 0
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Die eigene DYNEX-Heimnetzregel konnte nicht entfernt werden (Fehler $0). Die Anwendung wird trotzdem deinstalliert. Der gemeinsam genutzte Netzwerkfilter bleibt erhalten."
+  ${EndIf}
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "DYNEX"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX"
   DeleteRegKey HKCU "Software\DYNEX"
@@ -184,6 +230,7 @@ Section "Uninstall"
   RMDir /r "$LOCALAPPDATA\DYNEX"
   keep_profile:
   !insertmacro DeleteInstalledFiles
+  Delete "$INSTDIR\setup-result.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 SectionEnd

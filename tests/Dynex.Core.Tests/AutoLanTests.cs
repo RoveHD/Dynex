@@ -62,6 +62,24 @@ internal static class AutoLanTests
         var binding = new AutoLanBinding(IPAddress.Parse("192.168.4.12"), IPAddress.Parse("255.255.255.0"), 4);
         check(binding.Contains(IPAddress.Parse("192.168.4.8")) && !binding.Contains(IPAddress.Parse("192.168.5.8")) &&
             binding.Broadcast.Equals(IPAddress.Parse("192.168.4.255")), "AutoLAN discovery fallback computes subnet broadcast and rejects off-link source scope");
+        var privateId = Guid.NewGuid(); var publicId = Guid.NewGuid(); var domainId = Guid.NewGuid();
+        var profiles = new Dictionary<Guid, int> { [privateId] = 1, [publicId] = 0, [domainId] = 2 };
+        AutoLanNetworkScope.Candidate Candidate(Guid? id, string name) => new(id, name, binding);
+        check(AutoLanNetworkScope.Select([Candidate(privateId, "Ethernet")], profiles) is { Error: null, Bindings.Length: 1 },
+            "AutoLAN profile mapping admits only explicitly private active adapters");
+        var publicScope = AutoLanNetworkScope.Select([Candidate(publicId, "Ethernet")], profiles);
+        check(publicScope.Bindings.Length == 0 && publicScope.Error!.Contains("Ethernet: öffentliches Windows-Netzwerk"),
+            "public Windows profile produces an actionable adapter-specific explanation without opening scope");
+        var domainScope = AutoLanNetworkScope.Select([Candidate(domainId, "Office")], profiles);
+        check(domainScope.Bindings.Length == 0 && domainScope.Error!.Contains("Domänennetzwerk"),
+            "domain profile remains excluded and is distinguished from public home networks");
+        var unknownScope = AutoLanNetworkScope.Select([Candidate(Guid.NewGuid(), "Wi-Fi")], profiles);
+        check(unknownScope.Bindings.Length == 0 && unknownScope.Error!.Contains("Netzwerkprofil unbekannt"),
+            "unmapped adapters fail closed with a distinct unknown-profile explanation");
+        check(AutoLanNetworkScope.Select([], profiles).Error!.Contains("Keine aktive LAN-Verbindung"),
+            "absent LAN is distinguished from a connected but untrusted Windows profile");
+        check(AutoLanNetworkScope.Select([Candidate(privateId, "LAN"), Candidate(publicId, "Other LAN")], profiles).Bindings.Length == 1,
+            "public adapters do not prevent discovery on a separate trusted private adapter");
         if (OperatingSystem.IsWindows())
         {
             var scope = AutoLanNetworkScope.Read();
@@ -77,6 +95,16 @@ internal static class AutoLanTests
             DirectPeers = [new(IPAddress.Loopback, portB)], PeerTtl = TimeSpan.FromSeconds(1), HeartbeatInterval = TimeSpan.FromMilliseconds(150)
         };
         var settingsB = settingsA with { DeviceId = idB, DeviceName = "Automatic B", Port = portB, DirectPeers = [new(IPAddress.Loopback, portA)] };
+        var scopeRecovered = false;
+        await using (var recovery = new AutoLanPeerService(settingsA with { LoopbackOnly = false, DirectPeers = [], Port = FreePort() }, keyA,
+            () => ([], Volatile.Read(ref scopeRecovered) ? null : "Temporary profile probe error")))
+        {
+            await recovery.StartAsync();
+            check(recovery.NetworkStatus == "Temporary profile probe error", "AutoLAN exposes an initial profile failure");
+            Volatile.Write(ref scopeRecovered, true);
+            await Until(() => recovery.NetworkStatus is null, "AutoLAN clears recovered scope errors without an address change");
+            check(recovery.NetworkStatus is null, "recovered discovery no longer leaves speedtest readiness blocked by a stale status");
+        }
         try { using var invalid = new AutoLanPeerService(settingsA with { DeviceId = idB }, keyA); check(false, "AutoLAN mismatched identity"); }
         catch (ArgumentException) { check(true, "AutoLAN rejects mismatched persistent private key and configured device ID"); }
         await using var a = new AutoLanPeerService(settingsA, keyA);
