@@ -1,6 +1,6 @@
 # DYNEX · Dynamic Network Experience
 
-Entscheidungsstand 14.10.2026, Version 1.0.2: native Windows-WPF-App mit AutoLAN, lokaler Prozess- und Steam-Spielerkennung sowie einem separaten Helper zur Begrenzung großer Downloadverbindungen. Der Helper verwendet den unabhängig installierten Windows Packet Filter (NDISRD) direkt über Windows-IOCTLs. Das Hauptsetup übernimmt fehlende Netzwerkvoraussetzungen nach Windows-UAC-Bestätigung; der reguläre Desktop läuft ohne Erhöhung. WinDivert wird nicht mehr verwendet. Bestehende Sicherheitsblockaden bleiben unverändert.
+Entscheidungsstand 14.10.2026, Version 1.0.3: native Windows-WPF-App mit AutoLAN, lokaler Prozess- und Steam-Spielerkennung sowie einem separaten Helper zur Begrenzung großer Downloadverbindungen. Der Helper verwendet den unabhängig installierten Windows Packet Filter (NDISRD) direkt über Windows-IOCTLs. Das Hauptsetup übernimmt fehlende Netzwerkvoraussetzungen nach Windows-UAC-Bestätigung; der reguläre Desktop läuft ohne Erhöhung. WinDivert wird nicht mehr verwendet. Bestehende Sicherheitsblockaden bleiben unverändert.
 
 ## LAN-Vertrauen und Kommunikation
 

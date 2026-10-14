@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Dynex.Desktop/Dynex.Desktop.csproj" />
+    <ProjectReference Include="../../src/Dynex.Shaper/Dynex.Shaper.csproj" />
   </ItemGroup>
 </Project>

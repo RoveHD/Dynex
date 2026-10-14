@@ -288,7 +288,7 @@ public partial class MainWindow : Window
                 if (result.ExitCode != 0) throw new InvalidOperationException(result.Message);
                 await _runtime.SaveSettingsAsync(_runtime.Settings with { DriverEnabled = true });
                 DriverCheck.IsChecked = true;
-                ErrorText.Text = "Einrichtung abgeschlossen. DYNEX verbindet deine PCs und priorisiert Spiele und Sprachchat.";
+                ErrorText.Text = "Einrichtung abgeschlossen. DYNEX aktiviert den Netzwerkschutz automatisch beim Spielen.";
             });
         }
         finally
@@ -357,7 +357,7 @@ public partial class MainWindow : Window
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
         LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
         var installed = PacketFilterSetup.IsInstalled;
-        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : _runtime.Settings.DriverEnabled ? "NICHT BESTÄTIGT" : "AUS";
+        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
         DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
         DriverDetail.ToolTip = s.DriverState;
         ProtectionStatusText.Text = (s.DriverActive, s.QosActive) switch
@@ -365,12 +365,18 @@ public partial class MainWindow : Window
             (true, true) => "NETZWERKSCHUTZ · PRIORISIERUNG UND DOWNLOADLIMIT AKTIV",
             (true, false) => "NETZWERKSCHUTZ · DOWNLOADLIMIT AKTIV",
             (false, true) => "NETZWERKSCHUTZ · PRIORISIERUNG AKTIV",
+            _ when s.ProtectionIdle => "NETZWERKSCHUTZ · INAKTIV",
             _ => "NETZWERKSCHUTZ · NOCH NICHT AKTIV"
         };
         if (s.QosActive)
         {
             QosStatusText.Text = "Priorisierung aktiv";
             QosDetailText.Text = $"Spiele: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete";
+        }
+        else if (s.ProtectionIdle)
+        {
+            QosStatusText.Text = "Netzwerkfilter inaktiv";
+            QosDetailText.Text = "Kein Spiel im Fokus auf deinen DYNEX-PCs.";
         }
         else if (s.GamePriorityPackets > 0 || s.VoicePriorityPackets > 0)
         {
@@ -387,7 +393,7 @@ public partial class MainWindow : Window
         SetupButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
         SetupButton.IsEnabled = s.DriverAvailable && !_settingUp;
         if (!_settingUp) SetupHint.Text = !s.DriverAvailable ? "Das Download-Modul fehlt. DYNEX bitte vollständig installieren." : installed
-            ? "Spiele und Sprachchat bleiben frei. Windows bestätigt das Einschalten."
+            ? "Nur aktiv, wenn auf einem deiner DYNEX-PCs ein Spiel im Fokus ist. Ohne Gaming bleibt der Netzwerkfilter inaktiv."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
         _deviceSnapshot = s.Devices;

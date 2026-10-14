@@ -1,8 +1,10 @@
 # Priorisierung von Spielen und Sprachchat
 
-Ab DYNEX 0.4.0 betreibt der eingeschaltete Netzwerkschutz zusätzlich zur Downloadbegrenzung eine eigene QoS-Sitzung. Sie bleibt auch ohne aktives Spiel und ohne Downloadlimit eingeschaltet, damit erkannter Sprachchat priorisiert werden kann. Ausschalten, Speedtest, Überwachungsfehler und Beenden geben den Filter wieder frei. Der Desktop verlangt eine ausdrückliche Abschaltbestätigung des Helpers.
+Ab DYNEX 1.0.3 betreibt der eingeschaltete Netzwerkschutz die Downloadbegrenzung und QoS ausschließlich, solange auf diesem oder einem verbundenen DYNEX-PC ein erkanntes Spiel im Vordergrund ist. Sind alle Spiele geschlossen oder im Hintergrund, wird auch die QoS-Sitzung freigegeben. Sprachchat allein aktiviert keinen Paketfilter. Ohne erfolgreiche Geschwindigkeitsmessung bleibt das Downloadlimit gesperrt; QoS darf während Gaming bereits aktiv sein. Ausschalten, Speedtest, Überwachungsfehler und Beenden geben den Filter ebenfalls frei. Der Fokuswechsel wird im regulären Mess- und Peerzyklus übernommen.
 
 ## Was tatsächlich passiert
+
+Der erhöhte Helper startet erst bei Bedarf. Nach der Freigabe kann er ohne Capture-Sitzung mit der App verbunden bleiben, damit ein erneuter Fokuswechsel keine weitere UAC-Abfrage benötigt. Der installierte Systemtreiber bleibt vorhanden. Die Oberfläche meldet einen inaktiven Filter nur, wenn keine Sitzung angefordert wurde oder die Freigabe des konkreten Befehls bestätigt ist; Fehler werden weiterhin angezeigt.
 
 Erkannte Echtzeitpakete umgehen die lokale Downloadwarteschlange. Ausgehende Pakete erhalten zusätzlich eine DSCP-Markierung im IPv4-/IPv6-Header: **CS4 (32)** für interaktiven Spielverkehr und **EF (46)** für erkannten Sprachverkehr. Das folgt den Klassen für Real-Time Interactive und Telephony in [RFC 4594](https://www.rfc-editor.org/rfc/rfc4594.html). Die ECN-Bits bleiben erhalten; bei IPv4 wird die Headerprüfsumme korrigiert. IPv6-Flowlabel, Transportprüfsummen und Nutzdaten bleiben unverändert.
 

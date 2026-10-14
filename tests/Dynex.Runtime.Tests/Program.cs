@@ -6,6 +6,10 @@ using Dynex.Desktop.Games;
 using System.Net;
 using System.Net.Sockets;
 using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.IO.Pipes;
+using System.Text;
+using Dynex.Shaper;
 
 var checks = 0;
 var failures = new List<string>();
@@ -647,6 +651,88 @@ await Scenario("legacy On without open games allows initial measurement", async 
         "legacy On alone neither blocks a safe initial speedtest nor activates a gaming download limit");
 });
 
+await Scenario("real helper capture follows local/remote focused gaming only", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    using var fixture = await CaptureFixture.CreateAsync();
+    var started = DateTimeOffset.UtcNow.AddMinutes(-1);
+    GameDetectionResult[] games = [];
+    ForegroundProcess? foreground = new(404, "Discord", started);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
+        _ => Volatile.Read(ref games), () => Volatile.Read(ref foreground), fixture.Controller);
+    await runtime.SaveSettingsAsync(runtime.Settings with { DriverEnabled = true, ManualLimitMbps = 20 });
+    await runtime.StartAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot?.ProtectionIdle == true);
+    Check(fixture.Created == 0 && !fixture.Controller.StartAttempted && runtime.PlannedDownloadLimitMbps is null,
+        "idle/Discord-only startup never starts the elevated helper or opens capture, including a manual maximum");
+    Volatile.Write(ref games, [new("Test game", "testgame", 101, started, true, "test")]);
+    await Until(() => runtime.Snapshot?.Game == "Test game");
+    Check(fixture.Created == 0 && runtime.Snapshot!.ProtectionIdle,
+        "an open background game does not enable packet capture or QoS");
+    Volatile.Write(ref foreground, new(101, "testgame", started));
+    await Until(() => fixture.Created == 1 && runtime.Snapshot is { QosActive: true, DriverActive: true, LimitMbps: 20 });
+    Check(!runtime.Snapshot!.ProtectionIdle && fixture.Controller.StartAttempted && fixture.Disposed == 0,
+        "local foreground gaming enables the real helper capture with QoS and the measured/manual budget");
+    await Until(() => runtime.Snapshot!.History.Count >= 4);
+    Check(fixture.Created == 1, "steady focused gaming preserves one capture session across heartbeats");
+    Volatile.Write(ref foreground, new(404, "Discord", started));
+    await Until(() => runtime.Snapshot?.ProtectionIdle == true && fixture.Disposed == 1);
+    Check(runtime.Snapshot is { DriverActive: false, QosActive: false } && runtime.PlannedDownloadLimitMbps is null,
+        "Alt-Tab disposes the actual capture device, confirms release and removes QoS/caps while the game remains open");
+    Volatile.Write(ref foreground, new(101, "testgame", started));
+    await Until(() => fixture.Created == 2 && runtime.Snapshot?.QosActive == true);
+    Check(fixture.Disposed == 1, "returning to gaming acquires a fresh capture on the existing passive helper");
+    var remoteSettings = CoreConfiguration(runtime) with
+    {
+        DeviceId = Guid.NewGuid(), DeviceName = "Capture remote PC", Port = FreePort(),
+        HeartbeatInterval = TimeSpan.FromMilliseconds(100), DirectPeers = [new(IPAddress.Loopback, runtime.PeerPort)]
+    };
+    await using var remote = new PeerService(remoteSettings);
+    remote.Publish(true, game: "Remote focused game");
+    await remote.StartAsync();
+    await Until(() => runtime.Snapshot?.GamingCount == 2);
+    Volatile.Write(ref foreground, null);
+    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1, QosActive: true });
+    Check(fixture.Created == 2 && fixture.Disposed == 1 && !runtime.Snapshot!.ProtectionIdle,
+        "a real connected focused gaming peer keeps capture active through local Alt-Tab");
+    remote.Publish(false, game: "Remote background game");
+    await Until(() => runtime.Snapshot?.ProtectionIdle == true && fixture.Disposed == 2);
+    Check(runtime.Snapshot!.GamingCount == 0 && !runtime.Snapshot.QosActive,
+        "remote Alt-Tab with only background games releases the actual device and QoS");
+    remote.Publish(true, game: "Remote focused game");
+    await Until(() => fixture.Created == 3 && runtime.Snapshot?.QosActive == true);
+    await remote.DisposeAsync();
+    // Peer TTL is ten seconds; allow expiry plus one monitor/ack cycle.
+    using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(18)))
+        while (!(runtime.Snapshot?.ProtectionIdle == true && fixture.Disposed == 3)) await Task.Delay(20, deadline.Token);
+    Check(runtime.Snapshot!.GamingCount == 0 && fixture.Controller.CaptureReleased,
+        "expired focused peer releases the actual capture without requiring a local game to close");
+    Volatile.Write(ref foreground, new(101, "testgame", started));
+    await Until(() => fixture.Created == 4 && runtime.Snapshot?.QosActive == true);
+    await runtime.StopAsync().WaitAsync(timeout);
+    Check(fixture.Disposed == 4 && fixture.Controller.CaptureReleased && await fixture.Helper.WaitAsync(timeout) == 0,
+        "app shutdown releases the final capture and consumes the helper's final release acknowledgement");
+});
+
+await Scenario("unmeasured focused gaming uses QoS only and still releases on Alt-Tab", async () =>
+{
+    using var profile = new TestProfile();
+    var store = new SettingsStore(profile.Path);
+    store.Save(store.Load() with { AutomaticSpeedTestAttempted = true, DriverEnabled = true, ManualLimitMbps = 10 });
+    using var fixture = await CaptureFixture.CreateAsync();
+    ForegroundProcess? foreground = new(101, "testgame", null);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
+        _ => [new("Unmeasured game", "testgame", 101, null, true, "test")],
+        () => Volatile.Read(ref foreground), fixture.Controller);
+    await runtime.StartAsync().WaitAsync(timeout);
+    await Until(() => fixture.Created == 1 && runtime.Snapshot?.QosActive == true);
+    Check(runtime.Snapshot is { DriverActive: false, LimitMbps: null } && runtime.PlannedDownloadLimitMbps is null,
+        "real helper QoS during focused gaming cannot bypass the successful-speedtest cap gate");
+    Volatile.Write(ref foreground, null);
+    await Until(() => fixture.Disposed == 1 && runtime.Snapshot?.ProtectionIdle == true);
+    Check(!runtime.Snapshot!.QosActive, "QoS-only capture is fully removed after unmeasured gaming loses focus");
+});
+
 Console.WriteLine($"Runtime checks: {checks} passed, {failures.Count} scenarios failed.");
 if (failures.Count != 0)
 {
@@ -768,4 +854,62 @@ sealed class MeasurementRequest(CancellationToken token)
     public CancellationToken Token { get; } = token;
     public TaskCompletionSource<SpeedTestResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void Complete(double rate) => Completion.TrySetResult(new SpeedTestResult(rate, 12_000_000, TimeSpan.FromSeconds(2)));
+}
+
+// The real desktop controller and helper exchange commands/status over a real
+// named pipe. Only the native packet device is replaced; no UAC or kernel access.
+sealed class CaptureFixture : IDisposable
+{
+    private readonly NamedPipeServerStream server;
+    private readonly NamedPipeClientStream client;
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly Process parent = Process.GetCurrentProcess();
+    private readonly ConcurrentBag<CaptureTestDevice> devices = [];
+    public ShaperController Controller { get; } = new();
+    public Task<int> Helper { get; private set; } = null!;
+    public int Created => devices.Count;
+    public int Disposed => devices.Count(d => d.Disposed);
+    private CaptureFixture(string name)
+    {
+        server = new(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        client = new(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+    }
+    public static async Task<CaptureFixture> CreateAsync()
+    {
+        var fixture = new CaptureFixture("dynex-runtime-capture-" + Guid.NewGuid().ToString("N"));
+        var accept = fixture.server.WaitForConnectionAsync();
+        await fixture.client.ConnectAsync(5000); await accept;
+        void Set(string field, object value) => typeof(ShaperController).GetField(field,
+            BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(fixture.Controller, value);
+        Set("pipe", fixture.server);
+        Set("writer", new StreamWriter(fixture.server, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true });
+        var desktopLifetime = new CancellationTokenSource(); // Owned/disposed by the actual controller.
+        Set("cancellation", desktopLifetime);
+        var read = (Task)typeof(ShaperController).GetMethod("ReadStatusAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(fixture.Controller, [fixture.server, desktopLifetime.Token])!;
+        Set("reader", read);
+        Func<IPacketDevice> factory = () =>
+        {
+            var device = new CaptureTestDevice(); fixture.devices.Add(device); return device;
+        };
+        fixture.Helper = (Task<int>)typeof(PacketPump).Assembly.GetType("Dynex.Shaper.Program")!
+            .GetMethod("RunConnectedAsync", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [fixture.parent, new StreamReader(fixture.client, leaveOpen: true),
+                new StreamWriter(fixture.client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true },
+                fixture.lifetime, factory])!;
+        return fixture;
+    }
+    public void Dispose()
+    {
+        lifetime.Cancel(); client.Dispose(); server.Dispose(); parent.Dispose(); lifetime.Dispose();
+    }
+}
+
+sealed class CaptureTestDevice : IPacketDevice
+{
+    private readonly BlockingCollection<CapturedPacket> packets = [];
+    public bool Disposed { get; private set; }
+    public CapturedPacket Receive() => packets.Take();
+    public void Send(CapturedPacket packet) { }
+    public void Dispose() { Disposed = true; packets.CompleteAdding(); }
 }

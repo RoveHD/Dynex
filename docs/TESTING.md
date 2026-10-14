@@ -1,4 +1,12 @@
-# DYNEX 1.0.2 · Prüfstatus
+# DYNEX 1.0.3 · Prüfstatus
+
+## Paketfilter nur während Gaming (1.0.3)
+
+Am 14.10.2026 bestanden 98 Runtime- und 190 Shaper-Prüfungen. Die neuen Integrationsszenarien verbinden die echte Runtime, den Desktop-Controller und die Helper-Kommandoschleife über echte Named Pipes; nur das native Paketgerät wird durch ein Testgerät ersetzt. Ohne Gaming, bei Discord allein und mit ausschließlich Hintergrundspielen wird keine Capture-Sitzung angefordert. Lokaler Fokus aktiviert QoS und das zulässige Limit; Alt-Tab gibt das Gerät tatsächlich frei. Ein fokussierter Peer hält den Schutz aktiv, ein Fokusverlust oder abgelaufener Peer gibt ihn frei. Erneutes Gaming öffnet eine neue Sitzung auf dem vorhandenen passiven Helper. Ohne erfolgreiche Messung ist nur QoS während Gaming erlaubt, kein Downloadlimit.
+
+Zusätzlich geprüft: kein wiederholter Startversuch nach gescheitertem Helperstart, erneute Bedarfsprüfung nach dem Start, ausdrückliche befehlsbezogene Freigabebestätigung sowie Ablehnung veralteter Bestätigungen und sichtbare Freigabefehler. Es wurde in diesen Tests kein Kernel-Filter geöffnet und keine echte UAC-Abfrage ausgelöst. Logs: `artifacts/runtime-tests-1.0.3.log` und `artifacts/shaper-tests-1.0.3.log`.
+
+Der isolierte WPF-Smoke unter `artifacts/qa-ui-1.0.3` bestand für Übersicht und alle Einstellungen bei sieben Fenstergrößen von 900×650 bis 2560×1440. Die neuen Texte wurden bei 900×650 visuell geprüft. Eine zusätzliche Fixture unterscheidet ausdrücklich „Netzwerkfilter inaktiv“ von einer unbestätigten Freigabe; die Darstellung ist kein nativer Freigabenachweis. Ein neuer physischer Mehr-PC- oder Gaming-/Download-Lasttest wurde nicht ausgeführt.
 
 ## Integrierte Einrichtung, AutoLAN und Adapterwechsel (1.0.2)
 

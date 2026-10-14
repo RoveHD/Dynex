@@ -184,6 +184,7 @@ internal static class DesktopLifecycle
             await VerifyPagesAsync(window, runtime, directory);
             VerifyDevicePaging(window, runtime);
             VerifyNetworkHelp(window, runtime, directory);
+            VerifyProtectionIdle(window, runtime, directory);
             var diagnostic = await runtime.ExportDiagnosticsAsync();
             File.Copy(diagnostic, Path.Combine(directory, "live-diagnostics.json"), true);
             await VerifyUpdateCheckboxAsync(window, runtime);
@@ -226,7 +227,7 @@ internal static class DesktopLifecycle
         var sizes = new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) };
         var sections = new Dictionary<string, string[]>
         {
-            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "ManualLimitBox"],
+            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "ManualLimitBox"],
             ["games"] = ["ModeCombo", "RunningProcessesBox", "AddProcessButton", "ProcessesBox"],
             ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton"],
             ["updates"] = ["AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"]
@@ -305,6 +306,34 @@ internal static class DesktopLifecycle
                 throw new Exception("Netzwerkhilfe öffnet nicht den vollständigen Fehlergrund.");
             AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "ExternalBox", "PairingBox"]);
             Capture(window, Path.Combine(directory, "network-problem-settings-900.png"));
+        }
+        finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
+    }
+
+    private static void VerifyProtectionIdle(MainWindow window, DynexRuntime runtime, string directory)
+    {
+        var snapshot = runtime.Snapshot ?? throw new Exception("Snapshot für Filterstatus fehlt.");
+        var render = typeof(MainWindow).GetMethod("RenderSnapshot", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        string Text(string name) => ((System.Windows.Controls.TextBlock)window.FindName(name)).Text;
+        try
+        {
+            window.Width = 900; window.Height = 650; window.ShowOverview();
+            var idle = snapshot with
+            {
+                State = "Bereit für deine nächste Runde", Detail = "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv.",
+                IsGaming = false, Game = "", DriverActive = false, QosActive = false,
+                DriverState = "Netzwerkfilter inaktiv. Kein Spiel im Fokus.", LimitMbps = null,
+                GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = true,
+                SharedDownloadBudgetMbps = null, GamingCount = 0
+            };
+            render.Invoke(window, [idle]); window.UpdateLayout();
+            if (Text("QosStatusText") != "Netzwerkfilter inaktiv" || Text("ProtectionStatusText") != "NETZWERKSCHUTZ · INAKTIV")
+                throw new Exception("Bestätigter Filter-Leerlauf erscheint als Fehler oder aktive Priorisierung.");
+            AssertPageFits(window, "OverviewPage", ["QosStatusText", "QosDetailText", "DriverDetail"]);
+            Capture(window, Path.Combine(directory, "filter-idle-fixture-900.png"));
+            render.Invoke(window, [idle with { ProtectionIdle = false, DriverState = "Freigabe nicht bestätigt: Testfehler" }]);
+            if (Text("QosStatusText") == "Netzwerkfilter inaktiv" || Text("ProtectionStatusText") == "NETZWERKSCHUTZ · INAKTIV")
+                throw new Exception("Unbestätigte Freigabe wird fälschlich als Filter-Leerlauf angezeigt.");
         }
         finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
     }
@@ -408,6 +437,7 @@ internal static class DesktopLifecycle
                 $"Gaming: {snapshot.IsGaming} ({snapshot.Game})\n" +
                 $"Treiber aktiv/verfügbar: {snapshot.DriverActive}/{snapshot.DriverAvailable}\nTreiberstatus: {snapshot.DriverState}\n" +
                 $"Priorisierung aktiv: {snapshot.QosActive}; Spiel-/Sprachpakete: {snapshot.GamePriorityPackets}/{snapshot.VoicePriorityPackets}\n" +
+                $"Netzwerkfilter ohne Gaming bestätigt inaktiv: {snapshot.ProtectionIdle}\n" +
                 $"Downloadlimit: {snapshot.LimitMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s\n" +
                 $"Gemeinsames Downloadbudget: {snapshot.SharedDownloadBudgetMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s für {snapshot.ParticipantCount} PCs; vollständig abgestimmt: {snapshot.SharedBudgetComplete}; Anteile bestätigt: {snapshot.ConfirmedParticipantCount}/{snapshot.ParticipantCount}\n" +
                 $"Download/Upload: {snapshot.DownloadMbps?.ToString("0.##") ?? "unbekannt"}/{snapshot.UploadMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s\n" +

@@ -159,13 +159,23 @@ foreach (var cleanupError in new string?[] { null, "injected native flush failur
         .GetMethod("RunConnectedAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
     var helper = (Task<int>)run.Invoke(null, [parent, helperReader, helperWriter, helperStop, factory])!;
     await replies.ReadLineAsync(timeout.Token); // startup
-    await commands.WriteLineAsync("{\"mbps\":8}");
+    await commands.WriteLineAsync("{\"mbps\":null,\"qosEnabled\":false,\"commandId\":72}");
+    using (var idle = JsonDocument.Parse((await replies.ReadLineAsync(timeout.Token))!))
+        Check(created == 0 && idle.RootElement.GetProperty("captureReleased").GetBoolean() &&
+            idle.RootElement.GetProperty("commandId").GetInt64() == 72,
+            "idle helper heartbeat acknowledges no capture without constructing any device");
+    await commands.WriteLineAsync("{\"mbps\":8,\"qosEnabled\":true}");
     await replies.ReadLineAsync(timeout.Token);
-    await commands.WriteLineAsync("{\"mbps\":null}");
+    await commands.WriteLineAsync("{\"mbps\":null,\"qosEnabled\":false,\"commandId\":73}");
     using (var released = JsonDocument.Parse((await replies.ReadLineAsync(timeout.Token))!))
+    {
         Check(cleanupError is null ? released.RootElement.GetProperty("releaseError").ValueKind == JsonValueKind.Null :
             released.RootElement.GetProperty("releaseError").GetString()!.Contains(cleanupError),
             "helper preserves exact release result before discarding pump");
+        Check(released.RootElement.GetProperty("commandId").GetInt64() == 73 &&
+            released.RootElement.GetProperty("captureReleased").GetBoolean() == (cleanupError is null),
+            "idle release acknowledgement identifies this command and requires successful device disposal");
+    }
     if (cleanupError is not null)
     {
         await commands.WriteLineAsync("{\"mbps\":8}");
@@ -272,6 +282,85 @@ foreach (var outcome in new[] { "success", "cleanup-error", "stale-eof", "closed
     var controller = new ShaperController();
     await controller.StopAsync(requireExit: true);
     Check(controller.Status.Message == "Downloadbegrenzung ausgeschaltet", "stop before writer/connection creation is safe");
+}
+{
+    var controller = new ShaperController();
+    Check(controller.CaptureReleased && !controller.StartAttempted, "unused controller confirms idle without a helper launch");
+    await controller.ApplyAsync(null, default);
+    Check(!controller.StartAttempted, "idle Apply never requests a privileged helper startup");
+    // Test runner outputs contain no packaged helper. Missing-component failure
+    // takes the exact guarded startup path without elevation or native capture.
+    Check(!controller.IsAvailable, "startup failure fixture has no packaged helper");
+    await controller.ApplyAsync(8, default, qosEnabled: true);
+    Check(controller.StartAttempted && controller.Status.Message.Contains("fehlt"),
+        "first gaming request attempts startup and reports its actual failure");
+    typeof(ShaperController).GetMethod("Set", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(controller,
+        [new ShaperController.ShaperStatus(false, null, "startup sentinel")]);
+    await controller.ApplyAsync(8, default, qosEnabled: true);
+    await controller.ApplyAsync(null, default);
+    await controller.ApplyAsync(8, default, qosEnabled: true);
+    Check(controller.Status.Message == "startup sentinel" && controller.StartAttempted,
+        "repeated gaming and Alt-Tab heartbeats do not retry failed startup or UAC");
+    await controller.StopAsync();
+    Check(!controller.StartAttempted, "an explicit disable/app stop permits one future startup attempt");
+}
+foreach (var releaseError in new string?[] { null, "injected release failure" })
+{
+    var pipeName = "dynex-idle-ack-" + Guid.NewGuid().ToString("N");
+    using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+    using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+    var accept = server.WaitForConnectionAsync(timeout.Token);
+    await client.ConnectAsync(timeout.Token); await accept;
+    var controller = new ShaperController();
+    void Set(string field, object value) => typeof(ShaperController).GetField(field,
+        BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(controller, value);
+    Set("pipe", server);
+    Set("writer", new StreamWriter(server, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true });
+    Set("cancellation", timeout);
+    Set("captureRequested", true);
+    Set("reader", typeof(ShaperController).GetMethod("ReadStatusAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(controller, [server, timeout.Token])!);
+    using var input = new StreamReader(client, leaveOpen: true);
+    var output = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+    var releasing = controller.ApplyAsync(null, timeout.Token);
+    using var idle = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
+    await releasing;
+    var id = idle.RootElement.GetProperty("commandId").GetInt64();
+    async Task Reply(long commandId, bool captureReleased, string message, string? error = null)
+    {
+        await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, qosActive = false,
+            mbps = (double?)null, commandId, captureReleased, releaseError = error, error = message }));
+        await WaitUntil(() => controller.Status.Message == (error ?? message), TimeSpan.FromSeconds(2));
+    }
+    await Reply(id - 1, true, "stale reply");
+    Check(!controller.CaptureReleased, "stale idle status cannot acknowledge a newer capture release");
+    await Reply(id, false, "capture still owned");
+    Check(!controller.CaptureReleased, "inactive QoS/rate alone cannot confirm the packet device was released");
+    await Reply(id, true, "current release", releaseError);
+    Check(controller.CaptureReleased == (releaseError is null),
+        "matching release acknowledgement is accepted only without a native cleanup error");
+    if (releaseError is null)
+    {
+        // A foreground change while StartAsync is pending must prevent the
+        // actual command from reactivating capture after UAC finishes.
+        var recheckedAfterStart = false;
+        var applying = controller.ApplyAsync(8, timeout.Token, qosEnabled: true, protectionStillNeeded: () =>
+        { recheckedAfterStart = controller.StartAttempted; return false; });
+        using var skipped = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
+        await applying;
+        Check(recheckedAfterStart && skipped.RootElement.GetProperty("mbps").ValueKind == JsonValueKind.Null &&
+            !skipped.RootElement.GetProperty("qosEnabled").GetBoolean() && controller.CaptureReleased,
+            "live foreground/peer recheck after helper startup suppresses obsolete capture requests");
+    }
+    var stopping = controller.StopAsync();
+    using var shutdown = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
+    await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, qosActive = false, mbps = (double?)null,
+        stopped = true, releaseError }));
+    output.Dispose();
+    client.Dispose();
+    await stopping;
+    Check(controller.CaptureReleased == (releaseError is null), "shutdown cannot erase an unconfirmed idle release");
 }
 {
     var source = new FakeDevice(_ => { });

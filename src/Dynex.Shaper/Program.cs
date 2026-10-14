@@ -99,6 +99,7 @@ internal static class Program
         var qosEnabled = false;
         string? error = null;
         string? releaseError = null;
+        long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
         var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
         var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot);
@@ -146,6 +147,8 @@ internal static class Program
                     error = cleanupError ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
                         ? "Programmzuordnung nicht verfügbar; Downloads werden freigegeben. " + ownership.LastError : null),
                     releaseError = cleanupError,
+                    commandId = Interlocked.Read(ref acknowledgedCommandId),
+                    captureReleased = current is null && cleanupError is null,
                     stopped = terminating,
                     receivedBytes = current?.ReceivedBytes ?? 0,
                     sentBytes = current?.SentBytes ?? 0,
@@ -194,6 +197,9 @@ internal static class Program
                 var requested = command.Mbps;
                 var requestedQos = command.QosEnabled;
                 using var commandJson = JsonDocument.Parse(line);
+                var commandId = commandJson.RootElement.TryGetProperty("commandId", out var commandValue)
+                    ? commandValue.GetInt64() : 0;
+                if (commandId < 0) throw new FormatException("Ungültige Befehlsbestätigung.");
                 var shutdown = commandJson.RootElement.TryGetProperty("shutdown", out var shutdownValue) && shutdownValue.GetBoolean();
                 if (shutdown && (requested is not null || requestedQos)) throw new FormatException("Abschaltung erfordert mbps:null und qosEnabled:false.");
                 bulkPolicy.Protect(command.ProtectedProcesses);
@@ -247,6 +253,7 @@ internal static class Program
                     }
                 }
                 // A failed session remains disabled until {mbps:null}, then re-arm.
+                Interlocked.Exchange(ref acknowledgedCommandId, commandId);
                 await StatusAsync();
                 if (shutdown) break;
             }

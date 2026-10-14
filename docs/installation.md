@@ -1,10 +1,10 @@
-# DYNEX 1.0.2 installieren und entfernen
+# DYNEX 1.0.3 installieren und entfernen
 
-Das Release-Setup `artifacts/DYNEX-Setup-1.0.2.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für fehlende Netzwerkvoraussetzungen fordert das Setup Administratorrechte an; Programme und Setup sind nicht codesigniert.
+Das Release-Setup `artifacts/DYNEX-Setup-1.0.3.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für fehlende Netzwerkvoraussetzungen fordert das Setup Administratorrechte an; Programme und Setup sind nicht codesigniert.
 
 ## Start im privaten LAN
 
-Starte DYNEX auf den PCs im selben privaten Windows-Netzwerk. AutoLAN, Windows-Autostart und Spiele-/Sprachchat-Priorisierung sind standardmäßig eingeschaltet; für den ersten Kontakt ist kein Gruppencode nötig. Eine neue Peer-Identität im privaten LAN wird beim ersten Kontakt automatisch vertraut. Optional kann weiterhin eine private gemeinsame Gruppe genutzt werden.
+Starte DYNEX auf den PCs im selben privaten Windows-Netzwerk. AutoLAN, Windows-Autostart und automatischer Schutz beim Spielen sind standardmäßig eingeschaltet; für den ersten Kontakt ist kein Gruppencode nötig. Eine neue Peer-Identität im privaten LAN wird beim ersten Kontakt automatisch vertraut. Optional kann weiterhin eine private gemeinsame Gruppe genutzt werden.
 
 Der Speedtest startet automatisch genau einmal. Auch nach Fehler oder Abbruch gibt es beim nächsten Programmstart keinen automatischen Wiederholungsversuch. Danach lässt er sich über den Speedtest-Knopf manuell starten. Automatische GitHub-Updates lassen sich separat in den Einstellungen anhaken; [Details zum Ablauf](updates.md).
 
@@ -21,6 +21,8 @@ Die eigene Firewallregel gilt nur für die installierte DYNEX.exe, eingehendes U
 Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbarer PC-Verbindung und einem tatsächlich offenen Spiel. Ohne erfolgreiche Messung werden keine Downloadlimits aktiviert. Ein Netzwerkfehler wird nicht als Spielpause bezeichnet.
 
 ## Wirkungsbereich
+
+Der Netzwerkfilter wird nur aktiv, wenn auf diesem oder einem verbundenen DYNEX-PC ein erkanntes Spiel im Vordergrund ist. Ohne Gaming gibt DYNEX auch die Sprachchat-Priorisierung frei. Die App bleibt zur Spiel- und PC-Erkennung geöffnet; Sprachchat allein aktiviert keine Paketverarbeitung. Fokusänderungen werden im regulären Mess- und Peerzyklus übernommen. Für dieses Verhalten alle PCs auf 1.0.3 oder neuer aktualisieren.
 
 DYNEX berücksichtigt große Netzwerkflüsse erst nach mindestens 250 ms Laufzeit und 256 KiB übertragenen Daten. Damit werden kurze Interaktionen nicht vorschnell als Downloads gewertet. Große Downloads auf dem eigenen Gaming-PC werden ebenfalls aus seinem Anteil begrenzt. Spiele sowie Discord, Microsoft Teams, Zoom, TeamSpeak und Mumble sind ausgenommen; ebenso reine TCP-ACKs, DNS und privater LAN-Verkehr. Unbekannte Flows sowie veraltete oder nicht sicher zuordenbare Prozess-IDs werden ebenfalls ausgenommen.
 

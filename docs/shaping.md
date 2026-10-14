@@ -1,12 +1,12 @@
 # Downloadbegrenzung und Grenzen
 
-DYNEX 0.4.0 verwendet einen separaten, erforderlichen `Dynex.Shaper.exe`-Helper. Er kommuniziert mit dem regulär installierten NDISRD-Netzwerkfilter direkt über Windows `DeviceIoControl`; es wird weder `ndisapi.dll` noch WinDivert verwendet. Die Desktop-App selbst muss nicht erhöht laufen. Der eingeschaltete Schutz betreibt zusätzlich [QoS für Spiele und Sprachchat](qos.md), auch wenn gerade kein Downloadlimit erforderlich ist.
+DYNEX 1.0.3 verwendet einen separaten, erforderlichen `Dynex.Shaper.exe`-Helper. Er kommuniziert mit dem regulär installierten NDISRD-Netzwerkfilter direkt über Windows `DeviceIoControl`; es wird weder `ndisapi.dll` noch WinDivert verwendet. Die Desktop-App selbst muss nicht erhöht laufen. Downloadbegrenzung und [QoS für Spiele und Sprachchat](qos.md) laufen nur während ein erkanntes Spiel auf diesem oder einem verbundenen PC im Vordergrund ist. Ohne Gaming wird die Capture-Sitzung freigegeben; der installierte Treiber wird dabei nicht deinstalliert.
 
 ## Einmalige Einrichtung und Aktivierung
 
-DYNEX enthält keinen Filter-Installer oder Kernel-Treiber. Erst die ausdrückliche **Einrichten**-Aktion lädt das offizielle x64 MSI in das Benutzerprofil. Die App prüft die feste Größe (819.200 Bytes), den SHA-256-Pin `9c388c0b7f189f7fa98720bae2caecf7d64f30910838b80b438ecf8956b8502c` und Windows-Authenticode-Vertrauen. Sie startet danach den MSI-Installer interaktiv mit UAC und `/norestart`; Windows registriert einen systemweiten NDIS-Filter. Die Netzwerkverbindung kann dabei kurz unterbrochen werden. Der MSI wird nicht in DYNEX weitergegeben.
+DYNEX lädt einen fehlenden Netzwerkfilter während des Hauptsetups direkt vom Hersteller. Die App prüft die feste Größe (819.200 Bytes), den SHA-256-Pin `9c388c0b7f189f7fa98720bae2caecf7d64f30910838b80b438ecf8956b8502c` und Windows-Authenticode-Vertrauen. Nach der Windows-UAC-Bestätigung richtet das Setup ihn ohne zusätzlichen Assistenten und ohne erzwungenen Neustart ein. Die Netzwerkverbindung kann dabei kurz unterbrochen werden. Das MSI wird nicht in DYNEX weitergegeben. Vorhandene Komponenten werden übersprungen; Details stehen unter [Installation](installation.md).
 
-Der Installer führt Änderungen an Zertifikatsspeicher und Netzwerkadaptern aus. Lies die Windows-Abfragen und bestätige nur, wenn du die Einrichtung möchtest. Späteres Einschalten der **Downloadbegrenzung** startet den Helper mit erhöhten Rechten und kann ebenfalls eine Windows-UAC-Abfrage auslösen. Ohne den Helper, ohne erfolgreich eingerichteten Filter oder bei einer Treiber-/Adapterstörung zeigt DYNEX den Fehler und meldet kein aktives Limit.
+Der Filterinstaller führt Änderungen an Zertifikatsspeicher und Netzwerkadaptern aus. Der erste erforderliche Helperstart während Gaming kann ebenfalls eine Windows-UAC-Abfrage auslösen. Ohne den Helper, ohne erfolgreich eingerichteten Filter oder bei einer Treiber-/Adapterstörung zeigt DYNEX den Fehler und meldet kein aktives Limit.
 
 ## Welche Flows begrenzt werden
 
