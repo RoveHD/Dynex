@@ -19,7 +19,7 @@
    </Grid>
   </Border>
   <Border Grid.Row="1" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Background="#0C0D11"><StackPanel Orientation="Horizontal" Margin="18,5,0,5"><Button x:Name="OverviewNavButton" Content="Übersicht" Click="OverviewNav_Click" Style="{StaticResource CompactButton}" FontSize="14" Padding="11,4" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}"/><Button x:Name="SettingsNavButton" Content="Einstellungen" Click="SettingsNav_Click" Style="{StaticResource CompactButton}" FontSize="14" Padding="11,4"/></StackPanel></Border>
-  <Grid Grid.Row="2" Margin="18,12">
+  <Grid Grid.Row="2" Margin="18,8">
    <Grid x:Name="OverviewPage">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition x:Name="MetricsRow" Height="88"/><RowDefinition Height="*"/><RowDefinition x:Name="DevicesRow" Height="202"/></Grid.RowDefinitions>
     <Grid Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="260"/></Grid.ColumnDefinitions>
@@ -32,7 +32,7 @@
      <Border Style="{StaticResource Card}" Padding="10,7"><StackPanel><TextBlock Text="NETZWERKSCHUTZ" Style="{StaticResource Caption}"/><TextBlock x:Name="DriverText" Text="WIRD GEPRÜFT" FontSize="{DynamicResource UiSectionFontSize}" FontWeight="SemiBold" Margin="0,5,0,3" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="DriverDetail" Text="Verfügbarkeit wird geprüft …" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/></StackPanel></Border>
     </UniformGrid>
     <Grid x:Name="PingLayout" Grid.Row="2" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="1.7*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-     <Border x:Name="ChartPanel" Style="{StaticResource Card}" Padding="10,8" Margin="0,0,8,0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <Border x:Name="ChartPanel" Style="{StaticResource Card}" Padding="10,6" Margin="0,0,8,0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel LastChildFill="False"><TextBlock Text="PING-VERLAUF" FontWeight="SemiBold"/><TextBlock DockPanel.Dock="Right" Style="{StaticResource Caption}"><Run Text="ROUTER" Foreground="{StaticResource Accent}"/><Run Text=" / "/><Run Text="INTERNET" Foreground="#E2A0A7"/></TextBlock></DockPanel>
       <TextBlock x:Name="HistoryHoverText" Grid.Row="1" Text="Mit der Maus Zeit und Messwerte ansehen" Style="{StaticResource Caption}" Margin="0,3,0,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
       <Grid x:Name="HistoryPlot" Grid.Row="2" ClipToBounds="True" MinHeight="50"><Canvas x:Name="HistoryCanvas" Background="#0B0C10" SizeChanged="HistoryCanvas_SizeChanged" MouseMove="HistoryCanvas_MouseMove" MouseLeave="HistoryCanvas_MouseLeave"/><Canvas x:Name="HistoryHoverCanvas" IsHitTestVisible="False"/></Grid>

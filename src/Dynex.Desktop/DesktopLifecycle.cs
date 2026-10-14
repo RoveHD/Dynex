@@ -240,6 +240,14 @@ internal static class DesktopLifecycle
                 AssertVisibleControl(window, "PingPanel", name);
             foreach (var name in new[] { "QosStatusText", "QosDetailText" })
                 AssertVisibleControl(window, "OverviewPage", name);
+            var chart = (FrameworkElement)window.FindName("ChartPanel");
+            var plot = (FrameworkElement)window.FindName("HistoryPlot");
+            var comparison = (FrameworkElement)window.FindName("HistoryCompare");
+            var plotBounds = plot.TransformToAncestor(chart).TransformBounds(new Rect(plot.RenderSize));
+            var comparisonTop = comparison.TransformToAncestor(chart).Transform(new System.Windows.Point()).Y;
+            if (plotBounds.Bottom > comparisonTop + 1 ||
+                System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(plot).Height < plot.ActualHeight - 1)
+                throw new Exception($"Der untere Rand des Pingdiagramms wird bei {width}x{height} abgeschnitten.");
             if (!window.IsOverviewVisible || ((FrameworkElement)window.FindName("SettingsPage")).IsVisible)
                 throw new Exception("Die Übersicht ist nicht sauber von den Einstellungen getrennt.");
             if (((FrameworkElement)window.FindName("HistoryPlot")).ActualHeight < 50)
