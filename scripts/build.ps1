@@ -132,7 +132,7 @@ $nsisPath = if ($nsis -is [System.IO.FileInfo]) { $nsis.FullName } else { $nsis.
 
 $setup = Join-Path $repoRoot "artifacts/DYNEX-Setup-$Version.exe"
 Write-Host "Erzeuge Installer: $setup"
-& $nsisPath "/DAPP_VERSION=$Version" "/DREPO_ROOT=$repoRoot" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$setup" $nsisSource
+& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DREPO_ROOT=$repoRoot" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$setup" $nsisSource
 if ($LASTEXITCODE -ne 0) { throw "NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 if (-not (Test-Path $setup)) { throw 'NSIS meldete Erfolg, aber die Setup-EXE fehlt.' }
 Write-Host "Fertig: $setup"
@@ -141,7 +141,7 @@ Write-Host "Fertig: $setup"
 # This contains only the app's dedicated cleanup entry points, no MSI or driver.
 $cleanupSource = Join-Path $repoRoot 'installer/DYNEX-Cleanup.nsi'
 $cleanupExe = Join-Path $repoRoot "artifacts/DYNEX-Cleanup-$Version.exe"
-& $nsisPath "/DAPP_VERSION=$Version" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$cleanupExe" $cleanupSource
+& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$cleanupExe" $cleanupSource
 if ($LASTEXITCODE -ne 0) { throw "Cleanup-NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 if (-not (Test-Path -LiteralPath $cleanupExe)) { throw 'NSIS hat kein Bereinigungsprogramm erzeugt.' }
 Write-Host "Fertig: $cleanupExe"
