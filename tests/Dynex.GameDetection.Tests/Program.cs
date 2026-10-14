@@ -13,6 +13,7 @@ void Check(bool condition, string name)
 
 var temp = Path.Combine(Path.GetTempPath(), "dynex-game-detection-" + Guid.NewGuid().ToString("N"));
 ProcessPickerChecks.Run(Check);
+ForegroundChecks.Run(Check);
 Directory.CreateDirectory(temp);
 try
 {

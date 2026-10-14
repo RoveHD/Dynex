@@ -1,4 +1,12 @@
-# DYNEX 1.0.0 · Prüfstatus
+# DYNEX 1.0.1 · Prüfstatus
+
+## Downloadlimit nur bei Spiel im Fokus (1.0.1)
+
+Am 14.10.2026 bestanden 85 Runtime- und 162 Spielerkennungsprüfungen. Abgedeckt sind Fokusverlust und Rückkehr, Auswahl des tatsächlich fokussierten von mehreren offenen Spielen, unbekannte Fenster, PID-/Prozessname-/Startzeit-Abgleich, Ausschluss von Wallpaper Engine und Launchern sowie die bisherige Einstellung „Gaming immer an“. Ein manuelles Maximum greift nur bei lokalem oder entferntem Gaming im Fokus. Ein über echtes verschlüsseltes UDP-Loopback verbundenes Testgerät hält das Limit bei lokalem Alt-Tab aktiv und gibt es bei eigenem Fokusverlust frei. Hintergrundspiele blockieren weiterhin den Speedtest; ohne erfolgreiche Messung bleibt auch bei Fokus jedes Downloadlimit gesperrt. Zwei bisherige Prüfungen warten jetzt auf den vollständigen Abschluss der Speedtest-Wiederherstellung statt auf einen vorübergehenden Zwischenstatus.
+
+Die Spiele und Fokuswechsel sind injizierte Testdaten. Eine echte, ausschließlich lesende Windows-Vordergrundabfrage wurde zusätzlich ausgeführt. Der Runtime-Test beobachtete Fokusgewinn nach 2021 ms und Fokusverlust nach 1984 ms; das sind einzelne Messungen des vorhandenen Zwei-Sekunden-Zyklus, keine garantierte Reaktionszeit. Ping-Timeouts, Helper und LAN-Übertragung können die Übernahme verlängern. Kein neuer physischer Mehr-PC- oder echter Spiel-Alt-Tab-Lasttest.
+
+Der Desktop-Release-Build bestand ohne Warnungen oder Fehler. Der WPF-Smoke unter `artifacts/qa-ui-1.0.1` bestand für Übersicht und alle Einstellungsseiten bei sieben Fenstergrößen von 900×650 bis 2560×1440, einschließlich Ping-Hover, Prozessauswahl, Speichern, Update-Checkbox, verschlüsselter Peer-Anzeige und sauberem Beenden. Die geänderten Einstellungsseiten wurden bei 900×650 visuell geprüft. Weitere Protokolle: `artifacts/runtime-tests-1.0.1.log` und `artifacts/game-detection-tests-1.0.1.log`.
 
 ## Getrennte Seiten und Speedtest-Freigabe (1.0.0)
 

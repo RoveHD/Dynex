@@ -430,7 +430,7 @@ internal static class DesktopLifecycle
             throw new Exception("Migration der vorhandenen Geräteidentität fehlgeschlagen.");
         var previousHistoryCount = runtime.Snapshot!.History.Count;
         var previousSample = runtime.Snapshot.History[^1].Time;
-        await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On });
+        await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
         var updateDeadline = DateTime.UtcNow.AddSeconds(5);
         while (runtime.Snapshot!.History[^1].Time <= previousSample && DateTime.UtcNow < updateDeadline) await Task.Delay(100);
         if (runtime.Snapshot.History.Count <= previousHistoryCount) throw new Exception("Gaming-Umschaltung hat den Vergleichsverlauf verworfen.");
@@ -464,7 +464,7 @@ internal static class DesktopLifecycle
     {
         window.ShowOverview(); window.UpdateLayout();
         // Real encrypted transport and bindings, synthetic rates. Only the isolated smoke profile changes.
-        await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = false });
+        await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = false, Mode = GamingMode.Off });
         int port;
         using (var reservation = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0)))
             port = ((System.Net.IPEndPoint)reservation.Client.LocalEndPoint!).Port;
@@ -475,7 +475,7 @@ internal static class DesktopLifecycle
             LoopbackOnly = true, Port = port,
             DirectPeers = [new(System.Net.IPAddress.Loopback, runtime.PeerPort)]
         });
-        peer.Publish(false, 120.5, appliedLimitMbps: 42, shaperActive: true, uploadMbps: 12.25);
+        peer.Publish(true, 120.5, game: "Testspiel im Fokus", appliedLimitMbps: 42, shaperActive: true, uploadMbps: 12.25);
         await peer.StartAsync();
         async Task WaitFor(Func<bool> ready, int seconds = 8)
         {
@@ -522,7 +522,7 @@ internal static class DesktopLifecycle
             if (remote.GetProperty("DownloadMbps").GetDouble() != 120.5 || remote.GetProperty("UploadMbps").GetDouble() != 12.25)
                 throw new Exception("Diagnoseexport verliert Peer-Durchsatz.");
         }
-        peer.Publish(false, 120.5, appliedLimitMbps: 99, shaperActive: true, uploadMbps: 12.25);
+        peer.Publish(true, 120.5, game: "Testspiel im Fokus", appliedLimitMbps: 99, shaperActive: true, uploadMbps: 12.25);
         await WaitFor(() => Remote() is { LimitMbps: 99 } && runtime.Snapshot is { ConfirmedParticipantCount: 0 });
         if (!coordinationLabel.Text.Contains("0/2 PCs bestätigt"))
             throw new Exception("Ein altes zu hohes Limit wird als neues gemeinsames Budget bestätigt.");

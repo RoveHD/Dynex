@@ -11,8 +11,8 @@ Ohne Haken zeigt diese manuelle Prüfung lediglich an, ob eine Version verfügba
 Es wird dann nichts heruntergeladen oder installiert. Ausschalten bricht einen
 laufenden Update-Download ab und verhindert auch die Installation vorgemerkter Updates.
 
-Update-Downloads warten, solange DYNEX auf diesem oder einem verbundenen PC Gaming
-erkennt oder die Internetgeschwindigkeit misst. Beginnt während des Downloads ein
+Update-Downloads warten, solange DYNEX auf diesem oder einem verbundenen PC ein geöffnetes Spiel
+erkennt (auch im Hintergrund) oder die Internetgeschwindigkeit misst. Beginnt während des Downloads ein
 Spiel, wird der Download abgebrochen und nach dem Spielen neu versucht. Außerhalb
 dieser Zeiten liest DYNEX höchstens 512 KiB pro Sekunde. Die Anzeige meldet Prüfung,
 Warten, Download, Fehler oder die bereitliegende Version.

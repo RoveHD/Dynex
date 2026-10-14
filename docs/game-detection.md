@@ -20,7 +20,11 @@ JSON-Manifeste sind auf 1 MiB und Tiefe 32 begrenzt. Doppelte relevante Objektfe
 
 **Abdeckungsgrenze:** Eine vollständige Erkennung jedes beliebigen Spiels ist ohne positives Metadatum oder bekannte EXE nicht beweisbar. Unbekannte portable Spiele, unbekannte Xbox-/EA-/Ubisoft-Titel ohne unterstützten lokalen Katalog, Browser-/Cloudspiele und Java-Spiele außerhalb positiv erkannter Installationen können fehlen. `javaw.exe` wird bewusst nicht pauschal erfasst, da auch Entwicklungswerkzeuge und Launcher Java verwenden. Fehlende oder veraltete Launcher-Metadaten werden nicht durch eine breite GPU-, Fenster-, UDP- oder Ordnernamens-Heuristik ersetzt. Auch innerhalb positiv klassifizierter Steam-/Epic-Spielordner sind unbekannte, nicht ausgeschlossene Hilfsprogramme prinzipiell möglich.
 
-Das Resultat `GameDetectionResult.IsRunning` belegt nur, dass ein zugeordneter Spielprozess läuft. Es erkennt weder eine aktive Runde noch Matchmaking, Lobby oder Spielmodus. Ein erkanntes Spiel kann auch ein Einzelspiel sein. Die LAN-Planung behandelt den Status deshalb als laufenden Spielprozess, nicht als bestätigten Match-Status.
+Das Resultat `GameDetectionResult.IsRunning` belegt nur, dass ein zugeordneter Spielprozess läuft. Es erkennt weder eine aktive Runde noch Matchmaking, Lobby oder Spielmodus. Ein erkanntes Spiel kann auch ein Einzelspiel sein.
+
+Seit 1.0.1 aktiviert ein PC das gemeinsame Downloadlimit nur, wenn das Windows-Vordergrundfenster einem erkannten Spielprozess gehört. `ForegroundGame` liest Fensterbesitzer, PID, Prozessname und soweit zugänglich die Startzeit, ohne Hooks oder Eingriffe ins Spiel. Mehrere offene Spiele werden einzeln abgeglichen; ein fremdes oder nicht bestimmbares Vordergrundfenster gilt nicht als Gaming. Ein Spielmenü im Fokus zählt ebenfalls. Die bisherige Einstellung „Gaming immer an“ umgeht diese Regel nicht mehr.
+
+Beim Wechsel zu einer anderen Anwendung wird der lokale Gaming-Status im nächsten Messzyklus zurückgenommen. Hat kein verbundener PC mehr ein Spiel im Fokus, entfällt auch eine manuelle Download-Obergrenze. Die Priorisierung aller erkannten Spiele und von Sprachchat bleibt erhalten. Speedtests und Update-Downloads warten weiterhin auf das Schließen aller erkannten Spiele, auch im Hintergrund. Dafür wird der Name eines offenen Spiels unabhängig vom Fokus an die anderen PCs übertragen. Alle beteiligten PCs benötigen 1.0.1, damit ältere Meldungen über bloß geöffnete Spiele kein Limit mehr auslösen.
 
 ## Cacheformat und Grenzen
 

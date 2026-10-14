@@ -84,7 +84,7 @@ public partial class MainWindow : Window
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
-        ModeCombo.SelectedIndex = s.Mode switch { GamingMode.Auto => 0, GamingMode.On => 1, _ => 2 };
+        ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
         _loading = false;
         _updates?.SetEnabled(s.AutoUpdate);
     }
@@ -243,7 +243,7 @@ public partial class MainWindow : Window
     {
         var value = Number(ManualLimitBox.Text, "Downloadlimit");
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = value });
-        ErrorText.Text = "Manuelles Limit gespeichert.";
+        ErrorText.Text = "Obergrenze gespeichert. Gilt nur bei einem Spiel im Fokus.";
     });
     private async void ClearLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -324,7 +324,9 @@ public partial class MainWindow : Window
     {
         RenderCapacity();
         HeaderState.Text = s.State.ToUpperInvariant(); DetailText.Text = s.Detail;
-        GameText.Text = _runtime.Settings.Mode == GamingMode.Off ? "Automatische Erkennung ausgeschaltet" : s.IsGaming ? $"Gaming erkannt · {s.Game}" : "Kein Spiel erkannt";
+        GameText.Text = _runtime.Settings.Mode == GamingMode.Off ? "Fokus-Erkennung ausgeschaltet"
+            : s.IsGaming ? $"Spiel im Fokus · {s.Game}"
+            : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
         LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
@@ -366,7 +368,7 @@ public partial class MainWindow : Window
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
             ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
-            : "Beim Gaming teilen sich alle DYNEX-PCs ein gemeinsames Downloadbudget.";
+            : "Sobald ein Spiel im Fokus ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
         CoordinationText.Text = s.SharedDownloadBudgetMbps.HasValue
             ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} PCs bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
                 (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen PCs prüfen." :

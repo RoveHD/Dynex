@@ -26,6 +26,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     private readonly bool isolated;
     private readonly ISpeedTestService speedTest;
     private readonly Func<string, IReadOnlyList<GameDetectionResult>> scanGames;
+    private readonly Func<ForegroundProcess?> readForeground;
     private readonly bool automaticSpeedTestEnabled;
     private readonly object speedTestSync = new();
     private CancellationTokenSource? speedTestCancellation;
@@ -41,18 +42,21 @@ public sealed class DynexRuntime : IAsyncDisposable
     private static TaskCompletionSource NewPulse() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsSpeedTestRunning { get; private set; }
     public string SpeedTestMessage { get; private set; } = "";
+    internal double? PlannedDownloadLimitMbps { get; private set; }
     public UserSettings Settings { get; private set; }
     internal int PeerPort { get; }
     public RuntimeSnapshot? Snapshot { get; private set; }
     public event Action<RuntimeSnapshot>? Updated;
     public DynexRuntime(string? profilePath = null) : this(profilePath, null) { }
     internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest,
-        Func<string, IReadOnlyList<GameDetectionResult>>? scanGames = null)
+        Func<string, IReadOnlyList<GameDetectionResult>>? scanGames = null,
+        Func<ForegroundProcess?>? readForeground = null)
     {
         isolated = profilePath != null;
         PeerPort = isolated ? GetIsolatedPeerPort() : 39274;
         this.speedTest = speedTest ?? new SpeedTestService();
         this.scanGames = scanGames ?? GameDetector.ScanAll;
+        this.readForeground = readForeground ?? ForegroundGame.Read;
         automaticSpeedTestEnabled = !isolated || speedTest is not null;
         store = new(profilePath);
         Settings = store.Load();
@@ -123,7 +127,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     private bool GamingBlocksSpeedTest(UserSettings? settings = null)
     {
         settings ??= Settings;
-        return settings.Mode == GamingMode.On || scanGames(settings.GameProcesses).Count != 0 ||
+        return scanGames(settings.GameProcesses).Count != 0 ||
             peers?.Snapshot().Any(p => p.IsGaming || !string.IsNullOrEmpty(p.Game)) == true;
     }
     private void CancelSpeedTestForGaming()
@@ -282,21 +286,27 @@ public sealed class DynexRuntime : IAsyncDisposable
                 try
                 {
                     var detectedGames = scanGames(settings.GameProcesses);
-                    if (speedTestLoadStarted && (settings.Mode == GamingMode.On || detectedGames.Count != 0 ||
+                    if (speedTestLoadStarted && (detectedGames.Count != 0 ||
                         service.Snapshot().Any(p => p.IsGaming || !string.IsNullOrEmpty(p.Game)))) CancelSpeedTestForGaming();
                     Interlocked.Exchange(ref monitoringPulse, NewPulse()).TrySetResult();
                     var measurement = await monitor.SampleAsync(settings, token);
                     monitoringReady = true;
-                    var game = detectedGames.FirstOrDefault()?.GameName ?? "";
-                    var gaming = settings.Mode == GamingMode.On || settings.Mode == GamingMode.Auto && game.Length != 0;
+                    // Resolve focus after awaiting probes so an Alt-Tab during ping does not
+                    // publish a stale active game. All detected games still bypass shaping.
+                    var focusedGame = ForegroundGame.Find(detectedGames, readForeground());
+                    var game = focusedGame?.GameName ?? detectedGames.FirstOrDefault()?.GameName ?? "";
+                    var gaming = settings.Mode != GamingMode.Off && focusedGame is not null;
                     var remote = service.Snapshot();
                     var now = DateTimeOffset.UtcNow;
                     var latencyTarget = settings.ExternalTarget + "|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(measurement.RouteId)))[..16];
                     var decision = planner.Plan(gaming, remote, IsSpeedTestRunning ? null : new ProbeStats(now, measurement.External.Current, measurement.Down, true, latencyTarget), now);
                     if (settings.CapacityMeasuredAtUtc is null)
                         decision = decision with { DownloadLimitMbps = null, SharedDownloadBudgetMbps = null, SharedCapacityMbps = null, SharedBudgetComplete = false };
+                    // A manual value is a maximum while gaming, never an always-on limit.
+                    if (!decision.GamingActive) decision = decision with { DownloadLimitMbps = null };
+                    PlannedDownloadLimitMbps = IsSpeedTestRunning ? null : decision.DownloadLimitMbps;
                     if (settings.DriverEnabled && !isolated && !IsSpeedTestRunning)
-                        await shaper.ApplyAsync(decision.DownloadLimitMbps, token, detectedGames, qosEnabled: true);
+                        await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: true);
                     var driver = shaper.Status;
                     var sharedShare = decision.SharedDownloadBudgetMbps is { } pool
                         ? Math.Floor(pool / decision.ParticipantCount * 100) / 100 : (double?)null;
@@ -311,8 +321,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         ? "Große Downloads werden auf diesem und verbundenen DYNEX-PCs begrenzt. Spiele und Sprachchat bleiben frei."
                         : decision.AdaptiveReduced ? "Der Ping ist gestiegen. DYNEX bremst die Downloads stärker."
                         : decision.GamingActive ? "Ein anderer PC spielt. Deine Downloads sollen langsamer weiterlaufen."
-                        : settings.ManualLimitMbps.HasValue ? "Ein manuelles Downloadlimit ist eingestellt."
-                        : "Beim Spielen werden große Downloads automatisch begrenzt – auch auf deinem Gaming-PC.";
+                        : "Downloads bleiben frei, solange auf diesem und verbundenen PCs kein Spiel im Vordergrund ist.";
                     if (settings.CapacityMeasuredAtUtc is null)
                         detail = "Downloads bleiben frei, bis ein Speedtest erfolgreich gespeichert wurde. Spiele und Sprachchat können bereits priorisiert werden.";
                     if (IsSpeedTestRunning) { state = "Internetgeschwindigkeit wird gemessen"; detail = SpeedTestMessage; }
@@ -324,7 +333,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     HistoryPoint[] points;
                     lock (history) points = history.ToArray();
                     var networkState = initialNetworkError ?? service.NetworkStatus;
-                    var snapshot = new RuntimeSnapshot(state, detail, gaming, settings.Mode == GamingMode.On ? "Manuell aktiviert" : game, driver.Active,
+                    var snapshot = new RuntimeSnapshot(state, detail, gaming, game, driver.Active,
                         driver.Message, driver.Mbps, measurement.Down, measurement.Up, measurement.Router, measurement.External, devices, points,
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
                         decision.SharedDownloadBudgetMbps, decision.ParticipantCount, decision.GamingCount,
@@ -339,6 +348,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
                     monitoringReady = false;
+                    PlannedDownloadLimitMbps = null;
                     if (IsSpeedTestRunning) CancelSpeedTestForGaming();
                     // Monitoring failure must not keep an old automatic rate active.
                     await shaper.ApplyAsync(null, token);
@@ -441,7 +451,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.0", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "1.0.1", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
@@ -463,6 +473,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         if (worker != null) { try { await worker; } catch (OperationCanceledException) { } }
         if (peers != null) { peers.PeersChanged -= PeerStatusChanged; await peers.DisposeAsync(); peers = null; }
         cancellation?.Dispose(); cancellation = null; worker = null;
+        PlannedDownloadLimitMbps = null;
     }
     public async Task StopAsync()
     {

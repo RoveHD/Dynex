@@ -30,7 +30,8 @@ public partial class App : System.Windows.Application
                     Path.Combine(new SettingsStore().DirectoryPath, "updates"),
                     typeof(App).Assembly.GetName().Version ?? new Version(0, 0, 0),
                     () => _runtime.IsSpeedTestRunning || _runtime.IsSpeedTestWaiting || _runtime.Snapshot is not { } snapshot ||
-                          snapshot.IsGaming || snapshot.GamingCount > 0);
+                          snapshot.IsGaming || snapshot.GamingCount > 0 || !string.IsNullOrEmpty(snapshot.Game) ||
+                          snapshot.Devices.Any(device => !string.IsNullOrEmpty(device.Game)));
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
                 if (!e.Args.Contains("--skip-update-once") && !e.Args.Contains("--verify-live"))
                 {
