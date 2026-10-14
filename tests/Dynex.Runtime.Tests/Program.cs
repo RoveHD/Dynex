@@ -66,6 +66,12 @@ await Scenario("legacy settings without measurement timestamp", async () =>
     await using var runtime = new DynexRuntime(profile.Path, service);
     Check(runtime.Settings.CapacityMbps == 80 && runtime.Settings.CapacityMeasuredAtUtc is null,
         "legacy capacity loads without inventing a measurement timestamp");
+    Check(!runtime.Settings.AutoUpdate,
+        "legacy settings without AutoUpdate default to opt-out");
+    Check(!runtime.Settings.AutomaticSpeedTestAttempted,
+        "legacy settings without an automatic-test marker load as not attempted");
+    Check(runtime.Settings.AutoStart && runtime.Settings.DriverEnabled,
+        "legacy settings inherit the enabled startup and protection defaults");
     await runtime.StartAsync().WaitAsync(timeout);
     var request = await service.NextAsync().WaitAsync(timeout);
     var completed = runtime.MeasureCapacityAsync();
@@ -73,6 +79,32 @@ await Scenario("legacy settings without measurement timestamp", async () =>
     await completed.WaitAsync(timeout);
     Check(service.Calls == 1 && runtime.Settings.CapacityMbps == 123.45,
         "legacy profile receives its initial automatic measurement");
+});
+
+await Scenario("auto-update preference persists without restarting networking", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest());
+    await runtime.StartAsync().WaitAsync(timeout);
+    var prior = runtime.Settings;
+    var worker = Field(runtime, "worker");
+    var peers = Field(runtime, "peers");
+    var pairing = runtime.ExportPairingCode();
+
+    await runtime.SaveAutoUpdatePreferenceAsync(true).WaitAsync(timeout);
+    Check(runtime.Settings == prior with { AutoUpdate = true } &&
+        new SettingsStore(profile.Path).Load() == prior with { AutoUpdate = true },
+        "enabling updates persists only AutoUpdate and preserves all network settings");
+    Check(ReferenceEquals(worker, Field(runtime, "worker")) && ReferenceEquals(peers, Field(runtime, "peers")) &&
+        runtime.ExportPairingCode() == pairing,
+        "enabling updates keeps the worker, peer service, and pairing identity intact");
+
+    await runtime.SaveAutoUpdatePreferenceAsync(false).WaitAsync(timeout);
+    Check(runtime.Settings == prior && new SettingsStore(profile.Path).Load() == prior,
+        "disabling updates persists opt-out and restores the original settings");
+    Check(ReferenceEquals(worker, Field(runtime, "worker")) && ReferenceEquals(peers, Field(runtime, "peers")) &&
+        runtime.ExportPairingCode() == pairing,
+        "disabling updates does not restart networking or change pairing identity");
 });
 
 await Scenario("duplicate measurement calls", async () =>
@@ -139,17 +171,65 @@ await Scenario("failed automatic measurement is not repeated by settings/restart
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
-    await using var runtime = new DynexRuntime(profile.Path, service);
-    await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
-    var measurement = runtime.MeasureCapacityAsync();
-    request.Completion.TrySetException(new InvalidOperationException("simulated offline"));
-    await measurement.WaitAsync(timeout);
-    await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off }).WaitAsync(timeout);
-    await runtime.StopAsync().WaitAsync(timeout);
-    await runtime.StartAsync().WaitAsync(timeout);
-    Check(service.Calls == 1 && runtime.Settings.CapacityMeasuredAtUtc is null,
-        "failed initial measurement keeps its value and is attempted once per runtime");
+    await using (var runtime = new DynexRuntime(profile.Path, service))
+    {
+        await runtime.StartAsync().WaitAsync(timeout);
+        var request = await service.NextAsync().WaitAsync(timeout);
+        var measurement = runtime.MeasureCapacityAsync();
+        request.Completion.TrySetException(new InvalidOperationException("simulated offline"));
+        await measurement.WaitAsync(timeout);
+        Check(runtime.Settings.CapacityMeasuredAtUtc is null && runtime.Settings.AutomaticSpeedTestAttempted &&
+            new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "failed startup test keeps its prior rate and persists the one-time attempt");
+        await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off }).WaitAsync(timeout);
+        await runtime.SaveSettingsAsync(runtime.Settings with { AutomaticSpeedTestAttempted = false }).WaitAsync(timeout);
+        Check(runtime.Settings.AutomaticSpeedTestAttempted && new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "stale settings cannot erase the once-only startup attempt");
+        await runtime.StopAsync().WaitAsync(timeout);
+        await runtime.StartAsync().WaitAsync(timeout);
+        Check(service.Calls == 1 && runtime.Settings.CapacityMeasuredAtUtc is null,
+            "same runtime does not retry the failed automatic measurement");
+    }
+
+    var restartedService = new ControlledSpeedTest();
+    await using var restarted = new DynexRuntime(profile.Path, restartedService);
+    await restarted.StartAsync().WaitAsync(timeout);
+    Check(!restarted.IsSpeedTestRunning && restartedService.Calls == 0,
+        "a new runtime does not repeat the failed startup test");
+    var manual = restarted.MeasureCapacityAsync();
+    var manualRequest = await restartedService.NextAsync().WaitAsync(timeout);
+    manualRequest.Complete(91.25);
+    await manual.WaitAsync(timeout);
+    Check(restartedService.Calls == 1 && restarted.Settings.CapacityMbps == 91.25,
+        "manual measurement remains available after the failed automatic attempt");
+});
+
+await Scenario("cancelled automatic measurement is not repeated after restart", async () =>
+{
+    using var profile = new TestProfile();
+    var service = new ControlledSpeedTest();
+    await using (var runtime = new DynexRuntime(profile.Path, service))
+    {
+        await runtime.StartAsync().WaitAsync(timeout);
+        var request = await service.NextAsync().WaitAsync(timeout);
+        await runtime.StopAsync().WaitAsync(timeout);
+        Check(request.Token.IsCancellationRequested && runtime.Settings.AutomaticSpeedTestAttempted &&
+            new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "cancellation retains the persisted startup-attempt marker");
+        Check(runtime.SpeedTestMessage.Contains("abgebrochen") && !runtime.IsSpeedTestRunning,
+            "cancellation status remains visible and the attempt finishes");
+    }
+    var restartedService = new ControlledSpeedTest();
+    await using var restarted = new DynexRuntime(profile.Path, restartedService);
+    await restarted.StartAsync().WaitAsync(timeout);
+    Check(!restarted.IsSpeedTestRunning && restartedService.Calls == 0,
+        "a new runtime does not repeat the cancelled startup test");
+    var manual = restarted.MeasureCapacityAsync();
+    var manualRequest = await restartedService.NextAsync().WaitAsync(timeout);
+    manualRequest.Complete(88.75);
+    await manual.WaitAsync(timeout);
+    Check(restartedService.Calls == 1 && restarted.Settings.CapacityMbps == 88.75,
+        "manual measurement remains available after the cancelled automatic attempt");
 });
 
 await Scenario("stale settings queued during measurement", async () =>
@@ -254,6 +334,9 @@ sealed class TestProfile : IDisposable
         {
             CapacityMbps = 80,
             CapacityMeasuredAtUtc = measured ? new DateTimeOffset(2025, 1, 2, 3, 4, 5, TimeSpan.Zero) : null,
+            AutomaticSpeedTestAttempted = measured,
+            AutoStart = false,
+            DriverEnabled = false,
             AutoConnectLan = false,
             RouterTarget = "127.0.0.1",
             ExternalTarget = "127.0.0.1"

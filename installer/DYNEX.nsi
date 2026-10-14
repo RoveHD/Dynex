@@ -3,9 +3,10 @@ RequestExecutionLevel user
 ManifestDPIAware true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.4.1"
+  !define APP_VERSION "0.5.0"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -40,10 +41,76 @@ ShowUnInstDetails show
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "German"
 
+Var UpdateParent
+Var UpdateMutex
+Var UpdateTray
+
+Function ReleaseUpdateGate
+  ${If} $UpdateMutex != 0
+    System::Call 'kernel32::CloseHandle(p $UpdateMutex)'
+    StrCpy $UpdateMutex 0
+  ${EndIf}
+FunctionEnd
+
+Function RestartAfterUpdate
+  Call ReleaseUpdateGate
+  ${If} $UpdateParent != ""
+    IfFileExists "$INSTDIR\DYNEX.exe" 0 restart_done
+    ${If} $UpdateTray == "1"
+      Exec '"$INSTDIR\DYNEX.exe" --skip-update-once --tray'
+    ${Else}
+      Exec '"$INSTDIR\DYNEX.exe" --skip-update-once'
+    ${EndIf}
+    restart_done:
+  ${EndIf}
+FunctionEnd
+
+Function .onInstSuccess
+  Call RestartAfterUpdate
+FunctionEnd
+
+Function .onInstFailed
+  Call RestartAfterUpdate
+FunctionEnd
+
+Function .onGUIEnd
+  Call ReleaseUpdateGate
+FunctionEnd
+
 Function .onInit
+  StrCpy $UpdateMutex 0
+  ${GetParameters} $3
+  ${GetOptions} $3 "/DYNEXUPDATE=" $UpdateParent
+  ${GetOptions} $3 "/DYNEXTRAY=" $UpdateTray
+  ${If} $UpdateParent != ""
+    ; The update gate blocks fresh application launches until the file copy
+    ; completes. The parent only invokes this mode before starting its worker.
+    System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\DYNEX.Update") p .r4 ?e'
+    Pop $5
+    StrCpy $UpdateMutex $4
+    ${If} $4 == 0
+    ${OrIf} $5 == 183
+      Call ReleaseUpdateGate
+      SetErrorLevel 11
+      Abort
+    ${EndIf}
+    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdateParent) p .r4'
+    ${If} $4 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r4, i 20000) i .r5'
+      System::Call 'kernel32::CloseHandle(p r4)'
+      ${If} $5 != 0
+        Call RestartAfterUpdate
+        SetErrorLevel 12
+        Abort
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
   Call StopRunningDynex
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Setup abgebrochen; Dateien wurden nicht überschrieben."
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Setup abgebrochen; Dateien wurden nicht überschrieben."
+    Call RestartAfterUpdate
+    SetErrorLevel 13
     Abort
   ${EndIf}
 FunctionEnd
@@ -53,7 +120,11 @@ Function StopRunningDynex
   IfFileExists "$INSTDIR\DYNEX.exe" 0 stop_done
   ; The app handles --shutdown through its per-user named event. It exits with
   ; success if no instance is running; nsExec waits for that IPC request.
-  nsExec::ExecToStack /TIMEOUT=20000 '"$INSTDIR\DYNEX.exe" --shutdown'
+  ${If} $UpdateParent != ""
+    nsExec::ExecToStack /TIMEOUT=20000 '"$INSTDIR\DYNEX.exe" --update-idle'
+  ${Else}
+    nsExec::ExecToStack /TIMEOUT=20000 '"$INSTDIR\DYNEX.exe" --shutdown'
+  ${EndIf}
   Pop $1
   Pop $2
   ${If} $1 != "error"
@@ -69,7 +140,9 @@ Section "DYNEX Anwendung" SEC_MAIN
   SectionIn RO
   Call StopRunningDynex
   ${If} $0 != 0
-    MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Setup abgebrochen; Dateien wurden nicht überschrieben."
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "DYNEX konnte nicht sauber beendet werden. Setup abgebrochen; Dateien wurden nicht überschrieben."
+    SetErrorLevel 13
     Abort
   ${EndIf}
   SetOutPath "$INSTDIR"

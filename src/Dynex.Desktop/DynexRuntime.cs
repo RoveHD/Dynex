@@ -28,7 +28,6 @@ public sealed class DynexRuntime : IAsyncDisposable
     private readonly object speedTestSync = new();
     private CancellationTokenSource? speedTestCancellation;
     private volatile Task? speedTestTask;
-    private bool automaticSpeedTestAttempted;
     private volatile bool stopping;
     public bool IsSpeedTestRunning { get; private set; }
     public string SpeedTestMessage { get; private set; } = "";
@@ -69,9 +68,21 @@ public sealed class DynexRuntime : IAsyncDisposable
             if (started) return;
             stopping = false;
             started = true;
-            if (automaticSpeedTestEnabled && !automaticSpeedTestAttempted && Settings.CapacityMeasuredAtUtc is null)
+            if (automaticSpeedTestEnabled && !Settings.AutomaticSpeedTestAttempted && Settings.CapacityMeasuredAtUtc is null)
             {
-                automaticSpeedTestAttempted = true;
+                var attempted = Settings with { AutomaticSpeedTestAttempted = true };
+                try
+                {
+                    store.Save(attempted);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    SpeedTestMessage = $"Automatischer Speedtest nicht gestartet: Der Versuch konnte nicht gespeichert werden ({ex.Message}). Du kannst ihn manuell starten.";
+                    await StartWorkerAsync();
+                    PublishSpeedTestSnapshot();
+                    return;
+                }
+                Settings = attempted;
                 _ = BeginSpeedTest();
             }
             else await StartWorkerAsync();
@@ -244,6 +255,17 @@ public sealed class DynexRuntime : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
+    public async Task SaveAutoUpdatePreferenceAsync(bool enabled)
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            var next = Settings with { AutoUpdate = enabled };
+            store.Save(next);
+            Settings = next;
+        }
+        finally { lifecycle.Release(); }
+    }
     public async Task SaveSettingsAsync(UserSettings settings)
     {
         settings = SettingsStore.Normalize(settings);
@@ -252,6 +274,10 @@ public sealed class DynexRuntime : IAsyncDisposable
         try
         {
             var prior = Settings;
+            // The once-only startup marker is monotonic, even when a UI action
+            // captured older settings before the first measurement began.
+            if (prior.AutomaticSpeedTestAttempted)
+                settings = settings with { AutomaticSpeedTestAttempted = true };
             // A settings action queued during the test must not restore its old capacity.
             if (settings.CapacityMeasuredAtUtc != prior.CapacityMeasuredAtUtc)
                 settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc });
@@ -311,11 +337,15 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "0.4.1", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "0.5.0", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
         return path;
+    }
+    internal void ApplyAutostartPreference()
+    {
+        if (!isolated) SetAutostart(Settings.AutoStart);
     }
     private static void SetAutostart(bool enabled)
     {

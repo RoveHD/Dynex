@@ -4,7 +4,9 @@ Das Release-Setup `artifacts/DYNEX-Setup-0.3.1.exe` installiert DYNEX pro Window
 
 ## Start im privaten LAN
 
-Starte DYNEX auf den PCs im selben privaten Windows-Netzwerk. AutoLAN ist standardmäßig aktiv; für den ersten Kontakt ist kein Gruppencode nötig. Eine neue Peer-Identität im privaten LAN wird beim ersten Kontakt automatisch vertraut. Optional kann weiterhin eine private gemeinsame Gruppe genutzt werden.
+Starte DYNEX auf den PCs im selben privaten Windows-Netzwerk. AutoLAN, Windows-Autostart und Spiele-/Sprachchat-Priorisierung sind standardmäßig eingeschaltet; für den ersten Kontakt ist kein Gruppencode nötig. Eine neue Peer-Identität im privaten LAN wird beim ersten Kontakt automatisch vertraut. Optional kann weiterhin eine private gemeinsame Gruppe genutzt werden.
+
+Der Speedtest startet automatisch genau einmal. Auch nach Fehler oder Abbruch gibt es beim nächsten Programmstart keinen automatischen Wiederholungsversuch. Danach lässt er sich über den Speedtest-Knopf manuell starten. Automatische GitHub-Updates lassen sich separat in den Einstellungen anhaken; [Details zum Ablauf](updates.md).
 
 Der lokale Windows-PC-Name wird automatisch verwendet. Die Anschlusskapazität wird einmal gemessen und gespeichert. Ab 0.3.1 stimmen die PCs ihre unterschiedlichen Messwerte automatisch ab und teilen den kleinsten daraus errechneten Downloadtopf. Die Reserve je Gaming-PC beträgt automatisch `min(10 Mbit/s, 5 % der Kapazität)`; das Standard-Hintergrundbudget beträgt 65 %. Installiere die aktuelle Version auf jedem beteiligten PC und schalte jeweils die Downloadbegrenzung ein. Ein bereits eingerichteter Netzwerkfilter muss beim App-Update nicht erneut installiert werden.
 

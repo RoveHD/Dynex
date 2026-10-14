@@ -80,3 +80,27 @@ Es gibt keine Zusage für eine feste Pingzahl, tatsächliche WAN-Priorisierung o
 ## Installierte Live-Diagnose
 
 `DYNEX.exe --verify-live <absoluter-Ausgabeordner>` startet das normale Benutzerprofil und lässt die Anwendung geöffnet. Nach mindestens drei neu eingetroffenen Runtime-Snapshots werden `live-diagnostics.json`, `dashboard-live.png` und `result.txt` im Ausgabeordner abgelegt; insgesamt wartet der Diagnosepfad höchstens 45 Sekunden. Der Screenshot verwendet die aktuelle Fenstergröße; der Diagnosemodus ändert keine Fensterabmessungen. Bei einem Diagnosefehler wird zusätzlich `error.txt` geschrieben. Der Modus führt keine Smoke-Tests oder zusätzlichen Speedtests aus und speichert keine Diagnoseeinstellungen. Beim erstmaligen normalen Profilstart läuft jedoch die unveränderte automatische Kapazitätsmessung; diese kann wie im normalen Start Einstellungen speichern.
+
+## Hintergrundupdates und einmaliger Speedtest (0.5.0)
+
+Die Update-Suite (`dotnet run --project tests/Dynex.Update.Tests -c Release`)
+bestand 94 Prüfungen: Opt-in/Opt-out, manuelle Prüfung ohne Download, Versions- und
+Assetprüfung, SHA-256, abgebrochene/beschädigte Downloads, vertrauenswürdige
+Weiterleitungen, Cacheprüfung und einmaliger Handoff, gleichzeitige Aufrufe und
+Gaming-Pause. HTTP und Pakete sind dabei simuliert. Die separate Option
+`-- --live-check` bestand gegen das öffentliche GitHub-Release ohne Anmeldung;
+dieser Livecheck liest nur Metadaten und installiert nichts.
+
+Die Runtime-Suite bestand 44 Prüfungen, darunter sofortiges Speichern der
+Update-Checkbox ohne Neustart von Worker/Peers, neue Standardwerte, dauerhaft
+gespeicherter einmaliger Speedtestversuch, Neustarts nach Fehler/Abbruch sowie
+weiterhin mögliche manuelle Messungen. Alte Einstellungsobjekte können den
+Einmal-Marker nicht zurücksetzen.
+
+Der WPF-Smoke-Test schaltet die tatsächliche Checkbox im isolierten Profil an und
+aus und prüft die gespeicherten Werte. Ein Prozesscheck bestätigt, dass
+`--update-idle` eine laufende Instanz nicht beendet und der Installations-Mutex
+neue normale Starts verhindert. Der Produktionsfilter wird dabei nicht verändert.
+
+Diese Version bringt keine neue physische Mehr-PC-, Discord- oder Anti-Cheat-Abnahme.
+DYNEX-Installer bleiben unsigniert; SHA-256 ist keine Herausgebersignatur.

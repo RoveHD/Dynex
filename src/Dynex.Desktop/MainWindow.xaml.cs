@@ -8,6 +8,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Dynex.Desktop.Games;
+using Dynex.Desktop.Updates;
 using Forms = System.Windows.Forms;
 
 namespace Dynex.Desktop;
@@ -15,6 +16,7 @@ namespace Dynex.Desktop;
 public partial class MainWindow : Window
 {
     private readonly DynexRuntime _runtime;
+    private readonly GitHubUpdateService? _updates;
     private readonly Forms.NotifyIcon _tray;
     private readonly Icon _trayIcon;
     private readonly Stream? _trayIconStream;
@@ -24,16 +26,18 @@ public partial class MainWindow : Window
     private bool _loading = true;
     private bool _settingUp;
     private bool _refreshingProcesses;
+    private bool _savingAutoUpdate;
     private IReadOnlyList<HistoryPoint> _lastHistory = Array.Empty<HistoryPoint>();
     private double? _historyPointerRatio;
     private const int WmGetMinMaxInfo = 0x0024;
     private const uint MonitorDefaultToNearest = 2;
 
-    public MainWindow(DynexRuntime runtime)
+    public MainWindow(DynexRuntime runtime, GitHubUpdateService? updates = null)
     {
         InitializeComponent();
         DeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
         _runtime = runtime;
+        _updates = updates;
         Icon trayIcon;
         Stream? iconStream = null;
         var ownsTrayIcon = false;
@@ -58,7 +62,10 @@ public partial class MainWindow : Window
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
         _runtime.Updated += Runtime_Updated;
+        if (_updates is not null) _updates.Changed += UpdateStatus_Changed;
         LoadSettings(_runtime.Settings);
+        CheckUpdatesButton.IsEnabled = _updates is not null;
+        RenderUpdateStatus();
         if (_runtime.Snapshot is { } current) RenderSnapshot(current);
         ApplyResponsiveScale();
     }
@@ -69,11 +76,13 @@ public partial class MainWindow : Window
         _loading = true;
         RenderCapacity();
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
+        AutoUpdateCheck.IsChecked = s.AutoUpdate;
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode switch { GamingMode.Auto => 0, GamingMode.On => 1, _ => 2 };
         _loading = false;
+        _updates?.SetEnabled(s.AutoUpdate);
     }
 
     private async void SaveSettings_Click(object sender, RoutedEventArgs e)
@@ -84,13 +93,68 @@ public partial class MainWindow : Window
             var next = current with
             {
                 AutoConnectLan = AutoConnectCheck.IsChecked == true,
+                AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
                 GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
             await _runtime.SaveSettingsAsync(next);
+            _updates?.SetEnabled(next.AutoUpdate);
             ErrorText.Text = "Einstellungen gespeichert.";
         });
+    }
+
+    private async void AutoUpdateCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _savingAutoUpdate) return;
+        var requested = AutoUpdateCheck.IsChecked == true;
+        _savingAutoUpdate = true;
+        AutoUpdateCheck.IsEnabled = false;
+        try
+        {
+            await _runtime.SaveAutoUpdatePreferenceAsync(requested);
+            _updates?.SetEnabled(requested);
+            ErrorText.Text = requested ? "Automatische Updates eingeschaltet." : "Automatische Updates ausgeschaltet.";
+        }
+        catch (Exception ex)
+        {
+            _loading = true;
+            AutoUpdateCheck.IsChecked = _runtime.Settings.AutoUpdate;
+            _loading = false;
+            ErrorText.Text = $"Update-Einstellung konnte nicht gespeichert werden: {ex.Message}";
+        }
+        finally
+        {
+            _savingAutoUpdate = false;
+            AutoUpdateCheck.IsEnabled = true;
+            RenderUpdateStatus();
+        }
+    }
+
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updates is null) return;
+        CheckUpdatesButton.IsEnabled = false;
+        try { await _updates.CheckNowAsync(); }
+        catch (Exception ex) { UpdateStatusText.Text = "Updateprüfung fehlgeschlagen: " + ex.Message; }
+        finally { CheckUpdatesButton.IsEnabled = _updates is not null; RenderUpdateStatus(); }
+    }
+
+    private void UpdateStatus_Changed() => Dispatcher.BeginInvoke(new Action(RenderUpdateStatus));
+
+    private void RenderUpdateStatus()
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(RenderUpdateStatus)); return; }
+        if (_updates is null)
+        {
+            UpdateStatusText.Text = _runtime.Settings.AutoUpdate
+                ? "Updates sind vorgemerkt; die Updateprüfung ist in dieser Entwicklungsansicht nicht verfügbar."
+                : "Automatische Updates sind ausgeschaltet.";
+            CheckUpdatesButton.IsEnabled = false;
+            return;
+        }
+        UpdateStatusText.Text = _updates.Status.Message;
+        CheckUpdatesButton.IsEnabled = !_updates.Status.IsBusy;
     }
 
     private async void RunningProcesses_DropDownOpened(object sender, EventArgs e) => await RefreshRunningProcessesAsync();
@@ -525,6 +589,7 @@ public partial class MainWindow : Window
         _allowClose = true;
         _tray.Visible = false;
         _runtime.Updated -= Runtime_Updated;
+        if (_updates is not null) _updates.Changed -= UpdateStatus_Changed;
         try { await _runtime.StopAsync(); await _runtime.DisposeAsync(); }
         catch (Exception ex) { ErrorText.Text = $"Beim sauberen Beenden: {ex.Message}"; }
         _tray.Dispose();

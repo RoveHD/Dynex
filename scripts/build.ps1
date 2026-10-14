@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '0.4.1'
+    [string]$Version = '0.5.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,7 +65,7 @@ Remove-Item -LiteralPath $desktopOut -Recurse -Force
 # Never bundle that MSI, a kernel driver, WinDivert files, or native engine DLLs.
 
 # Ship the available project documentation alongside the application.
-$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md')
+$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md', 'docs/updates.md')
 foreach ($relativePath in $documentation) {
     $source = Join-Path $repoRoot $relativePath
     if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $docsOut (Split-Path $relativePath -Leaf)) -Force }

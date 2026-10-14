@@ -7,12 +7,14 @@ public sealed record UserSettings
     public string DeviceName { get; init; } = Environment.MachineName;
     public double CapacityMbps { get; init; } = 200;
     public DateTimeOffset? CapacityMeasuredAtUtc { get; init; }
+    public bool AutomaticSpeedTestAttempted { get; init; }
     public double BackgroundPercent { get; init; } = 65;
     public double ReservePerGamerMbps { get; init; } = 10;
     public double? ManualLimitMbps { get; init; }
     public bool Adaptive { get; init; } = true;
-    public bool DriverEnabled { get; init; }
-    public bool AutoStart { get; init; }
+    public bool DriverEnabled { get; init; } = true;
+    public bool AutoStart { get; init; } = true;
+    public bool AutoUpdate { get; init; }
     public bool AutoConnectLan { get; init; } = true;
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";

@@ -21,6 +21,9 @@ internal static class DesktopLifecycle
     private static string? verifyLiveArgumentError;
     public static Task<bool> InitializeAsync(string[] args)
     {
+        // A silent update owns this gate from before the parent exits until all
+        // files are replaced. Do not start a second runtime during that handoff.
+        if (UpdateBlocksStart(args)) return Task.FromResult(false);
         var verifyIndex = Array.IndexOf(args, "--verify-live");
         if (verifyIndex >= 0)
         {
@@ -47,6 +50,14 @@ internal static class DesktopLifecycle
         var name = @"Local\DYNEX.Instance." + suffix;
         mutex = new Mutex(true, name, out var created);
         ownsMutex = created;
+        if (args.Contains("--update-idle"))
+        {
+            // Unlike --shutdown, the background installer must never terminate
+            // an unrelated running instance. Its update gate prevents new ones.
+            ExitCode = created ? 0 : 2;
+            Cleanup();
+            return Task.FromResult(false);
+        }
         if (args.Contains("--shutdown"))
         {
             if (!created)
@@ -75,6 +86,13 @@ internal static class DesktopLifecycle
             mutex.Dispose(); mutex = null;
             return Task.FromResult(false);
         }
+        // Close the check/create race: if setup acquired its gate after our
+        // first check, relinquish the instance before any worker can start.
+        if (UpdateBlocksStart(args))
+        {
+            Cleanup();
+            return Task.FromResult(false);
+        }
         stopEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\DYNEX.Stop." + suffix);
         showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\DYNEX.Show." + suffix);
         processMap = MemoryMappedFile.CreateNew(@"Local\DYNEX.Process." + suffix, 16);
@@ -82,6 +100,14 @@ internal static class DesktopLifecycle
         using (var current = Process.GetCurrentProcess())
         { data.Write(0, Environment.ProcessId); data.Write(8, current.StartTime.ToUniversalTime().Ticks); }
         return Task.FromResult(true);
+    }
+    private static bool UpdateBlocksStart(string[] args)
+    {
+        if (args.Contains("--shutdown") || args.Contains("--update-idle") ||
+            args.Contains("--smoke-test") || args.Contains("--test-instance")) return false;
+        if (!Mutex.TryOpenExisting(@"Local\DYNEX.Update", out var gate)) return false;
+        gate.Dispose();
+        return true;
     }
     public static async Task AfterWindowAsync(MainWindow window, DynexRuntime runtime, string[] args)
     {
@@ -150,6 +176,7 @@ internal static class DesktopLifecycle
             Capture(window, Path.Combine(directory, "settings-1000.png"));
             var diagnostic = await runtime.ExportDiagnosticsAsync();
             File.Copy(diagnostic, Path.Combine(directory, "live-diagnostics.json"), true);
+            await VerifyUpdateCheckboxAsync(window, runtime);
             await VerifyRuntimeAsync(runtime);
             await VerifyPeerTrafficAsync(window, runtime, directory);
             await VerifyProcessPickerAsync(window, runtime, directory);
@@ -161,6 +188,23 @@ internal static class DesktopLifecycle
             await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), ex.ToString());
         }
         finally { await window.RequestExitAsync(); }
+    }
+    private static async Task VerifyUpdateCheckboxAsync(MainWindow window, DynexRuntime runtime)
+    {
+        var checkbox = (System.Windows.Controls.CheckBox)window.FindName("AutoUpdateCheck");
+        if (checkbox.IsChecked == true || runtime.Settings.AutoUpdate)
+            throw new InvalidOperationException("Automatische Updates müssen im neuen Profil ausgeschaltet sein.");
+        foreach (var enabled in new[] { true, false })
+        {
+            checkbox.IsChecked = enabled;
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!checkbox.IsEnabled && DateTime.UtcNow < deadline) await Task.Delay(20);
+            if (!checkbox.IsEnabled || runtime.Settings.AutoUpdate != enabled ||
+                new SettingsStore(ProfilePath).Load().AutoUpdate != enabled)
+                throw new InvalidOperationException("Die Update-Checkbox speichert nicht sofort.");
+        }
+        if (((System.Windows.Controls.Button)window.FindName("CheckUpdatesButton")).IsEnabled)
+            throw new InvalidOperationException("Isolierter Smoke-Test darf keine Updateverbindung öffnen.");
     }
     private static async Task VerifyLiveAsync(MainWindow window, DynexRuntime runtime)
     {
