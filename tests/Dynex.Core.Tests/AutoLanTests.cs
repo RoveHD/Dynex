@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Dynex.Core;
@@ -147,6 +147,14 @@ internal static class AutoLanTests
             "AutoLAN reconnects the same persistent identity with a new authenticated session ID");
         await a.StopAsync();
         check(a.Snapshot().Count == 0, "AutoLAN stop immediately clears remote gaming state");
+        await b.StopAsync();
+        await using var unmeasured = new AutoLanPeerService(settingsB with { CapacityMeasured = false }, keyB);
+        unmeasured.Publish(true, 1, game: "Unmeasured AutoLAN game");
+        await a.StartAsync(); await unmeasured.StartAsync();
+        await Until(() => a.Snapshot().Count == 1, "unmeasured AutoLAN peer received");
+        check(a.Snapshot().Single() is { IsGaming: true, DownloadMbps: 1, BudgetProposal: null },
+            "fresh unmeasured AutoLAN peer publishes gaming and throughput without a default budget proposal");
+
     }
 
     private static int FreePort()

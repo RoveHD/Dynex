@@ -37,6 +37,14 @@ internal static class DesktopLifecycle
         if (verifyIndex < 0 && args.Contains("--smoke-test"))
         {
             ProfilePath = Path.Combine(Path.GetTempPath(), "DYNEX-smoke-" + Guid.NewGuid().ToString("N"));
+            // Explicit capacity fixture for isolated layout/coordination tests.
+            // No bandwidth test runs here; real measurement gating is covered by the runtime suite.
+            var smokeStore = new SettingsStore(ProfilePath);
+            smokeStore.Save(smokeStore.Load() with
+            {
+                CapacityMeasuredAtUtc = DateTimeOffset.UnixEpoch,
+                AutomaticSpeedTestAttempted = true
+            });
             return Task.FromResult(true);
         }
         var suffix = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;
@@ -170,10 +178,11 @@ internal static class DesktopLifecycle
             window.Width = 1000; window.Height = 720; window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             Capture(window, Path.Combine(directory, "dashboard-1000.png"));
-            var scroll = FindScroll(window);
-            scroll?.ScrollToBottom(); window.UpdateLayout();
+            window.ShowSettings("general"); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             Capture(window, Path.Combine(directory, "settings-1000.png"));
+            await VerifyPagesAsync(window, runtime, directory);
+            VerifyDevicePaging(window, runtime);
             var diagnostic = await runtime.ExportDiagnosticsAsync();
             File.Copy(diagnostic, Path.Combine(directory, "live-diagnostics.json"), true);
             await VerifyUpdateCheckboxAsync(window, runtime);
@@ -191,6 +200,7 @@ internal static class DesktopLifecycle
     }
     private static async Task VerifyUpdateCheckboxAsync(MainWindow window, DynexRuntime runtime)
     {
+        window.ShowSettings("updates"); window.UpdateLayout();
         var checkbox = (System.Windows.Controls.CheckBox)window.FindName("AutoUpdateCheck");
         if (checkbox.IsChecked == true || runtime.Settings.AutoUpdate)
             throw new InvalidOperationException("Automatische Updates müssen im neuen Profil ausgeschaltet sein.");
@@ -205,6 +215,113 @@ internal static class DesktopLifecycle
         }
         if (((System.Windows.Controls.Button)window.FindName("CheckUpdatesButton")).IsEnabled)
             throw new InvalidOperationException("Isolierter Smoke-Test darf keine Updateverbindung öffnen.");
+    }
+    private static async Task VerifyPagesAsync(MainWindow window, DynexRuntime runtime, string directory)
+    {
+        var originalSettings = runtime.Settings;
+        var names = (System.Windows.Controls.TextBox)window.FindName("ProcessesBox");
+        var originalText = names.Text;
+        names.Text = "Pending-Unsaved-Game";
+        var sizes = new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) };
+        var sections = new Dictionary<string, string[]>
+        {
+            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "ManualLimitBox"],
+            ["games"] = ["ModeCombo", "RunningProcessesBox", "AddProcessButton", "ProcessesBox"],
+            ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox"],
+            ["updates"] = ["AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"]
+        };
+        foreach (var (width, height) in sizes)
+        {
+            window.Width = width; window.Height = height;
+            window.ShowOverview(); window.UpdateLayout();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            AssertPageFits(window, "OverviewPage", ["DownText", "UpText", "LimitText", "DriverText", "HistoryPlot", "RouterPing", "ExternalPing", "DeviceGrid"]);
+            foreach (var name in new[] { "RouterStats", "ExternalStats", "RouterTarget", "ExternalTarget" })
+                AssertVisibleControl(window, "PingPanel", name);
+            foreach (var name in new[] { "QosStatusText", "QosDetailText" })
+                AssertVisibleControl(window, "OverviewPage", name);
+            if (!window.IsOverviewVisible || ((FrameworkElement)window.FindName("SettingsPage")).IsVisible)
+                throw new Exception("Die Übersicht ist nicht sauber von den Einstellungen getrennt.");
+            if (((FrameworkElement)window.FindName("HistoryPlot")).ActualHeight < 50)
+                throw new Exception("Der Pingverlauf wird beim Verkleinern unlesbar.");
+            Capture(window, Path.Combine(directory, $"overview-{width}x{height}.png"));
+            foreach (var (section, controls) in sections)
+            {
+                window.ShowSettings(section); window.UpdateLayout();
+                await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                AssertPageFits(window, "SettingsPage", controls);
+                if (window.IsOverviewVisible || ((FrameworkElement)window.FindName("OverviewPage")).IsVisible)
+                    throw new Exception("Beim Öffnen der Einstellungen bleibt die Übersicht sichtbar.");
+                AssertVisibleControl(window, "SettingsPage", "SettingsSaveButton");
+                Capture(window, Path.Combine(directory, $"settings-{section}-{width}x{height}.png"));
+            }
+        }
+        if (names.Text != "Pending-Unsaved-Game" || runtime.Settings != originalSettings)
+            throw new Exception("Seitenwechsel verliert ungespeicherte Eingaben oder speichert ohne Aktion.");
+        names.Text = originalText;
+        window.ShowOverview(); window.UpdateLayout();
+        await File.WriteAllTextAsync(Path.Combine(directory, "pages-result.txt"),
+            "PASS: overview and all four settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; no page scrolling; controls reachable; navigation preserves unsaved fields and settings.\n");
+    }
+    private static void AssertVisibleControl(MainWindow window, string pageName, string controlName)
+    {
+        var page = (FrameworkElement)window.FindName(pageName);
+        var element = window.FindName(controlName) as FrameworkElement
+            ?? throw new Exception("Steuerelement fehlt: " + controlName);
+        if (!element.IsVisible || element.ActualWidth < 1 || element.ActualHeight < 1)
+            throw new Exception("Steuerelement ist nicht sichtbar: " + controlName);
+        var bounds = element.TransformToAncestor(page).TransformBounds(new Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        if (bounds.Left < -1 || bounds.Top < -1 || bounds.Right > page.ActualWidth + 1 || bounds.Bottom > page.ActualHeight + 1)
+            throw new Exception($"{controlName} passt nicht in {pageName} bei {window.Width}x{window.Height}: {bounds}, Seite {page.ActualWidth}x{page.ActualHeight}.");
+    }
+    private static void VerifyDevicePaging(MainWindow window, DynexRuntime runtime)
+    {
+        var snapshot = runtime.Snapshot ?? throw new Exception("Snapshot für Geräteseiten fehlt.");
+        var render = typeof(MainWindow).GetMethod("RenderSnapshot", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var rows = Enumerable.Range(1, 13).Select(i => new DeviceView($"TEST-PC-{i:00}", $"192.168.1.{i}", false, "", 12.5, "Testdaten", i, i / 2d)).ToArray();
+        window.Width = 900; window.Height = 650; window.ShowOverview(); window.UpdateLayout();
+        var grid = (System.Windows.Controls.DataGrid)window.FindName("DeviceGrid");
+        var next = (System.Windows.Controls.Button)window.FindName("NextDevicesButton");
+        var previous = (System.Windows.Controls.Button)window.FindName("PreviousDevicesButton");
+        try
+        {
+            // Keep the synthetic render and clicks synchronous on the dispatcher;
+            // queued live updates cannot replace the fixture between assertions.
+            render.Invoke(window, [snapshot with { Devices = rows, ParticipantCount = rows.Length }]);
+            window.UpdateLayout();
+            if (grid.Items.Count < 3) throw new Exception("Im kleinsten Fenster sind weniger als drei PCs sichtbar.");
+            var seen = new HashSet<string>();
+            for (var page = 0; page < 13; page++)
+            {
+                foreach (var item in grid.Items.OfType<DeviceView>()) seen.Add(item.Name);
+                AssertPageFits(window, "OverviewPage", ["DeviceGrid", "NextDevicesButton", "PreviousDevicesButton"]);
+                if (!next.IsEnabled) break;
+                next.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+                window.UpdateLayout();
+            }
+            if (seen.Count != rows.Length || !previous.IsEnabled)
+                throw new Exception("Nicht alle PCs sind über die Geräteseiten erreichbar.");
+            var pageRows = grid.Items.OfType<DeviceView>().Select(d => d.Name).ToArray();
+            render.Invoke(window, [snapshot with { Devices = rows, ParticipantCount = rows.Length }]);
+            window.UpdateLayout();
+            if (!grid.Items.OfType<DeviceView>().Select(d => d.Name).SequenceEqual(pageRows))
+                throw new Exception("Ein Messwert-Update setzt die gewählte Geräteseite zurück.");
+        }
+        finally { render.Invoke(window, [snapshot]); window.UpdateLayout(); }
+    }
+    private static void AssertPageFits(MainWindow window, string pageName, string[] controls)
+    {
+        var page = (FrameworkElement)window.FindName(pageName);
+        foreach (var name in controls) AssertVisibleControl(window, pageName, name);
+        void CheckScroll(DependencyObject node)
+        {
+            if (node is FrameworkElement hidden && !hidden.IsVisible) return;
+            if (node is System.Windows.Controls.ScrollViewer scroll &&
+                (scroll.ScrollableWidth > 1 || scroll.ScrollableHeight > 1))
+                throw new Exception($"{pageName} benötigt Scrollen bei {window.Width}x{window.Height}: {scroll.ScrollableWidth}x{scroll.ScrollableHeight}.");
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) CheckScroll(VisualTreeHelper.GetChild(node, i));
+        }
+        CheckScroll(page);
     }
     private static async Task VerifyLiveAsync(MainWindow window, DynexRuntime runtime)
     {
@@ -337,6 +454,7 @@ internal static class DesktopLifecycle
     }
     private static async Task VerifyPeerTrafficAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
+        window.ShowOverview(); window.UpdateLayout();
         // Real encrypted transport and bindings, synthetic rates. Only the isolated smoke profile changes.
         await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = false });
         int port;
@@ -379,7 +497,7 @@ internal static class DesktopLifecycle
         foreach (var width in new[] { 900, 1240, 1440, 1920, 2560 })
         {
             window.Width = width; window.Height = 940;
-            FindScroll(window)?.ScrollToTop(); window.UpdateLayout();
+            window.ShowOverview(); window.UpdateLayout();
             grid.BringIntoView();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             window.UpdateLayout();
@@ -415,14 +533,13 @@ internal static class DesktopLifecycle
         var refresh = (System.Windows.Controls.Button)window.FindName("RefreshProcessesButton");
         var add = (System.Windows.Controls.Button)window.FindName("AddProcessButton");
         var namesBox = (System.Windows.Controls.TextBox)window.FindName("ProcessesBox");
-        var advanced = (System.Windows.Controls.Expander)window.FindName("AdvancedExpander");
         const string original = "cs2.EXE; Existing-Game";
         namesBox.Text = original;
-        advanced.IsExpanded = true;
+        window.ShowSettings("games");
         foreach (var width in new[] { 900, 1440 })
         {
             window.Width = width; window.Height = 940; window.UpdateLayout();
-            FindScroll(window)?.ScrollToBottom(); window.UpdateLayout();
+            window.ShowSettings("games"); window.UpdateLayout();
             picker.IsDropDownOpen = true; // Exercise the real open -> refresh event, not only the helper.
             var deadline = Stopwatch.StartNew();
             while (!refresh.IsEnabled)
@@ -450,8 +567,12 @@ internal static class DesktopLifecycle
         add.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         var expected = original + "; DynexPickerTest";
         if (namesBox.Text != expected) throw new Exception("Prozessauswahl überschreibt vorhandene Namen.");
-        await runtime.SaveSettingsAsync(runtime.Settings with { GameProcesses = namesBox.Text });
-        if (new SettingsStore(ProfilePath).Load().GameProcesses != expected) throw new Exception("Ausgewählte Prozessnamen werden nicht gespeichert.");
+        var save = (System.Windows.Controls.Button)window.FindName("SettingsSaveButton");
+        save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        var saveDeadline = Stopwatch.StartNew();
+        while (runtime.Settings.GameProcesses != expected && saveDeadline.Elapsed < TimeSpan.FromSeconds(8)) await Task.Delay(25);
+        if (new SettingsStore(ProfilePath).Load().GameProcesses != expected || runtime.Settings.GameProcesses != expected)
+            throw new Exception("Der Speichern-Knopf auf der Spieleseite übernimmt die ausgewählten Prozesse nicht.");
         await File.WriteAllTextAsync(Path.Combine(directory, "process-picker-result.txt"),
             "PASS: live process dropdown refresh on open; 900/1440 rendering; no selection disabled; duplicate protection; append preserves manual text; isolated settings persistence. No game process launched.\n");
     }
@@ -461,13 +582,6 @@ internal static class DesktopLifecycle
         bitmap.Render(element);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var stream = File.Create(path); encoder.Save(stream);
-    }
-    private static System.Windows.Controls.ScrollViewer? FindScroll(DependencyObject element)
-    {
-        if (element is System.Windows.Controls.ScrollViewer scroll) return scroll;
-        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
-            if (FindScroll(VisualTreeHelper.GetChild(element, i)) is { } found) return found;
-        return null;
     }
     public static void Cleanup()
     {

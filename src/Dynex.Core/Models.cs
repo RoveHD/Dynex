@@ -12,6 +12,7 @@ public sealed record DynexSettings
     public bool LoopbackOnly { get; init; }
     public IReadOnlyList<IPEndPoint> DirectPeers { get; init; } = Array.Empty<IPEndPoint>();
     public double LineMbps { get; init; } = 200;
+    public bool CapacityMeasured { get; init; } = true;
     public double HeadroomPercent { get; init; } = 15;
     public double GamingReserveMbps { get; init; } = 12;
     public double? ManualDownloadLimitMbps { get; init; }

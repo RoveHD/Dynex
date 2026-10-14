@@ -210,7 +210,7 @@ public sealed class AutoLanPeerService : IPeerService
                         _settings.DeviceName, local.Gaming, throughputIsFresh ? local.Download : null, local.Latency, local.Limit, local.Game, local.Shaper,
                         local.Baseline, local.Target, local.SampleSequence > 0 ? local.SampleSequence : null, local.BaselineAt,
                         throughputIsFresh ? local.Upload : null,
-                        throughputIsFresh ? DownloadBudgetProposal.FromSettings(_settings) : null);
+                        throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null);
                     foreach (var session in _channels.Values)
                         if (EndpointAllowed(session.Endpoint.Address)) statuses.Add((_crypto.Encrypt(session.Crypto, wire), session.Endpoint));
                 }

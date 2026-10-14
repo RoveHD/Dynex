@@ -1,6 +1,6 @@
 # Updates von GitHub
 
-Unter **Einstellungen** gibt es **Updates automatisch im Hintergrund herunterladen**.
+Unter **Einstellungen → Updates** gibt es **Updates automatisch im Hintergrund herunterladen**.
 Der Haken ist anfangs aus. Änderungen werden sofort gespeichert; ein zusätzlicher
 Klick auf „Einstellungen speichern“ ist dafür nicht nötig. Die laufende
 Downloadbegrenzung wird beim Umschalten nicht neu gestartet.

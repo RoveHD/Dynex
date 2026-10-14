@@ -29,7 +29,7 @@ public partial class App : System.Windows.Application
                 _updates = new GitHubUpdateService(
                     Path.Combine(new SettingsStore().DirectoryPath, "updates"),
                     typeof(App).Assembly.GetName().Version ?? new Version(0, 0, 0),
-                    () => _runtime.IsSpeedTestRunning || _runtime.Snapshot is not { } snapshot ||
+                    () => _runtime.IsSpeedTestRunning || _runtime.IsSpeedTestWaiting || _runtime.Snapshot is not { } snapshot ||
                           snapshot.IsGaming || snapshot.GamingCount > 0);
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
                 if (!e.Args.Contains("--skip-update-once") && !e.Args.Contains("--verify-live"))

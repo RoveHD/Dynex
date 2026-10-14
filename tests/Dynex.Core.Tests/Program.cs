@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Dynex.Core;
@@ -247,6 +247,26 @@ await Until(() => a.Snapshot().Count == 64, "bounded peer table fills");
 Check(a.Snapshot().Count == 64, "authenticated peer flooding cannot exceed the 64-peer table bound");
 await a.StopAsync();
 Check(a.Snapshot().Count == 0, "stop immediately clears remote state");
+// A fresh gaming advertisement must omit unmeasured default capacity as well.
+var unknownPort = FreePort();
+var observerPort = FreePort();
+while (observerPort == unknownPort) observerPort = FreePort();
+await using (var unknown = new PeerService(aSettings with
+{
+    CapacityMeasured = false, Port = unknownPort, DeviceId = Guid.NewGuid(),
+    DirectPeers = [new(IPAddress.Loopback, observerPort)]
+}))
+await using (var observer = new PeerService(aSettings with
+{
+    Port = observerPort, DeviceId = Guid.NewGuid(), DirectPeers = []
+}))
+{
+    unknown.Publish(true, 1, game: "Unmeasured game");
+    await observer.StartAsync(); await unknown.StartAsync();
+    await Until(() => observer.Snapshot().Count == 1, "unmeasured peer received");
+    Check(observer.Snapshot().Single() is { IsGaming: true, DownloadMbps: 1, BudgetProposal: null },
+        "fresh unmeasured PSK peer publishes gaming and throughput without a default budget proposal");
+}
 await AutoLanTests.Run(Check);
 await SharedBudgetTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");

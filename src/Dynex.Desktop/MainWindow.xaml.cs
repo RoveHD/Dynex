@@ -10,6 +10,7 @@ using System.Windows.Shapes;
 using Dynex.Desktop.Games;
 using Dynex.Desktop.Updates;
 using Forms = System.Windows.Forms;
+using Control = System.Windows.Controls.Control;
 
 namespace Dynex.Desktop;
 
@@ -28,6 +29,8 @@ public partial class MainWindow : Window
     private bool _refreshingProcesses;
     private bool _savingAutoUpdate;
     private IReadOnlyList<HistoryPoint> _lastHistory = Array.Empty<HistoryPoint>();
+    private IReadOnlyList<DeviceView> _deviceSnapshot = Array.Empty<DeviceView>();
+    private int _devicePage;
     private double? _historyPointerRatio;
     private const int WmGetMinMaxInfo = 0x0024;
     private const uint MonitorDefaultToNearest = 2;
@@ -67,6 +70,7 @@ public partial class MainWindow : Window
         CheckUpdatesButton.IsEnabled = _updates is not null;
         RenderUpdateStatus();
         if (_runtime.Snapshot is { } current) RenderSnapshot(current);
+        ShowOverview();
         ApplyResponsiveScale();
     }
 
@@ -219,17 +223,19 @@ public partial class MainWindow : Window
     {
         var settings = _runtime.Settings;
         var running = _runtime.IsSpeedTestRunning;
-        CapacityBox.Text = settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture);
+        var waiting = _runtime.IsSpeedTestWaiting;
+        CapacityBox.Text = settings.CapacityMeasuredAtUtc.HasValue
+            ? settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture) : "—";
         CapacityBox.Opacity = settings.CapacityMeasuredAtUtc.HasValue ? 1 : 0.6;
-        SpeedTestButton.IsEnabled = !running;
-        SpeedTestButton.Content = running ? "Messung läuft …" : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
+        SpeedTestButton.IsEnabled = !running && !waiting;
+        SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? "Wartet auf Spielpause" : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
         SpeedTestProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         var measured = settings.CapacityMeasuredAtUtc is { } at
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}. "
-            : "Noch nicht gemessen · vorläufiger Wert. ";
-        SpeedTestHint.Text = running ? _runtime.SpeedTestMessage : measured +
+            : "Noch nicht gemessen. ";
+        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
             (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
-                ? "DYNEX ermittelt den Download einmal automatisch. Für die Messung andere Downloads möglichst pausieren."
+                ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits benötigen eine erfolgreiche Messung."
                 : _runtime.SpeedTestMessage);
     }
 
@@ -355,7 +361,8 @@ public partial class MainWindow : Window
             ? "Spiele und Sprachchat bleiben frei. Windows bestätigt das Einschalten."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
-        DeviceGrid.ItemsSource = s.Devices;
+        _deviceSnapshot = s.Devices;
+        RenderDevicePage();
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
             ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
@@ -369,6 +376,86 @@ public partial class MainWindow : Window
         DrawHistory(s.History);
         HistoryCompare.Text = $"Ohne Begrenzung: {CompareHistory(s.History, false)}\nMit Begrenzung: {CompareHistory(s.History, true)}";
         HistoryCompare.ToolTip = "Vergleich gemessener Internet-Pings. Unterschiedliche Werte allein beweisen noch keine Verbesserung durch DYNEX.";
+    }
+
+    private void RenderDevicePage()
+    {
+        const int pageSize = 3;
+        var pageCount = Math.Max(1, (int)Math.Ceiling(_deviceSnapshot.Count / (double)pageSize));
+        _devicePage = Math.Clamp(_devicePage, 0, pageCount - 1);
+        DeviceGrid.ItemsSource = _deviceSnapshot.Skip(_devicePage * pageSize).Take(pageSize).ToArray();
+        DevicesPageText.Text = $"Seite {_devicePage + 1} / {pageCount}";
+        PreviousDevicesButton.IsEnabled = _devicePage > 0;
+        NextDevicesButton.IsEnabled = _devicePage + 1 < pageCount;
+    }
+
+    private void PreviousDevices_Click(object sender, RoutedEventArgs e)
+    {
+        _devicePage = Math.Max(0, _devicePage - 1);
+        RenderDevicePage();
+    }
+
+    private void NextDevices_Click(object sender, RoutedEventArgs e)
+    {
+        _devicePage++;
+        RenderDevicePage();
+    }
+
+    internal bool IsOverviewVisible => OverviewPage.Visibility == Visibility.Visible;
+
+    internal void ShowOverview()
+    {
+        OverviewPage.Visibility = Visibility.Visible;
+        SettingsPage.Visibility = Visibility.Collapsed;
+        OverviewNavButton.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
+        OverviewNavButton.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
+        SettingsNavButton.ClearValue(Control.BackgroundProperty);
+        SettingsNavButton.ClearValue(Control.BorderBrushProperty);
+    }
+
+    internal void ShowSettings(string section = "general")
+    {
+        section = section.Trim().ToLowerInvariant();
+        if (section is not ("general" or "games" or "network" or "updates"))
+            throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
+        OverviewPage.Visibility = Visibility.Collapsed;
+        SettingsPage.Visibility = Visibility.Visible;
+        OverviewNavButton.ClearValue(Control.BackgroundProperty);
+        OverviewNavButton.ClearValue(Control.BorderBrushProperty);
+        SettingsNavButton.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
+        SettingsNavButton.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
+        GeneralSettingsSection.Visibility = Visibility.Collapsed;
+        GamesSettingsSection.Visibility = Visibility.Collapsed;
+        NetworkSettingsSection.Visibility = Visibility.Collapsed;
+        UpdatesSettingsSection.Visibility = Visibility.Collapsed;
+        foreach (var button in SettingsSectionsNav.Children.OfType<System.Windows.Controls.Button>())
+        {
+            if (Equals(button.Tag, section))
+            {
+                button.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
+                button.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
+            }
+            else
+            {
+                button.ClearValue(Control.BackgroundProperty);
+                button.ClearValue(Control.BorderBrushProperty);
+            }
+        }
+        switch (section)
+        {
+            case "general": GeneralSettingsSection.Visibility = Visibility.Visible; break;
+            case "games": GamesSettingsSection.Visibility = Visibility.Visible; break;
+            case "network": NetworkSettingsSection.Visibility = Visibility.Visible; break;
+            case "updates": UpdatesSettingsSection.Visibility = Visibility.Visible; break;
+            default: throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
+        }
+    }
+
+    private void OverviewNav_Click(object sender, RoutedEventArgs e) => ShowOverview();
+    private void SettingsNav_Click(object sender, RoutedEventArgs e) => ShowSettings();
+    private void SettingsSection_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { Tag: string section }) ShowSettings(section);
     }
     private static void SetPing(PingView ping, TextBlock current, TextBlock stats, TextBlock target)
     {
@@ -503,41 +590,34 @@ public partial class MainWindow : Window
     {
         if (!IsInitialized) return;
         var width = ActualWidth > 0 ? ActualWidth : Width;
-        var scale = Math.Clamp(1 + (width - 1240) / 1320 * .33, 1, 1.33);
+        var height = ActualHeight > 0 ? ActualHeight : Height;
+        var scale = Math.Clamp(Math.Min(width / 1440, height / 940), 1, 1.33);
         var resources = System.Windows.Application.Current.Resources;
         resources["UiSmallFontSize"] = 12 * scale;
         resources["UiBodyFontSize"] = 14 * scale;
         resources["UiSectionFontSize"] = 16 * scale;
-        resources["UiMetricFontSize"] = 24 * scale;
+        resources["UiMetricFontSize"] = 22 * scale;
         resources["UiHeroFontSize"] = 32 * scale;
         // Keep headers and live values readable as the rest of the dashboard grows.
         // The device-name column keeps the remaining space and its existing minimum.
         var columnWidths = new[] { 0d, 125, 105, 130, 125, 115 };
         for (var column = 1; column < DeviceGrid.Columns.Count && column < columnWidths.Length; column++)
             DeviceGrid.Columns[column].Width = new DataGridLength(columnWidths[column] * scale);
-        var stacked = width < 1100;
-        StatusGrid.Columns = stacked ? 2 : 4;
-        PingLayout.ColumnDefinitions[0].Width = new GridLength(1.2, GridUnitType.Star);
-        PingLayout.ColumnDefinitions[1].Width = new GridLength(stacked ? 0 : .8, GridUnitType.Star);
-        PingLayout.RowDefinitions[0].Height = GridLength.Auto;
-        PingLayout.RowDefinitions[1].Height = stacked ? GridLength.Auto : new GridLength(0);
-        Grid.SetColumnSpan(ChartPanel, stacked ? 2 : 1);
-        Grid.SetColumn(PingPanel, stacked ? 0 : 1);
-        Grid.SetRow(PingPanel, stacked ? 1 : 0);
-        Grid.SetColumnSpan(PingPanel, stacked ? 2 : 1);
-        SettingsLayout.ColumnDefinitions[0].Width = new GridLength(1.05, GridUnitType.Star);
-        SettingsLayout.ColumnDefinitions[1].Width = new GridLength(stacked ? 0 : .95, GridUnitType.Star);
-        SettingsLayout.RowDefinitions[0].Height = GridLength.Auto;
-        SettingsLayout.RowDefinitions[1].Height = stacked ? GridLength.Auto : new GridLength(0);
-        Grid.SetColumnSpan(SettingsPanel, stacked ? 2 : 1);
-        Grid.SetColumn(AutomationPanel, stacked ? 0 : 1);
-        Grid.SetRow(AutomationPanel, stacked ? 1 : 0);
-        Grid.SetColumnSpan(AutomationPanel, stacked ? 2 : 1);
-        HistoryPlot.Height = HistoryCanvas.Height = HistoryHoverCanvas.Height = 150 * scale;
+        StatusGrid.Columns = 4;
+        MetricsRow.Height = new GridLength(88 * scale);
+        DevicesRow.Height = new GridLength(202 * scale);
+        DeviceGrid.RowHeight = 29 * scale;
+        DeviceGrid.ColumnHeaderHeight = 27 * scale;
+        PingLayout.ColumnDefinitions[0].Width = new GridLength(1.7, GridUnitType.Star);
+        PingLayout.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
+        DrawHistory(_lastHistory);
     }
 
     private void Window_SourceInitialized(object? sender, EventArgs e)
     {
+        var workArea = SystemParameters.WorkArea;
+        Width = Math.Min(Width, workArea.Width);
+        Height = Math.Min(Height, workArea.Height);
         if (PresentationSource.FromVisual(this) is HwndSource source) source.AddHook(WindowProc);
     }
     private static IntPtr WindowProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)

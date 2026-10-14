@@ -1,4 +1,5 @@
-using System.IO;
+﻿using System.IO;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -24,11 +25,20 @@ public sealed class DynexRuntime : IAsyncDisposable
     private string? plannerPolicy;
     private readonly bool isolated;
     private readonly ISpeedTestService speedTest;
+    private readonly Func<string, IReadOnlyList<GameDetectionResult>> scanGames;
     private readonly bool automaticSpeedTestEnabled;
     private readonly object speedTestSync = new();
     private CancellationTokenSource? speedTestCancellation;
     private volatile Task? speedTestTask;
     private volatile bool stopping;
+    private long peerStartedAt;
+    private volatile bool monitoringReady;
+    private volatile bool speedTestLoadStarted;
+    private volatile bool pendingGamingSettings;
+    private string? peerStartError;
+    private TaskCompletionSource monitoringPulse = NewPulse();
+    public bool IsSpeedTestWaiting { get; private set; }
+    private static TaskCompletionSource NewPulse() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsSpeedTestRunning { get; private set; }
     public string SpeedTestMessage { get; private set; } = "";
     public UserSettings Settings { get; private set; }
@@ -36,11 +46,13 @@ public sealed class DynexRuntime : IAsyncDisposable
     public RuntimeSnapshot? Snapshot { get; private set; }
     public event Action<RuntimeSnapshot>? Updated;
     public DynexRuntime(string? profilePath = null) : this(profilePath, null) { }
-    internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest)
+    internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest,
+        Func<string, IReadOnlyList<GameDetectionResult>>? scanGames = null)
     {
         isolated = profilePath != null;
         PeerPort = isolated ? GetIsolatedPeerPort() : 39274;
         this.speedTest = speedTest ?? new SpeedTestService();
+        this.scanGames = scanGames ?? GameDetector.ScanAll;
         automaticSpeedTestEnabled = !isolated || speedTest is not null;
         store = new(profilePath);
         Settings = store.Load();
@@ -50,6 +62,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     {
         DeviceId = Settings.AutoConnectLan ? AutoLanIdentity.GetDeviceId(identity.SigningPrivateKeyBase64!) : identity.DeviceId,
         DeviceName = Environment.MachineName, GroupKeyBase64 = identity.GroupKey,
+        CapacityMeasured = Settings.CapacityMeasuredAtUtc is not null,
         LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - Settings.BackgroundPercent,
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
         AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort,
@@ -68,24 +81,9 @@ public sealed class DynexRuntime : IAsyncDisposable
             if (started) return;
             stopping = false;
             started = true;
+            await StartWorkerAsync();
             if (automaticSpeedTestEnabled && !Settings.AutomaticSpeedTestAttempted && Settings.CapacityMeasuredAtUtc is null)
-            {
-                var attempted = Settings with { AutomaticSpeedTestAttempted = true };
-                try
-                {
-                    store.Save(attempted);
-                }
-                catch (Exception ex) when (ex is not OutOfMemoryException)
-                {
-                    SpeedTestMessage = $"Automatischer Speedtest nicht gestartet: Der Versuch konnte nicht gespeichert werden ({ex.Message}). Du kannst ihn manuell starten.";
-                    await StartWorkerAsync();
-                    PublishSpeedTestSnapshot();
-                    return;
-                }
-                Settings = attempted;
-                _ = BeginSpeedTest();
-            }
-            else await StartWorkerAsync();
+                _ = BeginSpeedTest(automatic: true);
         }
         finally { lifecycle.Release(); }
     }
@@ -93,11 +91,17 @@ public sealed class DynexRuntime : IAsyncDisposable
     {
         var observed = speedTestTask;
         var running = observed;
-        if (running is { IsCompleted: false }) { await running; return; }
+        if (running is { IsCompleted: false } && IsSpeedTestRunning) { await running; return; }
         await lifecycle.WaitAsync();
         try
         {
             if (!started || stopping) throw new InvalidOperationException("DYNEX wird gerade beendet.");
+            if (GamingBlocksSpeedTest())
+            {
+                SpeedTestMessage = "Speedtest nicht gestartet: Auf diesem oder einem verbundenen PC ist ein Spiel offen. Nach dem Spielen erneut messen.";
+                PublishSpeedTestSnapshot();
+                return;
+            }
             // A concurrent caller may wait behind the entire test. Share the test that
             // started since this call, even if it completed before this gate was acquired.
             running = speedTestTask is { } pending && (!pending.IsCompleted || !ReferenceEquals(pending, observed))
@@ -107,61 +111,139 @@ public sealed class DynexRuntime : IAsyncDisposable
         await running;
     }
     // Called with the lifecycle gate held. The task waits for that gate before doing any work.
-    private Task BeginSpeedTest()
+    private Task BeginSpeedTest(bool automatic = false)
     {
-        IsSpeedTestRunning = true;
-        SpeedTestMessage = "Download-Speedtest läuft · maximal 10 Sekunden / 256 MiB. Die lokale Begrenzung pausiert.";
+        IsSpeedTestWaiting = true;
+        SpeedTestMessage = "Speedtest wartet auf den Spielstatus im LAN.";
         lock (speedTestSync) speedTestCancellation = new CancellationTokenSource();
-        speedTestTask = MeasureCapacityCoreAsync(speedTestCancellation.Token);
+        speedTestTask = MeasureCapacityCoreAsync(automatic, speedTestCancellation.Token);
         PublishSpeedTestSnapshot();
         return speedTestTask;
     }
-    private async Task MeasureCapacityCoreAsync(CancellationToken token)
+    private bool GamingBlocksSpeedTest(UserSettings? settings = null)
     {
-        await lifecycle.WaitAsync();
+        settings ??= Settings;
+        return settings.Mode == GamingMode.On || scanGames(settings.GameProcesses).Count != 0 ||
+            peers?.Snapshot().Any(p => p.IsGaming || !string.IsNullOrEmpty(p.Game)) == true;
+    }
+    private void CancelSpeedTestForGaming()
+    {
+        lock (speedTestSync) speedTestCancellation?.Cancel();
+    }
+    private void PeerStatusChanged()
+    {
+        if (speedTestLoadStarted && GamingBlocksSpeedTest()) CancelSpeedTestForGaming();
+        Interlocked.Exchange(ref monitoringPulse, NewPulse()).TrySetResult();
+    }
+    private async Task MeasureCapacityCoreAsync(bool automatic, CancellationToken token)
+    {
+        var gateHeld = false;
+        var protectionPaused = false;
         try
         {
-            token.ThrowIfCancellationRequested();
-            await StopWorkerAsync();
-            // Closing the helper waits for its exit, so a prior rate cannot throttle this test.
-            await shaper.StopAsync(requireExit: true);
-            token.ThrowIfCancellationRequested();
-            var result = await speedTest.MeasureAsync(token);
-            token.ThrowIfCancellationRequested();
-            var measured = SettingsStore.Normalize(Settings with
+            while (true)
             {
-                CapacityMbps = Math.Round(result.DownloadMbps, 2),
-                CapacityMeasuredAtUtc = DateTimeOffset.UtcNow
-            });
-            SettingsStore.Validate(measured);
-            store.Save(measured);
-            Settings = measured;
-            SpeedTestMessage = "Automatisch gemessen und gespeichert. Bei einem Anschlusswechsel erneut messen.";
+                await lifecycle.WaitAsync(token);
+                gateHeld = true;
+                pendingGamingSettings = false;
+                token.ThrowIfCancellationRequested();
+                // An empty snapshot is meaningful only after discovery's heartbeat exchange.
+                var discoveryAvailable = peerStartError is null && peers?.NetworkStatus is null && monitoringReady;
+                var discoveryReady = discoveryAvailable && Stopwatch.GetElapsedTime(peerStartedAt) >= CoreSettings().HeartbeatInterval * (Settings.AutoConnectLan ? 2 : 1);
+                var pulse = monitoringPulse.Task;
+                if (discoveryReady && !GamingBlocksSpeedTest())
+                {
+                    IsSpeedTestWaiting = false;
+                    IsSpeedTestRunning = true;
+                    SpeedTestMessage = "Download-Speedtest läuft · maximal 10 Sekunden / 256 MiB. Die lokale Begrenzung pausiert.";
+                    PublishSpeedTestSnapshot();
+                    // Closing the helper waits for its exit, so a prior rate cannot throttle this test.
+                    protectionPaused = true;
+                    await shaper.StopAsync(requireExit: true);
+                    token.ThrowIfCancellationRequested();
+                    if (!pendingGamingSettings && !GamingBlocksSpeedTest())
+                    {
+                        if (automatic)
+                        {
+                            var attempted = Settings with { AutomaticSpeedTestAttempted = true };
+                            store.Save(attempted);
+                            Settings = attempted;
+                        }
+                        // Monitoring/peer reception remain alive and cancel only actual load.
+                        speedTestLoadStarted = true;
+                        var result = await speedTest.MeasureAsync(token);
+                        token.ThrowIfCancellationRequested();
+                        if (GamingBlocksSpeedTest()) throw new OperationCanceledException(token);
+                        var measured = SettingsStore.Normalize(Settings with
+                        {
+                            CapacityMbps = Math.Round(result.DownloadMbps, 2),
+                            CapacityMeasuredAtUtc = DateTimeOffset.UtcNow
+                        });
+                        SettingsStore.Validate(measured);
+                        store.Save(measured);
+                        Settings = measured;
+                        SpeedTestMessage = "Gemessen und gespeichert. Bei einem Anschlusswechsel erneut messen.";
+                        break;
+                    }
+                    // Gaming appeared during helper release, before any test was started.
+                    // Restore protection and continue waiting without consuming the attempt.
+                    IsSpeedTestRunning = false;
+                    IsSpeedTestWaiting = true;
+                    await StopWorkerAsync();
+                    if (started && !stopping) await StartWorkerAsync();
+                    protectionPaused = false;
+                }
+                SpeedTestMessage = !discoveryAvailable
+                    ? "Speedtest wartet: Der Spielstatus und die LAN-Verbindung konnten noch nicht zuverlässig geprüft werden."
+                    : discoveryReady
+                    ? "Automatischer Speedtest wartet, bis auf diesem und verbundenen PCs kein Spiel mehr offen ist."
+                    : "Speedtest wartet auf den Spielstatus im LAN.";
+                PublishSpeedTestSnapshot();
+                lifecycle.Release(); gateHeld = false;
+                await pulse.WaitAsync(token);
+            }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
-        { SpeedTestMessage = "Speedtest abgebrochen. Der bisherige Wert bleibt erhalten."; }
+        catch (OperationCanceledException)
+        { SpeedTestMessage = "Speedtest abgebrochen. Der bisherige Wert bleibt erhalten. Nach dem Spielen kannst du manuell erneut messen."; }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         { SpeedTestMessage = $"Speedtest fehlgeschlagen: {ex.Message} Der bisherige Wert bleibt erhalten. Bitte erneut messen."; }
         finally
         {
-            IsSpeedTestRunning = false;
-            lock (speedTestSync) { speedTestCancellation?.Dispose(); speedTestCancellation = null; }
-            // The artificial load must not become an adaptive latency baseline.
-            activePlanner = null; plannerPolicy = null;
+            if (!gateHeld) await lifecycle.WaitAsync();
             try
             {
+                speedTestLoadStarted = false;
+                IsSpeedTestRunning = false;
+                IsSpeedTestWaiting = false;
+                lock (speedTestSync) { speedTestCancellation?.Dispose(); speedTestCancellation = null; }
+                // The artificial load must not become an adaptive latency baseline.
+                if (protectionPaused)
+                {
+                    await StopWorkerAsync();
+                    activePlanner = null; plannerPolicy = null;
+                    if (started && !stopping) await StartWorkerAsync();
+                }
                 PublishSpeedTestSnapshot();
-                if (started && !stopping) await StartWorkerAsync();
             }
             finally { lifecycle.Release(); }
         }
     }
     private void PublishSpeedTestSnapshot()
     {
+        if (Snapshot is { } prior)
+        {
+            Snapshot = prior with
+            {
+                State = IsSpeedTestRunning ? "Internetgeschwindigkeit wird gemessen" : IsSpeedTestWaiting ? "Speedtest wartet" : "Speedtest beendet",
+                Detail = SpeedTestMessage
+            };
+            Updated?.Invoke(Snapshot);
+            return;
+        }
         var emptyPing = new PingView(null, null, null, 0, "");
         HistoryPoint[] points;
         lock (history) points = history.ToArray();
-        Snapshot = new RuntimeSnapshot(IsSpeedTestRunning ? "Internetgeschwindigkeit wird gemessen" : "Speedtest beendet",
+        Snapshot = new RuntimeSnapshot(IsSpeedTestRunning ? "Internetgeschwindigkeit wird gemessen" : IsSpeedTestWaiting ? "Speedtest wartet" : "Speedtest beendet",
             SpeedTestMessage, false, "", false, shaper.Status.Message, null, null, null,
             emptyPing, emptyPing, [], points, "Netzwerküberwachung wird nach dem Speedtest fortgesetzt", Fingerprint(), shaper.IsAvailable);
         Updated?.Invoke(Snapshot);
@@ -174,12 +256,16 @@ public sealed class DynexRuntime : IAsyncDisposable
             ? new AutoLanPeerService(CoreSettings(), identity.SigningPrivateKeyBase64!)
             : new PeerService(CoreSettings());
         string? networkError = null;
+        monitoringReady = false;
         try { await peers.StartAsync(cancellation.Token); }
         catch (Exception ex) when (ex is System.Net.Sockets.SocketException or InvalidOperationException) { networkError = ex.Message; }
+        peerStartError = networkError;
+        peers.PeersChanged += PeerStatusChanged;
+        peerStartedAt = Stopwatch.GetTimestamp();
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
-        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
+        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
         if (activePlanner == null || plannerPolicy != policy)
         { activePlanner = new LimitPlanner(CoreSettings()); plannerPolicy = policy; }
         var planner = activePlanner;
@@ -195,15 +281,22 @@ public sealed class DynexRuntime : IAsyncDisposable
             {
                 try
                 {
+                    var detectedGames = scanGames(settings.GameProcesses);
+                    if (speedTestLoadStarted && (settings.Mode == GamingMode.On || detectedGames.Count != 0 ||
+                        service.Snapshot().Any(p => p.IsGaming || !string.IsNullOrEmpty(p.Game)))) CancelSpeedTestForGaming();
+                    Interlocked.Exchange(ref monitoringPulse, NewPulse()).TrySetResult();
                     var measurement = await monitor.SampleAsync(settings, token);
-                    var detectedGames = GameDetector.ScanAll(settings.GameProcesses);
+                    monitoringReady = true;
                     var game = detectedGames.FirstOrDefault()?.GameName ?? "";
                     var gaming = settings.Mode == GamingMode.On || settings.Mode == GamingMode.Auto && game.Length != 0;
                     var remote = service.Snapshot();
                     var now = DateTimeOffset.UtcNow;
                     var latencyTarget = settings.ExternalTarget + "|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(measurement.RouteId)))[..16];
-                    var decision = planner.Plan(gaming, remote, new ProbeStats(now, measurement.External.Current, measurement.Down, true, latencyTarget), now);
-                    if (settings.DriverEnabled && !isolated) await shaper.ApplyAsync(decision.DownloadLimitMbps, token, detectedGames, qosEnabled: true);
+                    var decision = planner.Plan(gaming, remote, IsSpeedTestRunning ? null : new ProbeStats(now, measurement.External.Current, measurement.Down, true, latencyTarget), now);
+                    if (settings.CapacityMeasuredAtUtc is null)
+                        decision = decision with { DownloadLimitMbps = null, SharedDownloadBudgetMbps = null, SharedCapacityMbps = null, SharedBudgetComplete = false };
+                    if (settings.DriverEnabled && !isolated && !IsSpeedTestRunning)
+                        await shaper.ApplyAsync(decision.DownloadLimitMbps, token, detectedGames, qosEnabled: true);
                     var driver = shaper.Status;
                     var sharedShare = decision.SharedDownloadBudgetMbps is { } pool
                         ? Math.Floor(pool / decision.ParticipantCount * 100) / 100 : (double?)null;
@@ -220,7 +313,11 @@ public sealed class DynexRuntime : IAsyncDisposable
                         : decision.GamingActive ? "Ein anderer PC spielt. Deine Downloads sollen langsamer weiterlaufen."
                         : settings.ManualLimitMbps.HasValue ? "Ein manuelles Downloadlimit ist eingestellt."
                         : "Beim Spielen werden große Downloads automatisch begrenzt – auch auf deinem Gaming-PC.";
-                    if (decision.DownloadLimitMbps.HasValue && !driver.Active)
+                    if (settings.CapacityMeasuredAtUtc is null)
+                        detail = "Downloads bleiben frei, bis ein Speedtest erfolgreich gespeichert wurde. Spiele und Sprachchat können bereits priorisiert werden.";
+                    if (IsSpeedTestRunning) { state = "Internetgeschwindigkeit wird gemessen"; detail = SpeedTestMessage; }
+                    else if (IsSpeedTestWaiting) detail = SpeedTestMessage;
+                    if (decision.DownloadLimitMbps.HasValue && !driver.Active && !IsSpeedTestRunning)
                         detail = "Gaming erkannt. Die Downloadbegrenzung ist noch nicht aktiv: " + driver.Message;
                     var point = new HistoryPoint(now, measurement.Router.Current, measurement.External.Current, measurement.Down, driver.Active || remote.Any(p => p.ShaperActive));
                     lock (history) { history.Add(point); if (history.Count > 300) history.RemoveAt(0); }
@@ -241,6 +338,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    monitoringReady = false;
+                    if (IsSpeedTestRunning) CancelSpeedTestForGaming();
                     // Monitoring failure must not keep an old automatic rate active.
                     await shaper.ApplyAsync(null, token);
                     service.Publish(false);
@@ -270,6 +369,11 @@ public sealed class DynexRuntime : IAsyncDisposable
     {
         settings = SettingsStore.Normalize(settings);
         SettingsStore.Validate(settings);
+        if (IsSpeedTestRunning && GamingBlocksSpeedTest(settings))
+        {
+            pendingGamingSettings = true;
+            if (speedTestLoadStarted) CancelSpeedTestForGaming();
+        }
         await lifecycle.WaitAsync();
         try
         {
@@ -337,7 +441,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "0.5.0", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "1.0.0", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
@@ -357,7 +461,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     {
         cancellation?.Cancel();
         if (worker != null) { try { await worker; } catch (OperationCanceledException) { } }
-        if (peers != null) { await peers.DisposeAsync(); peers = null; }
+        if (peers != null) { peers.PeersChanged -= PeerStatusChanged; await peers.DisposeAsync(); peers = null; }
         cancellation?.Dispose(); cancellation = null; worker = null;
     }
     public async Task StopAsync()
@@ -368,6 +472,8 @@ public sealed class DynexRuntime : IAsyncDisposable
         await lifecycle.WaitAsync();
         try { started = false; await StopWorkerAsync(); await shaper.StopAsync(); }
         finally { lifecycle.Release(); }
+        var pending = speedTestTask;
+        if (pending is { IsCompleted: false }) await pending;
     }
     public async ValueTask DisposeAsync() => await StopAsync();
 }

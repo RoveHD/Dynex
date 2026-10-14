@@ -188,7 +188,7 @@ public sealed class PeerService : IPeerService
                     throughputIsFresh ? state.Download : null, state.Latency, state.Limit, state.Game, state.Shaper,
                     state.Baseline, state.Target, state.SampleSequence > 0 ? state.SampleSequence : null, state.BaselineAt,
                     throughputIsFresh ? state.Upload : null,
-                    throughputIsFresh ? DownloadBudgetProposal.FromSettings(_settings) : null));
+                    throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null));
                 foreach (var endpoint in _settings.DirectPeers)
                     await SendAsync(socket, packet, endpoint, cancellationToken).ConfigureAwait(false);
                 foreach (var address in _interfaces)
