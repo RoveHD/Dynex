@@ -25,6 +25,7 @@ public sealed class PeerService : IPeerService
     private IPAddress[] _interfaces = Array.Empty<IPAddress>();
     private LocalState _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
     private string? _networkStatus;
+    private long _sent, _received, _accepted, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _clockSkew, _self;
     private volatile bool _disposed;
 
     public event Action? PeersChanged;
@@ -96,6 +97,23 @@ public sealed class PeerService : IPeerService
         }
     }
 
+    public PeerNetworkDiagnostics GetNetworkDiagnostics()
+    {
+        lock (_gate)
+        {
+            ExpireLocked(Stopwatch.GetTimestamp());
+            var last = Interlocked.Read(ref _lastReceiveUnixMs);
+            return new("Private Gruppe", _settings.LoopbackOnly ? [IPAddress.Loopback.ToString()] :
+                Volatile.Read(ref _interfaces).Select(a => a.ToString()).ToArray(),
+                _settings.DirectPeers.Select(p => p.ToString()).ToArray(),
+                Interlocked.Read(ref _sent), Interlocked.Read(ref _received), Interlocked.Read(ref _accepted),
+                InvalidOrRejectedDatagrams: Interlocked.Read(ref _rejected), ScopeRejectedDatagrams: Interlocked.Read(ref _scopeRejected),
+                OtherModeDatagrams: Interlocked.Read(ref _otherMode), LastReceiveUtc: last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last),
+                ConnectedPeers: _peers.Count, LearnedEndpoints: _peers.Values.Select(p => p.Endpoint).Distinct().Count(),
+                AuthenticatedClockSkewDatagrams: Interlocked.Read(ref _clockSkew), SelfDatagrams: Interlocked.Read(ref _self));
+        }
+    }
+
     public async Task StopAsync()
     {
         await _lifecycle.WaitAsync().ConfigureAwait(false);
@@ -127,12 +145,19 @@ public sealed class PeerService : IPeerService
                 var result = await socket.ReceiveFromAsync(bytes.AsMemory(), SocketFlags.None,
                     new IPEndPoint(IPAddress.Any, 0), cancellationToken).ConfigureAwait(false);
                 var endpoint = (IPEndPoint)result.RemoteEndPoint;
-                if (!LanAddress.IsAllowed(endpoint.Address, _settings.LoopbackOnly)) continue;
+                Interlocked.Increment(ref _received);
+                Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                if (!LanAddress.IsAllowed(endpoint.Address, _settings.LoopbackOnly))
+                { Interlocked.Increment(ref _scopeRejected); continue; }
+                if (result.ReceivedBytes >= 4 && bytes.AsSpan(0, 4).SequenceEqual("DYNA"u8))
+                { Interlocked.Increment(ref _otherMode); continue; }
                 var wire = _codec.Decode(bytes.AsSpan(0, result.ReceivedBytes));
-                if (wire is null || wire.DeviceId == _settings.DeviceId) continue;
+                if (wire is null) { Interlocked.Increment(ref _rejected); continue; }
+                if (wire.DeviceId == _settings.DeviceId) { Interlocked.Increment(ref _self); continue; }
                 var now = DateTimeOffset.UtcNow;
                 // Bounds checked as decimal so an authenticated extreme Int64 cannot overflow subtraction.
-                if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - wire.SentAtUnixMs) > 30000) continue;
+                if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - wire.SentAtUnixMs) > 30000)
+                { Interlocked.Increment(ref _rejected); Interlocked.Increment(ref _clockSkew); continue; }
                 var changed = false;
                 lock (_gate)
                 {
@@ -141,8 +166,10 @@ public sealed class PeerService : IPeerService
                     foreach (var old in _replay.Where(kv => Elapsed(kv.Value.Tick, tick) > TimeSpan.FromMinutes(10)).Select(kv => kv.Key).ToArray())
                         _replay.Remove(old);
                     var key = (wire.DeviceId, wire.SessionId);
-                    if (_replay.TryGetValue(key, out var previous) && (previous.Retired || wire.Sequence <= previous.Sequence)) continue;
-                    if (!_replay.ContainsKey(key) && _replay.Count >= 256 || !_peers.ContainsKey(wire.DeviceId) && _peers.Count >= 64) continue;
+                    if (_replay.TryGetValue(key, out var previous) && (previous.Retired || wire.Sequence <= previous.Sequence))
+                    { Interlocked.Increment(ref _rejected); continue; }
+                    if (!_replay.ContainsKey(key) && _replay.Count >= 256 || !_peers.ContainsKey(wire.DeviceId) && _peers.Count >= 64)
+                    { Interlocked.Increment(ref _rejected); continue; }
                     // Retire older boot sessions independently of peer TTL. Otherwise a captured
                     // old-session packet could reappear after the newer peer expires.
                     foreach (var old in _replay.Keys.Where(k => k.Device == wire.DeviceId && k.Session != wire.SessionId).ToArray())
@@ -152,7 +179,8 @@ public sealed class PeerService : IPeerService
                         wire.DownloadMbps, wire.LatencyMs, now, endpoint.Address.ToString(), wire.AppliedLimitMbps,
                         wire.Game, wire.ShaperActive, wire.IdleBaselineMs, wire.LatencyTargetId,
                         wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId, UploadMbps: wire.UploadMbps,
-                        BudgetProposal: wire.BudgetProposal), wire.SessionId, tick);
+                        BudgetProposal: wire.BudgetProposal), wire.SessionId, tick, endpoint);
+                    Interlocked.Increment(ref _accepted);
                     changed = true;
                 }
                 if (changed) Notify();
@@ -189,7 +217,16 @@ public sealed class PeerService : IPeerService
                     state.Baseline, state.Target, state.SampleSequence > 0 ? state.SampleSequence : null, state.BaselineAt,
                     throughputIsFresh ? state.Upload : null,
                     throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null));
-                foreach (var endpoint in _settings.DirectPeers)
+                IPEndPoint[] targets;
+                bool expired;
+                lock (_gate)
+                {
+                    expired = ExpireLocked(Stopwatch.GetTimestamp());
+                    // Learn the return route only from a fresh, authenticated, replay-checked
+                    // advertisement. A single imported address then works in both directions.
+                    targets = _settings.DirectPeers.Concat(_peers.Values.Select(p => p.Endpoint)).Distinct().ToArray();
+                }
+                foreach (var endpoint in targets)
                     await SendAsync(socket, packet, endpoint, cancellationToken).ConfigureAwait(false);
                 foreach (var address in _interfaces)
                 {
@@ -200,8 +237,7 @@ public sealed class PeerService : IPeerService
                     }
                     catch (SocketException e) { SetError("LAN-Schnittstelle: " + e.Message); }
                 }
-                bool expired;
-                lock (_gate) expired = ExpireLocked(Stopwatch.GetTimestamp());
+                lock (_gate) expired |= ExpireLocked(Stopwatch.GetTimestamp());
                 if (expired) Notify();
             } while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
         }
@@ -211,7 +247,11 @@ public sealed class PeerService : IPeerService
 
     private async Task SendAsync(Socket socket, byte[] packet, IPEndPoint endpoint, CancellationToken cancellationToken)
     {
-        try { await socket.SendToAsync(packet.AsMemory(), SocketFlags.None, endpoint, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            await socket.SendToAsync(packet.AsMemory(), SocketFlags.None, endpoint, cancellationToken).ConfigureAwait(false);
+            Interlocked.Increment(ref _sent);
+        }
         catch (SocketException e) { if (!cancellationToken.IsCancellationRequested) SetError("LAN-Senden: " + e.Message); }
     }
 
@@ -271,6 +311,6 @@ public sealed class PeerService : IPeerService
 
     private sealed record LocalState(bool Gaming, double? Download, double? Latency, double? Limit, string? Game, bool Shaper,
         double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick);
-    private sealed record ReceivedPeer(PeerAdvertisement Advertisement, Guid Session, long Tick);
+    private sealed record ReceivedPeer(PeerAdvertisement Advertisement, Guid Session, long Tick, IPEndPoint Endpoint);
     private sealed record ReplayEntry(long Sequence, long Tick, bool Retired = false);
 }

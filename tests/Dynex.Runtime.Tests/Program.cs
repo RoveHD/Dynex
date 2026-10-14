@@ -30,6 +30,110 @@ async Task Scenario(string name, Func<Task> run)
 }
 var timeout = TimeSpan.FromSeconds(8);
 
+await Scenario("export and import activate the same private-group transport", async () =>
+{
+    using var sourceProfile = new TestProfile(measured: true);
+    using var targetProfile = new TestProfile(measured: true);
+    await using var source = new DynexRuntime(sourceProfile.Path, new ControlledSpeedTest(), _ => []);
+    await using var target = new DynexRuntime(targetProfile.Path, new ControlledSpeedTest(), _ => []);
+    await source.SaveSettingsAsync(source.Settings with { AutoConnectLan = true });
+    await target.SaveSettingsAsync(target.Settings with { AutoConnectLan = true });
+    await source.StartAsync().WaitAsync(timeout);
+    await target.StartAsync().WaitAsync(timeout);
+    var originalKey = source.ExportPairingCode();
+    var sourceIdentity = new SettingsStore(sourceProfile.Path).LoadIdentity();
+    var code = await source.ActivatePairingCodeAsync().WaitAsync(timeout);
+    Check(code.StartsWith("DYNEX2:", StringComparison.Ordinal) && source.ExportPairingCode() == originalKey &&
+        new SettingsStore(sourceProfile.Path).LoadIdentity() == sourceIdentity,
+        "new invitation adds direct addresses while preserving the source device and group identity");
+    Check(!source.Settings.AutoConnectLan && !new SettingsStore(sourceProfile.Path).Load().AutoConnectLan && LocalPeers(source) is PeerService,
+        "copying or revealing a code activates and persists private-group transport on the source PC");
+    var sourcePeers = LocalPeers(source);
+    await source.ActivatePairingCodeAsync().WaitAsync(timeout);
+    Check(ReferenceEquals(sourcePeers, LocalPeers(source)), "copying an active group code again keeps discovery running");
+    await target.ImportPairingCodeAsync(code).WaitAsync(timeout);
+    Check(!target.Settings.AutoConnectLan && !new SettingsStore(targetProfile.Path).Load().AutoConnectLan &&
+        LocalPeers(target) is PeerService && target.ExportPairingCode() == originalKey,
+        "importing a copied code puts the receiver in the same persisted group and protocol");
+    await using var probe = new PeerService(CoreConfiguration(source) with
+    {
+        DeviceId = Guid.NewGuid(), DeviceName = "Pairing transport test", Port = FreePort(),
+        HeartbeatInterval = TimeSpan.FromMilliseconds(100),
+        DirectPeers = [new(IPAddress.Loopback, source.PeerPort), new(IPAddress.Loopback, target.PeerPort)]
+    });
+    probe.Publish(false, 12.5);
+    await probe.StartAsync();
+    await Until(() => LocalPeers(source).Snapshot().Any(p => p.DeviceName == "Pairing transport test") &&
+        LocalPeers(target).Snapshot().Any(p => p.DeviceName == "Pairing transport test"));
+    Check(true, "source and receiver accept real encrypted UDP status after normal copy and import");
+});
+
+await Scenario("failed source group activation preserves the current transport", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ => []);
+    await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = true });
+    await runtime.StartAsync().WaitAsync(timeout);
+    var prior = runtime.Settings;
+    var priorPeers = LocalPeers(runtime);
+    var priorCode = runtime.ExportPairingCode();
+    using (var locked = new FileStream(Path.Combine(profile.Path, "settings.json"), FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var failed = false;
+        try { await runtime.ActivatePairingCodeAsync().WaitAsync(timeout); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { failed = true; }
+        Check(failed && runtime.Settings == prior && ReferenceEquals(priorPeers, LocalPeers(runtime)) && runtime.ExportPairingCode() == priorCode,
+            "a settings write failure returns no invitation and leaves the source AutoLAN worker and identity intact");
+    }
+    Check(new SettingsStore(profile.Path).Load() == prior, "failed activation does not persist a different group mode");
+});
+
+await Scenario("bounded private-address invitations and legacy compatibility", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ => []);
+    await runtime.StartAsync().WaitAsync(timeout);
+    var prior = runtime.Settings;
+    var priorPeers = LocalPeers(runtime);
+    var priorCode = runtime.ExportPairingCode();
+    var key = GroupKey.Generate();
+    string Invitation(object? addresses, string? groupKey = null) => "DYNEX2:" + Convert.ToBase64String(
+        JsonSerializer.SerializeToUtf8Bytes(new { Key = groupKey ?? key, Addresses = addresses }));
+    foreach (var invalid in new[]
+    {
+        Invitation(new[] { "8.8.8.8" }), Invitation(new[] { "127.0.0.1" }), Invitation(new[] { "::1" }),
+        Invitation(new string?[] { null }), Invitation(null), Invitation(Enumerable.Repeat("192.168.1.5", 17).ToArray()),
+        Invitation(new[] { "192.168.1.5" }, "broken"), "DYNEX2:invalid", "DYNEX2:" + new string('A', 4096)
+    })
+    {
+        var rejected = false;
+        try { await runtime.ImportPairingCodeAsync(invalid).WaitAsync(timeout); }
+        catch (ArgumentException) { rejected = true; }
+        Check(rejected && runtime.Settings == prior && ReferenceEquals(priorPeers, LocalPeers(runtime)) && runtime.ExportPairingCode() == priorCode,
+            "invalid or oversized invitation is rejected before changing identity, settings or discovery");
+    }
+    // Parser/persistence fixtures must not send to physical LAN hosts from a loopback-only runtime.
+    await runtime.StopAsync().WaitAsync(timeout);
+    await runtime.ImportPairingCodeAsync(Invitation(new[] { "192.168.1.5", "192.168.1.5", "10.0.0.8" })).WaitAsync(timeout);
+    Check(SettingsStore.Split(runtime.Settings.DirectPeers).SequenceEqual(new[] { "192.168.1.5", "10.0.0.8" }) &&
+        new SettingsStore(profile.Path).Load().DirectPeers == runtime.Settings.DirectPeers && runtime.ExportPairingCode() == "DYNEX1:" + key,
+        "private direct routes from an invitation are deduplicated and persisted with the imported group");
+    var legacy = "DYNEX1:" + GroupKey.Generate();
+    await runtime.ImportPairingCodeAsync(legacy).WaitAsync(timeout);
+    Check(runtime.ExportPairingCode() == legacy && !runtime.Settings.AutoConnectLan &&
+        SettingsStore.Split(runtime.Settings.DirectPeers).Length == 2,
+        "legacy invitations remain importable and preserve configured private routes");
+    await runtime.SaveSettingsAsync(runtime.Settings with
+    { DirectPeers = string.Join(";", Enumerable.Range(1, 32).Select(n => "192.168.2." + n)) });
+    var fullSettings = runtime.Settings;
+    var overflowRejected = false;
+    try { await runtime.ImportPairingCodeAsync(Invitation(new[] { "192.168.3.1" })).WaitAsync(timeout); }
+    catch (ArgumentException) { overflowRejected = true; }
+    Check(overflowRejected && runtime.Settings == fullSettings && runtime.ExportPairingCode() == legacy &&
+        new SettingsStore(profile.Path).LoadIdentity().GroupKey == legacy[7..],
+        "combined direct-route limit is checked before changing the saved group identity");
+});
+
 await Scenario("automatic initial measurement and persistence", async () =>
 {
     using var profile = new TestProfile();

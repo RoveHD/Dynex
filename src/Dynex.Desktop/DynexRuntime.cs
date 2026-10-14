@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -48,6 +48,8 @@ public sealed class DynexRuntime : IAsyncDisposable
     public UserSettings Settings { get; private set; }
     internal int PeerPort { get; }
     public RuntimeSnapshot? Snapshot { get; private set; }
+    public PeerNetworkDiagnostics? GetNetworkDiagnostics() => peers?.GetNetworkDiagnostics();
+    internal Task<NetworkConnectionCheck> CheckNetworkAsync() => NetworkConnectionCheck.ReadAsync(isolated);
     public event Action<RuntimeSnapshot>? Updated;
     public DynexRuntime(string? profilePath = null) : this(profilePath, null) { }
     internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest,
@@ -358,7 +360,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                         (ConfirmedShare(driver.Active, driver.Mbps) ? 1 : 0) +
                         remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
-                        ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased);
+                        ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
+                        NetworkDiagnostics: service.GetNetworkDiagnostics());
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -375,7 +378,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var prior = Snapshot ?? new RuntimeSnapshot("", "", false, "", false, "", null, 0, 0, emptyPing, emptyPing, [], [], initialNetworkError ?? service.NetworkStatus ?? "", Fingerprint());
                     Snapshot = prior with { State = "Messung unterbrochen", Detail = ex.Message, IsGaming = false, DriverActive = false, LimitMbps = null, DownloadMbps = null, UploadMbps = null, Devices = [], Router = emptyPing, External = emptyPing, DriverState = shaper.Status.Message,
                         SharedDownloadBudgetMbps = null, ParticipantCount = 1, GamingCount = 0, SharedCapacityMbps = null, SharedBudgetComplete = false, ConfirmedParticipantCount = 0,
-                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false };
+                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null };
                     Updated?.Invoke(Snapshot);
                 }
             } while (await timer.WaitForNextTickAsync(token));
@@ -425,21 +428,63 @@ public sealed class DynexRuntime : IAsyncDisposable
         }
         finally { lifecycle.Release(); }
     }
-    public string ExportPairingCode() => "DYNEX1:" + identity.GroupKey;
+    internal string ExportPairingCode() => "DYNEX1:" + identity.GroupKey;
+    public async Task<string> ActivatePairingCodeAsync()
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            // Both ends must use the authenticated private-group protocol. Merely
+            // copying the key while AutoLAN remains active leaves incompatible peers.
+            if (Settings.AutoConnectLan)
+            {
+                var privateSettings = Settings with { AutoConnectLan = false };
+                store.Save(privateSettings);
+                await StopWorkerAsync();
+                await shaper.ApplyAsync(null, CancellationToken.None);
+                Settings = privateSettings;
+                if (started && !stopping) await StartWorkerAsync();
+            }
+            // Include a unicast route for home networks that suppress multicast.
+            var invitation = new PairingInvitation(identity.GroupKey,
+                isolated ? [] : LanDiscovery.GetPrivateLocalAddresses().ToArray());
+            return "DYNEX2:" + Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(invitation));
+        }
+        finally { lifecycle.Release(); }
+    }
     public async Task ImportPairingCodeAsync(string code)
     {
+        if (code.Length > 4096) throw new ArgumentException("Der Gruppencode ist zu lang.");
         var key = code.Trim();
+        string[] addresses = [];
+        if (key.StartsWith("DYNEX2:", StringComparison.Ordinal))
+        {
+            try
+            {
+                var invitation = JsonSerializer.Deserialize<PairingInvitation>(Convert.FromBase64String(key[7..]));
+                if (invitation?.Key is null || invitation.Addresses is null || invitation.Addresses.Length > 16)
+                    throw new ArgumentException("Der Gruppencode ist ungültig.");
+                key = invitation.Key;
+                addresses = invitation.Addresses.Select(address =>
+                    IPAddress.TryParse(address, out var ip) && SettingsStore.IsPrivate(ip)
+                        ? ip.ToString() : throw new ArgumentException("Der Gruppencode enthält keine gültige private IPv4-Adresse.")).Distinct().ToArray();
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            { throw new ArgumentException("Der Gruppencode ist ungültig."); }
+        }
         if (key.StartsWith("DYNEX1:", StringComparison.Ordinal)) key = key[7..];
         byte[] bytes;
         try { bytes = Convert.FromBase64String(key); } catch (FormatException) { throw new ArgumentException("Der Gruppencode ist ungültig."); }
-        if (bytes.Length != 32) throw new ArgumentException("Der Gruppencode benötigt einen 256-Bit-Schlüssel.");
-        CryptographicOperations.ZeroMemory(bytes);
+        try { if (bytes.Length != 32) throw new ArgumentException("Der Gruppencode benötigt einen 256-Bit-Schlüssel."); }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
         await lifecycle.WaitAsync();
         try
         {
             var replacement = identity with { GroupKey = key };
             // A failed disk/DPAPI write must leave the currently running group intact.
-            var privateSettings = Settings with { AutoConnectLan = false };
+            var privateSettings = Settings with { AutoConnectLan = false,
+                DirectPeers = string.Join(Environment.NewLine, SettingsStore.Split(Settings.DirectPeers).Concat(addresses).Distinct()) };
+            SettingsStore.Validate(privateSettings);
             store.SaveIdentity(replacement);
             try { store.Save(privateSettings); }
             catch { store.SaveIdentity(identity); throw; }
@@ -451,11 +496,13 @@ public sealed class DynexRuntime : IAsyncDisposable
         }
         finally { lifecycle.Release(); }
     }
+    private sealed record PairingInvitation(string Key, string[] Addresses);
     private string Fingerprint() => Convert.ToHexString(SHA256.HashData(Convert.FromBase64String(identity.GroupKey)))[..16];
     public async Task<string> ExportDiagnosticsAsync()
     {
         var path = Path.Combine(store.DirectoryPath, "Diagnose-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".json");
         var snapshot = Snapshot;
+        var networkEnvironment = await NetworkConnectionCheck.ReadAsync(isolated);
         var points = snapshot?.History ?? [];
         object Summarize(bool protection)
         {
@@ -469,7 +516,8 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.4", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = "1.0.5", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            NetworkTransport = GetNetworkDiagnostics(), NetworkEnvironment = networkEnvironment,
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));

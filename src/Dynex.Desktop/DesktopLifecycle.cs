@@ -304,8 +304,17 @@ internal static class DesktopLifecycle
             if (!((FrameworkElement)window.FindName("NetworkSettingsSection")).IsVisible ||
                 ((System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText")).Text != problem)
                 throw new Exception("Netzwerkhilfe öffnet nicht den vollständigen Fehlergrund.");
-            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "ExternalBox", "PairingBox"]);
+            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "CheckConnectionButton", "ExternalBox", "PairingBox"]);
             Capture(window, Path.Combine(directory, "network-problem-settings-900.png"));
+            var diagnostic = new Dynex.Core.PeerNetworkDiagnostics("Automatisch", ["192.168.1.2"], [],
+                SentDatagrams: 8, ReceivedDatagrams: 4, OtherModeDatagrams: 4);
+            render.Invoke(window, [snapshot with { NetworkProblem = null, NetworkDiagnostics = diagnostic }]);
+            window.UpdateLayout();
+            var diagnosticText = (System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText");
+            if (diagnosticText.Text != diagnostic.Hint || !diagnosticText.ToolTip.ToString()!.Contains("Gesendet: 8"))
+                throw new Exception("Netzwerkhilfe verliert den beobachteten Moduskonflikt oder Transportzähler.");
+            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "CheckConnectionButton", "ExternalBox", "PairingBox"]);
+            Capture(window, Path.Combine(directory, "network-mode-diagnostics-fixture-900.png"));
         }
         finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
     }

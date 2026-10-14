@@ -29,6 +29,7 @@ public sealed class AutoLanPeerService : IPeerService
     private volatile bool _disposed;
     private string? _networkStatus;
     private string? _receiveError;
+    private long _sent, _received, _accepted, _handshakes, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _self;
     private State _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
 
     public event Action? PeersChanged;
@@ -109,6 +110,22 @@ public sealed class AutoLanPeerService : IPeerService
         }
     }
 
+    public PeerNetworkDiagnostics GetNetworkDiagnostics()
+    {
+        lock (_gate)
+        {
+            ExpireLocked(Stopwatch.GetTimestamp());
+            var last = Interlocked.Read(ref _lastReceiveUnixMs);
+            return new("Automatisch", _settings.LoopbackOnly ? [IPAddress.Loopback.ToString()] :
+                Volatile.Read(ref _bindings).Select(b => $"{b.Address}/{b.Mask} (Schnittstelle {b.InterfaceIndex})").ToArray(),
+                _settings.DirectPeers.Select(p => p.ToString()).ToArray(),
+                Interlocked.Read(ref _sent), Interlocked.Read(ref _received), Interlocked.Read(ref _accepted),
+                Interlocked.Read(ref _handshakes), Interlocked.Read(ref _rejected), Interlocked.Read(ref _scopeRejected),
+                Interlocked.Read(ref _otherMode), last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last), _peers.Count,
+                _channels.Values.Select(c => c.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self));
+        }
+    }
+
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken token)
     {
         var bytes = new byte[AutoLanCrypto.MaxDatagram + 1];
@@ -121,7 +138,16 @@ public sealed class AutoLanPeerService : IPeerService
                     var received = await socket.ReceiveMessageFromAsync(bytes.AsMemory(), SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), token).ConfigureAwait(false);
                     var source = (IPEndPoint)received.RemoteEndPoint;
                     var length = received.ReceivedBytes;
-                    if (!SourceAllowed(source.Address, received.PacketInformation.Interface) || length is < 6 or > AutoLanCrypto.MaxDatagram ||
+                    Interlocked.Increment(ref _received);
+                    Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    if (!SourceAllowed(source.Address, received.PacketInformation.Interface))
+                    { Interlocked.Increment(ref _scopeRejected); continue; }
+                    if (length >= 4 && bytes.AsSpan(0, 4).SequenceEqual("DYNX"u8))
+                    { Interlocked.Increment(ref _otherMode); continue; }
+                    // Count all failed validation/replay/challenge paths, then undo this count
+                    // only after the corresponding packet has actually passed those checks.
+                    Interlocked.Increment(ref _rejected);
+                    if (length is < 6 or > AutoLanCrypto.MaxDatagram ||
                         !bytes.AsSpan(0, 4).SequenceEqual("DYNA"u8) || bytes[4] != 1) continue;
                     byte[]? response = null;
                     var changed = false;
@@ -145,12 +171,16 @@ public sealed class AutoLanPeerService : IPeerService
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
                                 UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal), tick);
+                            Interlocked.Decrement(ref _rejected);
+                            Interlocked.Increment(ref _accepted);
                             changed = true;
                         }
                         else if (bytes[5] is 1 or 2)
                         {
                             var hello = AutoLanCrypto.Verify(bytes.AsSpan(0, length), now);
-                            if (hello is null || hello.DeviceId == _settings.DeviceId) continue;
+                            if (hello is null) continue;
+                            if (hello.DeviceId == _settings.DeviceId)
+                            { Interlocked.Decrement(ref _rejected); Interlocked.Increment(ref _self); continue; }
                             var key = (hello.DeviceId, hello.SessionId);
                             if (_sessions.TryGetValue(key, out var history) && history.Retired) continue;
                             if (bytes[5] == 1)
@@ -158,6 +188,8 @@ public sealed class AutoLanPeerService : IPeerService
                                 // Stateless signed challenge response: unproven announcements do not
                                 // consume peer/session slots or reset established replay counters.
                                 response = _crypto!.Ack(hello, now);
+                                Interlocked.Decrement(ref _rejected);
+                                Interlocked.Increment(ref _handshakes);
                             }
                             else
                             {
@@ -166,6 +198,7 @@ public sealed class AutoLanPeerService : IPeerService
                                 {
                                     // Existing session's signed ephemeral key/challenge are immutable.
                                     if (prior.Crypto.Remote.ExchangePublicKey != hello.ExchangePublicKey || prior.Crypto.Remote.Challenge != hello.Challenge) continue;
+                                    Interlocked.Decrement(ref _rejected);
                                     continue; // Never reset sequence state on a replayed acknowledgement.
                                 }
                                 if (!_channels.ContainsKey(hello.DeviceId) && _channels.Count >= 64 || !_sessions.ContainsKey(key) && _sessions.Count >= 256) continue;
@@ -176,6 +209,8 @@ public sealed class AutoLanPeerService : IPeerService
                                 if (prior is not null) { prior.Crypto.Dispose(); _peers.Remove(hello.DeviceId); }
                                 _channels[hello.DeviceId] = new(channel, source, tick);
                                 response = _crypto.Ack(hello, now);
+                                Interlocked.Decrement(ref _rejected);
+                                Interlocked.Increment(ref _handshakes);
                             }
                         }
                     }
@@ -300,7 +335,11 @@ public sealed class AutoLanPeerService : IPeerService
 
     private async Task SendAsync(Socket socket, byte[] bytes, IPEndPoint target, CancellationToken token)
     {
-        try { await socket.SendToAsync(bytes.AsMemory(), SocketFlags.None, target, token).ConfigureAwait(false); }
+        try
+        {
+            await socket.SendToAsync(bytes.AsMemory(), SocketFlags.None, target, token).ConfigureAwait(false);
+            Interlocked.Increment(ref _sent);
+        }
         catch (SocketException e) { if (!token.IsCancellationRequested) SetError("AutoLAN-Senden: " + e.Message); }
     }
     private void OnNetworkChanged(object? sender, EventArgs args) => Interlocked.Exchange(ref _networkChanged, 1);

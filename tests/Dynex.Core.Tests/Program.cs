@@ -3,6 +3,9 @@ using System.Net.Sockets;
 using System.Text;
 using Dynex.Core;
 
+try
+{
+if (OperatingSystem.IsWindows()) TestErrorMode.SuppressDialogs();
 var checks = 0;
 void Check(bool condition, string name)
 {
@@ -11,6 +14,12 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name);
 }
 void Near(double? actual, double expected, string name) => Check(actual is { } d && Math.Abs(d - expected) < 0.02, name);
+if (args.Contains("--peer-connections"))
+{
+    await PeerConnectionTests.Run(Check);
+    Console.WriteLine($"{checks} peer connection checks passed; UDP integration ran on loopback only.");
+    return;
+}
 var key = GroupKey.Generate();
 var settings = new DynexSettings { GroupKeyBase64 = key };
 var now = DateTimeOffset.UtcNow;
@@ -268,5 +277,23 @@ await using (var observer = new PeerService(aSettings with
         "fresh unmeasured PSK peer publishes gaming and throughput without a default budget proposal");
 }
 await AutoLanTests.Run(Check);
+await PeerConnectionTests.Run(Check);
 await SharedBudgetTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");
+}
+catch (Exception error)
+{
+    // A failed assertion is a normal nonzero test result, never an unhandled
+    // Windows application crash dialog on the user's desktop.
+    Console.Error.WriteLine(error);
+    Environment.ExitCode = 1;
+}
+
+internal static class TestErrorMode
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetErrorMode();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint SetErrorMode(uint mode);
+    internal static void SuppressDialogs() => SetErrorMode(GetErrorMode() | 0x8003);
+}

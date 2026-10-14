@@ -37,4 +37,5 @@ public sealed record RuntimeSnapshot(
     int ParticipantCount = 1, int GamingCount = 0, double? SharedCapacityMbps = null,
     bool SharedBudgetComplete = false, int ConfirmedParticipantCount = 0,
     bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0,
-    string? NetworkProblem = null, bool ProtectionIdle = false);
+    string? NetworkProblem = null, bool ProtectionIdle = false,
+    Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null);

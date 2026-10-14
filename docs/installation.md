@@ -1,6 +1,6 @@
-# DYNEX 1.0.4 installieren und entfernen
+# DYNEX 1.0.5 installieren und entfernen
 
-Das Release-Setup `artifacts/DYNEX-Setup-1.0.4.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an; Programme und Setup sind nicht codesigniert. `artifacts/DYNEX-Cleanup-1.0.4.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
+Das Release-Setup `artifacts/DYNEX-Setup-1.0.5.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an; Programme und Setup sind nicht codesigniert. `artifacts/DYNEX-Cleanup-1.0.5.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
 
 ## Start im privaten LAN
 
@@ -20,6 +20,14 @@ Die eigene Firewallregel gilt nur für die installierte DYNEX.exe, eingehendes U
 
 Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbarer PC-Verbindung und einem tatsächlich offenen Spiel. Ohne erfolgreiche Messung werden keine Downloadlimits aktiviert. Ein Netzwerkfehler wird nicht als Spielpause bezeichnet.
 
+## Wenn der zweite PC fehlt
+
+Ab 1.0.5 zeigt **Netzwerk prüfen** unter Einstellungen → Netzwerk die beobachtete Verbindungslage. Der Mauszeiger über dem Hinweis zeigt Modus, lokale Adressen und gesendete/empfangene Pakete. Die Prüfung liest zusätzlich die DYNEX-Firewallfreigabe; sie verändert keine Netzwerkprofile oder Sperrregeln. Der Diagnoseexport enthält diese Werte und die geprüften privaten LAN-Adressen, jedoch keine Kopplungsschlüssel. Fehlende UDP-Nachrichten beweisen allein keine bestimmte Firewall- oder Routerursache.
+
+Für die direkte Kopplung beide PCs aktualisieren. Auf dem ersten PC **Kopieren** wählen und den neu erzeugten Code auf dem zweiten PC **importieren**. Beide verwenden damit dieselbe private Gruppe. Der Code enthält neben dem Gruppenschlüssel nur geprüfte private lokale IPv4-Adressen des ersten PCs. Der zweite PC sendet direkt dorthin; der erste antwortet nur an erfolgreich authentifizierte, aktuelle Teilnehmer. Damit benötigt diese Verbindung kein Multicast. Der Code ist geheim zu halten.
+
+Bis 1.0.4 schaltete nur der Import den Empfänger in die private Gruppe, während der Sender beim Kopieren im Automatikmodus blieb. Diese unterschiedlichen Protokolle konnten sich nicht verbinden. Nach dem Update den Code neu kopieren und importieren. Vorhandene DYNEX1-Codes bleiben gültig, enthalten aber keine Direktadressen. Um zur automatischen Verbindung zurückzukehren, auf allen beteiligten PCs **PCs im selben privaten Netzwerk automatisch verbinden** einschalten und speichern. Auch die direkte Verbindung benötigt erreichbare PCs und eine passende Firewallfreigabe; eine Router-Geräteisolation wird nicht umgangen.
+
 ## Wirkungsbereich
 
 Der Netzwerkfilter wird nur aktiv, wenn auf diesem oder einem verbundenen DYNEX-PC ein erkanntes Spiel im Vordergrund ist. Ohne Gaming gibt DYNEX auch die Sprachchat-Priorisierung frei. Die App bleibt zur Spiel- und PC-Erkennung geöffnet; Sprachchat allein aktiviert keine Paketverarbeitung. Fokusänderungen werden im regulären Mess- und Peerzyklus übernommen. Für dieses Verhalten alle PCs auf 1.0.3 oder neuer aktualisieren.
@@ -38,7 +46,7 @@ Die Deinstallation gibt zunächst die laufende Paketverarbeitung frei und berein
 
 **Ältere Installationen:** Bis einschließlich 1.0.3 wurde die Herkunft nicht aufgezeichnet. Bei dem bekannten Windows-Packet-Filter-Paket ohne eindeutigen Nachweis fragt die Deinstallation einmal ausdrücklich nach der Entfernung. Bei Nein oder im unbeaufsichtigten Modus wird die Bereinigung angehalten. Das vermeidet eine unbemerkte Entfernung gemeinsam genutzter Komponenten. Andere unbekannte Filterpakete werden nicht per Name oder Registry-Löschung entfernt.
 
-**Bereits deinstalliert:** Starte `DYNEX-Cleanup-1.0.4.exe` auf dem betroffenen PC unter dem Windows-Benutzer, der DYNEX installiert hatte. Das Programm bereinigt zurückgebliebene Komponenten für den festen damaligen Installationspfad. Es installiert keine Voraussetzungen und startet keine Messung oder Paketverarbeitung. Ist die DYNEX-App noch installiert, fordert es die normale Deinstallation an. Die gleiche Herkunftsprüfung und gegebenenfalls ausdrückliche Bestätigung gelten auch hier. Alternativ kann das bekannte Paket über **Windows-Einstellungen → Apps → Installierte Apps → Windows Packet Filter x64** mit dessen offiziellem Uninstaller entfernt werden; dies entfernt allein noch keine übrigen DYNEX-Daten.
+**Bereits deinstalliert:** Starte `DYNEX-Cleanup-1.0.5.exe` auf dem betroffenen PC unter dem Windows-Benutzer, der DYNEX installiert hatte. Das Programm bereinigt zurückgebliebene Komponenten für den festen damaligen Installationspfad. Es installiert keine Voraussetzungen und startet keine Messung oder Paketverarbeitung. Ist die DYNEX-App noch installiert, fordert es die normale Deinstallation an. Die gleiche Herkunftsprüfung und gegebenenfalls ausdrückliche Bestätigung gelten auch hier. Alternativ kann das bekannte Paket über **Windows-Einstellungen → Apps → Installierte Apps → Windows Packet Filter x64** mit dessen offiziellem Uninstaller entfernt werden; dies entfernt allein noch keine übrigen DYNEX-Daten.
 
 Die Bereinigung entfernt die eigene unveränderte Firewallregel, eigene Autostart- und Verknüpfungseinträge sowie das lokale `%LOCALAPPDATA%\DYNEX`-Profil einschließlich Einstellungen, Kopplungsschlüsseln, Setup-Cache und heruntergeladenen Updates. Fremde gleichnamige Einträge werden erhalten. Zusätzliche Dateien im Programmordner werden nicht pauschal gelöscht. Verzeichnisverknüpfungen werden nicht in andere Ordner verfolgt.
 

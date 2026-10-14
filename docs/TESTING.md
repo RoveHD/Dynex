@@ -1,4 +1,14 @@
-# DYNEX 1.0.4 · Prüfstatus
+# DYNEX 1.0.5 · Prüfstatus
+
+## PC-Kopplung und Verbindungsdiagnose (1.0.5)
+
+Am 14.10.2026 bestanden **156 Core- und 117 Runtime-Prüfungen**. Der Desktop-Release-Build endete ohne Warnungen oder Fehler. Geprüft wurden der bisher fehlerhafte Export/Import zwischen zwei zunächst automatischen Instanzen, dauerhafter Protokollwechsel, Erhalt der Identität, Schreibfehler, begrenzte private Adresslisten und DYNEX1-Kompatibilität. Einseitig konfigurierte direkte UDP-Verbindungen erhalten nun auch die Rückrichtung. Die Transportprüfungen verwenden echte verschlüsselte UDP-Kommunikation auf Loopback, einschließlich Routenablauf, ungültiger Authentifizierung, Replay-Abwehr und authentifizierter Zeitabweichung.
+
+Die neuen Diagnoseprüfungen unterscheiden eigene Pakete, fremde Protokollmarkierungen, gültige Handshakes und abgewiesene Netzwerkbereiche. Ein fremder Modus oder ein empfangenes Paket erzeugt keine vertrauenswürdige Geräteanzeige. Fehlende Nachrichten werden nicht als bewiesener Firewallfehler ausgegeben. Logs: `artifacts/core-tests-1.0.5.log`, `artifacts/runtime-pairing-tests-final.log` und `artifacts/desktop-build-1.0.5.log`.
+
+Ein fehlgeschlagener Entwicklungscheck hatte zunächst wegen einer unbehandelten Ausnahme einen Windows-Fehlerdialog geöffnet. Der Testprozess wurde beendet. Der Core-Testeinstieg fängt Fehler jetzt ab, schreibt sie ins Protokoll und endet mit Fehlercode 1; Fehlerdialoge sind zusätzlich ausschließlich für diesen Testprozess unterdrückt. Der abschließende Testlauf über die DLL endete erfolgreich ohne solche Fenster. Einzelne UDP-Testpakete wurden auf neuen Sockets nicht zuverlässig zugestellt; die neuen Transportfixtures senden deshalb wie der echte Dienst periodisch bis zu einer begrenzten Beobachtungsfrist. Authentifizierungs- und Replay-Anforderungen bleiben unverändert.
+
+Kein neuer sichtbarer WPF-Smoke, keine Installation oder Änderung von Windows-Netzwerkeinstellungen und kein physischer Zwei-PC-Test auf KING-PC wurden ausgeführt. Das anfängliche AutoLAN-Problem auf den entfernten PCs ist damit noch nicht als behoben bestätigt; die neue Diagnose erfasst die dafür bislang fehlenden Beobachtungen.
 
 ## Vollständige Deinstallation und nachträgliche Bereinigung (1.0.4)
 

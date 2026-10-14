@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private bool _settingUp;
     private bool _refreshingProcesses;
     private bool _savingAutoUpdate;
+    private bool _checkingNetwork;
     private IReadOnlyList<HistoryPoint> _lastHistory = Array.Empty<HistoryPoint>();
     private IReadOnlyList<DeviceView> _deviceSnapshot = Array.Empty<DeviceView>();
     private int _devicePage;
@@ -300,17 +301,21 @@ public partial class MainWindow : Window
     }
     private async void RevealCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
-        if (!_revealed) PairingBox.Text = _runtime.ExportPairingCode();
+        if (!_revealed)
+        {
+            PairingBox.Text = await _runtime.ActivatePairingCodeAsync();
+            AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
+            ErrorText.Text = "Manuelle Gruppe aktiviert. Diesen Code auf dem anderen PC importieren.";
+        }
         else PairingBox.Clear();
         _revealed = !_revealed; ((System.Windows.Controls.Button)sender).Content = _revealed ? "Verbergen" : "Anzeigen";
-        await Task.CompletedTask;
     });
     private async void CopyCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
-        var code = _runtime.ExportPairingCode();
-        Forms.Clipboard.SetText(code); ErrorText.Text = "Gruppencode in die Zwischenablage kopiert.";
+        var code = await _runtime.ActivatePairingCodeAsync();
+        AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
+        Forms.Clipboard.SetText(code); ErrorText.Text = "Manuelle Gruppe aktiviert und Code kopiert. Auf dem anderen PC importieren.";
         if (_revealed) PairingBox.Text = code;
-        await Task.CompletedTask;
     });
     private async void PasteCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -324,7 +329,8 @@ public partial class MainWindow : Window
         await _runtime.ImportPairingCodeAsync(PairingBox.Text.Trim());
         PairingBox.Clear(); _revealed = false;
         AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
-        ErrorText.Text = "Gruppencode importiert.";
+        PeersBox.Text = _runtime.Settings.DirectPeers;
+        ErrorText.Text = "Manuelle Gruppe aktiviert. DYNEX sucht jetzt die PCs mit demselben Code.";
     });
     private async void Diagnostics_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -335,11 +341,26 @@ public partial class MainWindow : Window
 
     private async Task RunUiAction(Func<Task> action)
     {
-        try { ErrorText.Text = ""; await action(); }
+        try { ErrorText.Text = ""; ErrorText.ToolTip = null; await action(); }
         catch (Exception ex) { ErrorText.Text = $"Aktion fehlgeschlagen: {ex.Message}"; }
     }
 
-    private void NetworkHelp_Click(object sender, RoutedEventArgs e) => ShowSettings("network");
+    private async void NetworkHelp_Click(object sender, RoutedEventArgs e)
+    {
+        ShowSettings("network");
+        if (_checkingNetwork) return;
+        _checkingNetwork = true;
+        try
+        {
+            await RunUiAction(async () =>
+            {
+                var result = await _runtime.CheckNetworkAsync();
+                ErrorText.Text = result.FirewallMessage;
+                ErrorText.ToolTip = result.FirewallMessage;
+            });
+        }
+        finally { _checkingNetwork = false; }
+    }
     private async void WindowsNetwork_Click(object sender, RoutedEventArgs e) => await RunUiAction(() =>
     {
         Process.Start(new ProcessStartInfo("ms-settings:network-status") { UseShellExecute = true });
@@ -401,9 +422,12 @@ public partial class MainWindow : Window
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
         NetworkStatus.ToolTip = s.NetworkStatus;
         NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 ? Visibility.Visible : Visibility.Collapsed;
-        NetworkHelpText.Text = s.NetworkProblem ?? (s.Devices.Count < 2
+        NetworkHelpText.Text = s.NetworkProblem ?? s.NetworkDiagnostics?.Hint ?? (s.Devices.Count < 2
             ? "Noch kein anderer PC verbunden. DYNEX muss auf beiden PCs laufen und das Windows-Netzwerk auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
             : $"{s.Devices.Count} PCs verbunden. Die Verbindung wird automatisch überwacht.");
+        NetworkHelpText.ToolTip = s.NetworkDiagnostics is { } network
+            ? $"{NetworkHelpText.Text}\nModus: {network.Mode}\nLokale Adressen: {string.Join(", ", network.LocalAddresses)}\nGesendet: {network.SentDatagrams} · Empfangen: {network.ReceivedDatagrams} (davon eigene: {network.SelfDatagrams}) · Bestätigte Statuspakete: {network.AcceptedStatusDatagrams}\nVollständige Werte: Diagnose exportieren."
+            : NetworkHelpText.Text;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
             ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
             : "Sobald ein Spiel im Fokus ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
