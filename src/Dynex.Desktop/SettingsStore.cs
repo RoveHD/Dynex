@@ -75,6 +75,15 @@ internal sealed class SettingsStore
         if (value.GameProcesses.Length > 4096) throw new ArgumentException("Zu viele Prozessnamen.");
         foreach (var process in Split(value.GameProcesses))
             if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,79}$")) throw new ArgumentException("Nur Prozessnamen ohne Pfad (maximal 80 Zeichen) angeben.");
+        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Spiele mit früher Begrenzung"), (value.AlwaysLimitPrograms, "Sofort zu begrenzende Programme") })
+        {
+            if (list.Length > 2048 || Split(list).Length > 32) throw new ArgumentException($"{label}: höchstens 32 Namen.");
+            foreach (var process in Split(list))
+                if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,63}$")) throw new ArgumentException($"{label}: nur Prozessnamen ohne Pfad angeben.");
+        }
+        if (!TimeOnly.TryParseExact(value.NightFrom, "HH:mm", out _) || !TimeOnly.TryParseExact(value.NightTo, "HH:mm", out _))
+            throw new ArgumentException("Zeitplan: Uhrzeiten im Format HH:mm angeben (z. B. 01:00).");
+        if (value.WeekendProfile is not ("" or "Turnier" or "Standard" or "Entspannt")) throw new ArgumentException("Zeitplan: unbekanntes Wochenendprofil.");
         if (Split(value.DirectPeers).Length > 32) throw new ArgumentException("Maximal 32 direkte Geräteadressen.");
         foreach (var address in Split(value.DirectPeers))
             if (!IPAddress.TryParse(address, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork || !IsPrivate(ip)) throw new ArgumentException("Direkte Geräte benötigen eine private IPv4-Adresse.");

@@ -27,6 +27,15 @@ public sealed record UserSettings
     public double? UploadCapacityMbps { get; init; }
     public bool UploadLimitEnabled { get; init; } = true;
     public double? ManualUploadLimitMbps { get; init; }
+    /// <summary>Games (process names) that count as gaming as soon as they run, e.g. during loading or matchmaking.</summary>
+    public string EarlyLimitGames { get; init; } = "";
+    /// <summary>Programs limited at once while gaming, without the bulk threshold (e.g. steam).</summary>
+    public string AlwaysLimitPrograms { get; init; } = "";
+    public bool PingAlarm { get; init; } = true;
+    public bool NightFree { get; init; }
+    public string NightFrom { get; init; } = "01:00";
+    public string NightTo { get; init; } = "08:00";
+    public string WeekendProfile { get; init; } = "";
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";
@@ -36,7 +45,7 @@ public sealed record UserSettings
 
 public sealed record PingView(double? Current, double? Jitter, double? Loss, int Count, string Target);
 public sealed record DeviceView(string Name, string Address, bool Gaming, string Game, double? LimitMbps, string State,
-    double? DownloadMbps = null, double? UploadMbps = null);
+    double? DownloadMbps = null, double? UploadMbps = null, string? TopProgram = null);
 public sealed record HistoryPoint(DateTimeOffset Time, double? RouterMs, double? ExternalMs, double? DownloadMbps, bool Protection);
 public sealed record RuntimeSnapshot(
     string State, string Detail, bool IsGaming, string Game, bool DriverActive,
@@ -51,4 +60,5 @@ public sealed record RuntimeSnapshot(
     Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null,
     string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null,
     Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null,
-    double? UploadLimitMbps = null);
+    double? UploadLimitMbps = null, string? PingAlert = null, IReadOnlyList<ProgramTraffic>? TopPrograms = null,
+    string? GameServer = null, PingView? GameServerPing = null, string? ScheduleReason = null);

@@ -102,8 +102,49 @@ public partial class MainWindow : Window
         _resumeItem.Enabled = false;
         ErrorText.Text = "Pause beendet. Das Downloadlimit gilt wieder beim nächsten Messzyklus.";
     }
+    private string? _shownPingAlert;
+    private DateTime _analysisRenderedAt;
+    private async void ExportQualityLog_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "dynex-internetstoerungen.csv", Filter = "CSV-Datei (*.csv)|*.csv" };
+        if (dialog.ShowDialog(this) != true) return;
+        await File.WriteAllTextAsync(dialog.FileName, _runtime.QualityLogCsv(), System.Text.Encoding.UTF8);
+        ErrorText.Text = "Störungsprotokoll gespeichert. Es eignet sich als Nachweis gegenüber deinem Internetanbieter.";
+    });
+    private void RenderAnalysis(RuntimeSnapshot? s)
+    {
+        if (AnalysisSettingsSection.Visibility != Visibility.Visible) return;
+        // The report reads small local files; refresh at most every 30 seconds.
+        if (DateTime.UtcNow - _analysisRenderedAt > TimeSpan.FromSeconds(30))
+        {
+            _analysisRenderedAt = DateTime.UtcNow;
+            WeeklyReportText.Text = _runtime.WeeklyReportText();
+            QualityLogText.Text = _runtime.QualityEventCount == 0
+                ? "Bisher keine Ausfälle oder Pingspitzen aufgezeichnet."
+                : $"{_runtime.QualityEventCount} Störungen aufgezeichnet (Ausfälle bei funktionierendem Router und deutliche Pingspitzen).";
+            var guide = _runtime.RouterGuideFor();
+            RouterGuideTitle.Text = guide.Router;
+            RouterGuideSteps.Text = string.Join("\n", guide.Steps.Select((step, i) => $"{i + 1}. {step}"));
+        }
+        if (s is null) return;
+        var lines = new List<string>();
+        if (s.TopPrograms is { Count: > 0 } top)
+            lines.AddRange(top.Select(p => $"Dieser PC · {p.Name}: ↓ {p.DownMbps:0.0} / ↑ {p.UpMbps:0.0} Mbit/s"));
+        lines.AddRange(s.Devices.Skip(1).Where(d => d.TopProgram is not null)
+            .Select(d => $"{d.Name} · {d.TopProgram}: ↓ {d.DownloadMbps ?? 0:0.0} Mbit/s gesamt"));
+        TopProgramsText.Text = lines.Count > 0 ? string.Join("\n", lines)
+            : "Programme erscheinen, sobald beim Spielen die Priorisierung läuft. Mit „Beim Spielen sofort begrenzen“ (Spiele) lassen sie sich direkt bremsen.";
+        GameServerDetail.Text = s.GameServer is { } server
+            ? $"Spielserver {server}: {(s.GameServerPing?.Current is { } ms ? $"{ms:0} ms" : "antwortet nicht auf Ping")} · Schwankung {s.GameServerPing?.Jitter:0.0} ms. Gemessen mit eigenen Ping-Paketen; Spielpakete bleiben unberührt."
+            : "Während du spielst, misst DYNEX den Ping zum Server deines Spiels mit eigenen Ping-Paketen. Spielpakete werden dafür nicht angefasst.";
+    }
     private void UpdateTray(RuntimeSnapshot s)
     {
+        if (s.PingAlert is { } alert && !ReferenceEquals(alert, _shownPingAlert))
+        {
+            _shownPingAlert = alert;
+            if (_runtime.Settings.Notifications) _tray.ShowBalloonTip(6000, "Ping gestiegen", alert, Forms.ToolTipIcon.Warning);
+        }
         RenderGuide(s);
         if (s.LastSession is { } session && !ReferenceEquals(session, _shownSession))
         {
@@ -141,6 +182,13 @@ public partial class MainWindow : Window
         RenderCapacity();
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
         NotificationsCheck.IsChecked = s.Notifications;
+        PingAlarmCheck.IsChecked = s.PingAlarm;
+        EarlyGamesBox.Text = s.EarlyLimitGames;
+        AlwaysLimitBox.Text = s.AlwaysLimitPrograms;
+        NightFreeCheck.IsChecked = s.NightFree;
+        NightFromBox.Text = s.NightFrom;
+        NightToBox.Text = s.NightTo;
+        WeekendProfileCombo.SelectedIndex = s.WeekendProfile switch { "Turnier" => 1, "Standard" => 2, "Entspannt" => 3, _ => 0 };
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         BetaUpdatesCheck.IsChecked = s.BetaUpdates;
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
@@ -167,6 +215,10 @@ public partial class MainWindow : Window
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
                 Notifications = NotificationsCheck.IsChecked == true,
                 UploadLimitEnabled = UploadLimitCheck.IsChecked == true,
+                PingAlarm = PingAlarmCheck.IsChecked == true,
+                EarlyLimitGames = EarlyGamesBox.Text.Trim(), AlwaysLimitPrograms = AlwaysLimitBox.Text.Trim(),
+                NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
+                WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                 ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
                 GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
@@ -571,6 +623,11 @@ public partial class MainWindow : Window
             ? "Nur aktiv, wenn auf einem deiner DYNEX-PCs ein Spiel im Fokus ist. Ohne Gaming bleibt der Netzwerkfilter inaktiv."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
+        GameServerText.Visibility = s.GameServer is null ? Visibility.Collapsed : Visibility.Visible;
+        GameServerText.Text = s.GameServer is null ? "" : $"Spielserver: {(s.GameServerPing?.Current is { } serverMs ? $"{serverMs:0} ms" : "kein Ping")}";
+        GameServerText.ToolTip = s.GameServer is { } gs ? $"Server {gs}, gemessen mit eigenen Ping-Paketen." : null;
+        ScheduleStatusText.Text = s.ScheduleReason ?? "Gerade gilt kein Zeitplan.";
+        RenderAnalysis(s);
         _deviceSnapshot = s.Devices;
         RenderDevicePage();
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
@@ -643,7 +700,7 @@ public partial class MainWindow : Window
     internal void ShowSettings(string section = "general")
     {
         section = section.Trim().ToLowerInvariant();
-        if (section is not ("general" or "games" or "network" or "updates"))
+        if (section is not ("general" or "games" or "network" or "schedule" or "analysis" or "updates"))
             throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
         OverviewPage.Visibility = Visibility.Collapsed;
         SettingsPage.Visibility = Visibility.Visible;
@@ -655,6 +712,8 @@ public partial class MainWindow : Window
         GamesSettingsSection.Visibility = Visibility.Collapsed;
         NetworkSettingsSection.Visibility = Visibility.Collapsed;
         UpdatesSettingsSection.Visibility = Visibility.Collapsed;
+        ScheduleSettingsSection.Visibility = Visibility.Collapsed;
+        AnalysisSettingsSection.Visibility = Visibility.Collapsed;
         foreach (var button in SettingsSectionsNav.Children.OfType<System.Windows.Controls.Button>())
         {
             if (Equals(button.Tag, section))
@@ -674,6 +733,8 @@ public partial class MainWindow : Window
             case "games": GamesSettingsSection.Visibility = Visibility.Visible; break;
             case "network": NetworkSettingsSection.Visibility = Visibility.Visible; break;
             case "updates": UpdatesSettingsSection.Visibility = Visibility.Visible; break;
+            case "schedule": ScheduleSettingsSection.Visibility = Visibility.Visible; break;
+            case "analysis": AnalysisSettingsSection.Visibility = Visibility.Visible; RenderAnalysis(_runtime.Snapshot); break;
             default: throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
         }
     }

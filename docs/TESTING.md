@@ -40,6 +40,11 @@ Auf PC 1 und PC 2 jeweils DYNEX 1.0.6 installieren, beide im selben WLAN/LAN mit
 | 16 | Router mit UPnP-Status (FRITZ!Box) | Download-Karte „Ganzes Heimnetz“; Tooltip mit Geräten ohne DYNEX |
 | 17 | Spiel aus Ubisoft/EA/Battle.net/Xbox starten | Spiel wird erkannt, Launcher allein nicht |
 | 18 | 5 min spielen, beenden | Benachrichtigung „Spielsitzung beendet“ mit Dauer und Ping |
+| 20 | Steam-Update auf PC 2, Spiel auf PC 1 | Geräteliste zeigt bei PC 2 „steam“; mit `steam` in „Sofort begrenzen“ wird es ohne Verzögerung gebremst |
+| 21 | Download auf PC 2 starten, während PC 1 spielt (ohne Limit, z. B. Pause) | Ping-Alarm auf PC 1 nennt PC 2 als Ursache |
+| 22 | Planung: Nachtfenster auf die aktuelle Stunde setzen | Limitgrund „Zeitplan … ohne Limits“, Downloads frei |
+| 23 | Einstellungen → Analyse beim Spielen öffnen | Spielserver mit Ping (oder „antwortet nicht“), Top-Programme, Router-Assistent passend zum Router |
+| 24 | Einen PC ins Gast-WLAN, dann „Verbindung prüfen“ | Hinweis „Gastnetz“ mit nächstem Schritt |
 | 19 | Spiel im Fokus, gleichzeitig großer OneDrive-/Google-Drive-Upload | Upload-Karte „Andere Uploads ≤ … Mbps“, Ping bleibt stabil, Spiel und Discord unbeeinträchtigt; parallel laufender Download wird nicht langsamer |
 
 
