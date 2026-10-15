@@ -292,7 +292,8 @@ internal static class DesktopLifecycle
         try
         {
             window.Width = 900; window.Height = 650; window.ShowOverview();
-            render.Invoke(window, [snapshot with { NetworkProblem = problem, NetworkStatus = problem }]);
+            var advice = new Dynex.Core.PeerNetworkDiagnostics("Automatisch", [], []).Assess();
+            render.Invoke(window, [snapshot with { NetworkProblem = problem, NetworkStatus = problem, Connection = advice }]);
             window.UpdateLayout();
             var help = (System.Windows.Controls.Button)window.FindName("NetworkHelpButton");
             if (!help.IsVisible || !((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).Text.Contains("öffentliches"))
@@ -302,13 +303,13 @@ internal static class DesktopLifecycle
             help.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
             window.UpdateLayout();
             if (!((FrameworkElement)window.FindName("NetworkSettingsSection")).IsVisible ||
-                ((System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText")).Text != problem)
+                ((System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText")).Text != $"{problem} Nächster Schritt: {advice.NextStep}")
                 throw new Exception("Netzwerkhilfe öffnet nicht den vollständigen Fehlergrund.");
             AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "CheckConnectionButton", "ExternalBox", "PairingBox"]);
             Capture(window, Path.Combine(directory, "network-problem-settings-900.png"));
             var diagnostic = new Dynex.Core.PeerNetworkDiagnostics("Automatisch", ["192.168.1.2"], [],
                 SentDatagrams: 8, ReceivedDatagrams: 4, OtherModeDatagrams: 4);
-            render.Invoke(window, [snapshot with { NetworkProblem = null, NetworkDiagnostics = diagnostic }]);
+            render.Invoke(window, [snapshot with { NetworkProblem = null, NetworkDiagnostics = diagnostic, Connection = null }]);
             window.UpdateLayout();
             var diagnosticText = (System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText");
             if (diagnosticText.Text != diagnostic.Hint || !diagnosticText.ToolTip.ToString()!.Contains("Gesendet: 8"))

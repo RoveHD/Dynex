@@ -39,6 +39,28 @@ GitHub-Repository. Sie prüft HTTPS-Ziel, Dateigröße und SHA-256-Digest; auch 
 Installation wird die gespeicherte Datei erneut geprüft. Unvollständige Downloads
 werden nicht installiert. Die Anwendung enthält keine GitHub-Zugangsdaten.
 
+**Beta-Kanal (ab 1.0.6):** Mit **Vorabversionen (Beta) erhalten** berücksichtigt DYNEX auch GitHub-Releases,
+die als „Pre-release“ markiert sind (gleiches Tag-Format `vX.Y.Z`). Es gilt die höchste gültige Version; Entwürfe
+werden nie installiert. Alle Prüfungen (Hash, Signatur, Rückkehr bei Fehlern) sind identisch.
+
+Ab 1.0.6 prüft DYNEX zusätzlich die Authenticode-Signatur des Setups mit Windows
+(`WinVerifyTrust`), direkt nach dem Download und noch einmal unmittelbar vor dem Start:
+
+- Ist die laufende DYNEX.exe gültig signiert, muss das Update gültig und vom selben
+  Herausgeber (gleicher Zertifikatsantragsteller, also auch nach Zertifikatserneuerung)
+  signiert sein. Unsignierte Updates oder ein anderer Herausgeber werden verworfen.
+- Eine vorhandene, aber ungültige Signatur wird immer verworfen.
+- Unsignierte Altinstallationen (bis 1.0.5) akzeptieren weiterhin hash-geprüfte Updates.
+  Das erste signierte Update stellt danach dauerhaft auf Herausgeberprüfung um.
+
+Verworfene Dateien werden gelöscht; die Anzeige lautet „Update verworfen: …“.
+Eine Sperrlistenprüfung über das Netz erfolgt dabei nicht, damit Updates offline
+nicht blockieren.
+
+Schlägt die Installation fehl, stellt das Setup die vorherige Version wieder her
+([Ablauf](installation.md#aktualisieren-und-entfernen)). Diese Version wird nicht
+automatisch erneut geladen; eine spätere höhere Version schon.
+
 Ein separater Installations-Mutex verhindert App-Starts während des Kopierens. Der
 Updater wartet auf das tatsächliche Ende seines Startprozesses und bricht ab, wenn
 eine andere DYNEX-Instanz läuft; er beendet diese nicht. Ein verbrauchter
@@ -46,16 +68,44 @@ Installationsauftrag wird nicht beim nächsten Start erneut ausgeführt. Bei Pro
 bleibt eine manuelle Neuinstallation über das GitHub-Release möglich. Updates lassen
 sich jederzeit durch Entfernen des Hakens ausschalten.
 
-DYNEX-Installer sind derzeit nicht code-signiert. Die Prüfsumme erkennt beschädigte
-Dateien und bindet den Download an die über GitHub gelieferte Freigabe; sie ersetzt
-keine unabhängige Herausgebersignatur. Windows kann beim manuellen Start eine
-SmartScreen-Rückfrage anzeigen.
+## Signieren
+
+`scripts/build.ps1` signiert `DYNEX.exe`, `Dynex.Shaper.exe`/`.dll`, das Setup, den
+darin erzeugten Uninstaller und das Bereinigungsprogramm (SHA-256, RFC-3161-Zeitstempel)
+und prüft jede Signatur sofort mit `signtool verify /pa`. Benötigt werden das Windows SDK
+(`signtool.exe`) und ein Code-Signing-Zertifikat:
+
+```powershell
+# Zertifikat im Windows-Zertifikatspeicher oder auf einem Token (empfohlen, z. B. EV/OV):
+./scripts/build.ps1 -Version 1.0.6 -SignCertificateThumbprint <SHA1-Fingerabdruck> -RequireSignature
+# oder PFX-Datei; das Kennwort nur über die Umgebung, nie als Parameter:
+$env:DYNEX_SIGN_PFX_PASSWORD = '…'
+./scripts/build.ps1 -Version 1.0.6 -SignPfxPath C:\keys\dynex.pfx -RequireSignature
+```
+
+`-RequireSignature` bricht ab, wenn kein Zertifikat konfiguriert ist oder eine Datei nicht
+gültig signiert wurde; für Releases immer verwenden. Ohne Zertifikat entsteht ein
+unsignierter Entwicklungsbuild mit Warnung. Der Build schreibt zu Setup und
+Bereinigungsprogramm jeweils eine `.sha256`-Datei und gibt Hash und Signaturstatus aus.
+
+Grenzen: Eine Signatur macht die Herkunft überprüfbar und verhindert Manipulation nach
+dem Signieren. Windows SmartScreen kann bei neuen Zertifikaten trotzdem warnen, bis
+genügend Reputation besteht; EV-Zertifikate bzw. Microsoft Trusted Signing verkürzen das.
+Der Packet-Filter-Treiber stammt weiterhin vom Hersteller und wird separat geprüft.
 
 ## Folgeversion veröffentlichen
 
+**Automatisch (empfohlen):** Version in `src/Dynex.Desktop/Dynex.Desktop.csproj` erhöhen, committen und das Tag
+`vX.Y.Z` pushen. `.github/workflows/release.yml` führt alle Tests aus, baut und signiert und legt einen
+**Release-Entwurf** mit Setup, Bereinigung und `.sha256`-Dateien an. Dafür als Repository-Secrets hinterlegen:
+`DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD`. Ohne Zertifikat bricht der Release ab,
+außer die Repository-Variable `ALLOW_UNSIGNED_RELEASE` ist `true`. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
+
+**Manuell:**
+
 Die Versionsnummer der Desktop-App und des Installers muss übereinstimmen.
-Nach Tests und `scripts/build.ps1 -Version X.Y.Z` das geprüfte Setup sowie eine
-Datei `DYNEX-Setup-X.Y.Z.exe.sha256` als Assets eines stabilen GitHub-Releases
+Nach Tests und `scripts/build.ps1 -Version X.Y.Z -RequireSignature …` das geprüfte, signierte
+Setup sowie die erzeugte Datei `DYNEX-Setup-X.Y.Z.exe.sha256` als Assets eines stabilen GitHub-Releases
 `vX.Y.Z` veröffentlichen. Die Hashdatei enthält den SHA-256-Hash und den exakten
 Dateinamen. Das Release als neuestes Release markieren. Nur Commits oder Tags ohne
 veröffentlichtes Release lösen kein Update aus.

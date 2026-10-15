@@ -22,6 +22,7 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        Dynex.Native.ProcessEfficiency.UseLatencyCriticalMode();
         try { return await RunAsync(args); }
         catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
     }
@@ -96,13 +97,16 @@ internal static class Program
         using var writeLock = new SemaphoreSlim(1);
         PacketPump? session = null;
         double? rate = null;
+        double? uploadRate = null;
         var qosEnabled = false;
+        var captureOutbound = false;
         string? error = null;
         string? releaseError = null;
         long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
         var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
-        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot);
+        var accounting = new TrafficAccounting();
+        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
         var ownershipWorker = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -135,6 +139,7 @@ internal static class Program
             {
                 var current = Volatile.Read(ref session);
                 var ownershipReady = ownership.Snapshot.IsFresh;
+                var top = accounting.Snapshot();
                 var cleanupError = Volatile.Read(ref releaseError) ?? (current?.CleanupError is { } cleanup
                     ? "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanup : null);
                 var status = new
@@ -142,6 +147,10 @@ internal static class Program
                     active = current?.Active == true && current.HasDownloadLimit && ownershipReady,
                     mbps = current?.Active == true && current.HasDownloadLimit && ownershipReady ? rate : null,
                     qosActive = current?.Active == true && current.QosEnabled && ownershipReady,
+                    uploadActive = current?.Active == true && current.HasUploadLimit && ownershipReady,
+                    uploadMbps = current?.Active == true && current.HasUploadLimit && ownershipReady ? uploadRate : null,
+                    uploadSentBytes = current?.UploadSentBytes ?? 0,
+                    topPrograms = current?.Active == true ? top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,
                     error = cleanupError ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
@@ -201,35 +210,45 @@ internal static class Program
                     ? commandValue.GetInt64() : 0;
                 if (commandId < 0) throw new FormatException("Ungültige Befehlsbestätigung.");
                 var shutdown = commandJson.RootElement.TryGetProperty("shutdown", out var shutdownValue) && shutdownValue.GetBoolean();
-                if (shutdown && (requested is not null || requestedQos)) throw new FormatException("Abschaltung erfordert mbps:null und qosEnabled:false.");
+                var requestedUpload = command.UploadMbps;
+                if (shutdown && (requested is not null || requestedQos || requestedUpload is not null))
+                    throw new FormatException("Abschaltung erfordert mbps:null, uploadMbps:null und qosEnabled:false.");
+                // Upload pacing and QoS marking both need outbound capture; download-only does not.
+                var wantsOutbound = requestedQos || requestedUpload.HasValue;
+                var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue;
                 bulkPolicy.Protect(command.ProtectedProcesses);
                 qosPolicy.Protect(command.ProtectedProcesses);
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
                 var current = Volatile.Read(ref session);
-                if (current?.Active == true && requestedQos == qosEnabled && (requested.HasValue || requestedQos))
+                if (current?.Active == true && requestedQos == qosEnabled && wantsOutbound == captureOutbound && wantsActive)
                 {
                     // Keep native mode/events/queues intact across adaptive rate
                     // changes and cap <-> QoS-only transitions.
                     if (requested != rate) current.UpdateLimit(requested);
+                    if (requestedUpload != uploadRate) current.UpdateUploadLimit(requestedUpload);
                     rate = requested;
+                    uploadRate = requestedUpload;
                 }
-                else if (requested != rate || requestedQos != qosEnabled || requested is null && !requestedQos)
+                else if (requested != rate || requestedUpload != uploadRate || requestedQos != qosEnabled || wantsOutbound != captureOutbound || !wantsActive)
                 {
                     var old = Interlocked.Exchange(ref session, null);
                     if (old is not null) await ReleaseAsync(old);
                     stop.Token.ThrowIfCancellationRequested();
                     rate = requested;
+                    uploadRate = requestedUpload;
                     qosEnabled = requestedQos;
+                    captureOutbound = wantsOutbound;
                     error = null;
-                    if ((requested.HasValue || requestedQos) && Volatile.Read(ref releaseError) is null)
+                    if (wantsActive && Volatile.Read(ref releaseError) is null)
                     {
                         try
                         {
-                            var device = createDevice?.Invoke() ?? new NdisPacketDevice(requestedQos);
+                            var device = createDevice?.Invoke() ?? new NdisPacketDevice(wantsOutbound);
                             try
                             {
                                 stop.Token.ThrowIfCancellationRequested();
-                                var created = new PacketPump(device, requested, bulkPolicy.ShouldLimit, requestedQos ? qosPolicy.Classify : null);
+                                var created = new PacketPump(device, requested, bulkPolicy.ShouldLimit, requestedQos ? qosPolicy.Classify : null,
+                                    requestedUpload, bulkPolicy.ShouldLimitUpload);
                                 Volatile.Write(ref session, created);
                                 if (stop.IsCancellationRequested)
                                 {
@@ -268,6 +287,7 @@ internal static class Program
             await watchdog;
             await ownershipWorker;
             rate = null;
+            uploadRate = null;
             try { await StatusAsync(terminating: true); }
             catch (Exception reportError) when (reportError is IOException or OperationCanceledException or ObjectDisposedException) { }
         }

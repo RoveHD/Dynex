@@ -17,11 +17,11 @@ public sealed record GameDetectionResult(
     public static GameDetectionResult None { get; } = new(null, null, null, null, false, "None");
 }
 
-/// <summary>Read-only detection of known/configured game processes and positive Steam, Epic and GOG installs.</summary>
+/// <summary>Read-only detection of known/configured game processes and positive Steam, Epic, GOG, Ubisoft, EA, Battle.net and Xbox installs.</summary>
 public sealed partial class GameDetector
 {
     private static readonly TimeSpan CatalogLifetime = TimeSpan.FromSeconds(60);
-    private static readonly GameDetector Shared = new(FindSteamRoots, EnumerateProcesses, FindEpicManifestRoots, FindGogInstallRoots);
+    private static readonly GameDetector Shared = new(FindSteamRoots, EnumerateProcesses, FindEpicManifestRoots, FindGogInstallRoots, FindOtherLauncherGames);
     private static readonly IReadOnlyDictionary<string, string> BuiltInGames =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -72,13 +72,16 @@ public sealed partial class GameDetector
     private readonly Func<IEnumerable<ProcessSnapshot>> _processes;
     private readonly Func<IReadOnlyList<string>> _epicManifestRoots;
     private readonly Func<IReadOnlyList<string>> _gogInstallRoots;
+    private readonly Func<IReadOnlyList<SteamGameInstall>> _otherLaunchers;
     private readonly object _catalogGate = new();
     private IReadOnlyList<SteamGameInstall> _catalog = [];
     private long _catalogUpdatedAt;
 
     internal GameDetector(Func<IReadOnlyList<string>> steamRoots, Func<IEnumerable<ProcessSnapshot>> processes,
-        Func<IReadOnlyList<string>>? epicManifestRoots = null, Func<IReadOnlyList<string>>? gogInstallRoots = null)
+        Func<IReadOnlyList<string>>? epicManifestRoots = null, Func<IReadOnlyList<string>>? gogInstallRoots = null,
+        Func<IReadOnlyList<SteamGameInstall>>? otherLaunchers = null)
     {
+        _otherLaunchers = otherLaunchers ?? (() => []);
         _steamRoots = steamRoots;
         _processes = processes;
         _epicManifestRoots = epicManifestRoots ?? (() => []);
@@ -107,7 +110,7 @@ public sealed partial class GameDetector
             if (_catalogUpdatedAt == 0 || Stopwatch.GetElapsedTime(_catalogUpdatedAt, now) >= CatalogLifetime)
             {
                 _catalog = ReadSteamCatalog(_steamRoots()).Concat(ReadEpicCatalog(_epicManifestRoots()))
-                    .Concat(ReadGogCatalog(_gogInstallRoots()))
+                    .Concat(ReadGogCatalog(_gogInstallRoots())).Concat(_otherLaunchers())
                     .OrderByDescending(game => game.InstallPath.Length).ToArray();
                 _catalogUpdatedAt = now;
             }
@@ -274,9 +277,33 @@ public sealed partial class GameDetector
         }
     }
 
+    private static readonly object ImagePathGate = new();
+    private static Dictionary<(int Pid, DateTimeOffset Started), string?> _imagePaths = new();
+
     private static IEnumerable<ProcessSnapshot> EnumerateProcesses()
     {
         if (!OperatingSystem.IsWindows()) yield break;
+        var table = Dynex.Native.ProcessTable.Snapshot();
+        if (table.Count > 0)
+        {
+            // Identities come from one handle-free system query. The executable path needs a
+            // query-limited handle, but only once per process instance (PID + start time), so a
+            // running game is touched once at launch instead of every two seconds.
+            Dictionary<(int, DateTimeOffset), string?> paths;
+            lock (ImagePathGate)
+            {
+                paths = new(table.Count);
+                foreach (var (pid, identity) in table)
+                {
+                    var key = (pid, identity.StartedAtUtc);
+                    paths[key] = _imagePaths.TryGetValue(key, out var known) ? known : TryGetImagePath(pid);
+                }
+                _imagePaths = paths; // Exited processes drop out of the cache.
+            }
+            foreach (var (pid, identity) in table)
+                yield return new ProcessSnapshot(identity.Name, pid, paths[(pid, identity.StartedAtUtc)], identity.StartedAtUtc);
+            yield break;
+        }
         Process[] processes;
         try { processes = Process.GetProcesses(); }
         catch { yield break; }

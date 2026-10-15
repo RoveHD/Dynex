@@ -1,4 +1,52 @@
-# DYNEX 1.0.5 · Prüfstatus
+# DYNEX 1.0.6 · Prüfstatus
+
+## Verbindungsdiagnose, Limitgrund, Update-Absicherung (1.0.6)
+
+Am 15.10.2026 in einer Linux-Umgebung (.NET-SDK 10, Ziel net9.0) ausgeführt und bestanden: **180 Core-Prüfungen** (davon 25 neu), **111 Update-Prüfungen** (davon 17 neu), 59 Adaptive- und 19 Speedtest-Prüfungen. Neu geprüft sind die Ursachenauswahl mit nächstem Schritt, signierte Versionsangabe im AutoLAN-Handshake (inklusive Altformat ohne Version und Abweisung ungültiger Angaben), echte Loopback-Verbindung zweier AutoLAN-Dienste mit Versionsabweichung, Ablauf und automatischer Wiederverbindung nach Neustart des Gegenübers, Zählung zukünftiger Protokollversionen, Limitgrund-Texte sowie Signatur-Richtlinie (gleicher Herausgeber, unsigniert, fremder Herausgeber, ungültige Signatur), erneute Prüfung direkt vor der Übergabe und das Überspringen einer zurückgerollten Version.
+
+Der Desktop und die Windows-Testprojekte (Runtime, Setup, UserCleanup) wurden mit `EnableWindowsTargeting` ohne Warnungen oder Fehler kompiliert, aber **nicht ausgeführt** (Windows erforderlich). Beide NSIS-Skripte wurden mit makensis 3.09 und Testinhalt erzeugt; der Signaturhaken lief dabei für Setup, Uninstaller und Bereinigung. `scripts/build.ps1` wurde mit PowerShell 7.4 syntaktisch geprüft. Nicht ausgeführt: WinVerifyTrust gegen echte signierte Dateien, Signieren mit einem echten Zertifikat, Rollback-Pfad eines echten Setups und der Zwei-PC-Test unten.
+
+### Funktionen aus der Featureliste (1.0.6)
+
+Zusätzlich geprüft: Benachrichtigungslogik (Übergänge, Ratenbegrenzung), Pause als Limitgrund, Bufferbloat-Bewertung und Median, Leerlauf-/Lastping im Speedtest, gewichtete Budgetanteile inklusive Rückfall auf gleiche Anteile mit älteren PCs, Spielsitzungs-Zusammenfassung, UPnP-Routerzähler (SSDP-Herkunft, Hostbindung, DTD-Abweisung, 32-Bit-Überlauf, End-to-End gegen einen simulierten Router) sowie Beta-Kanal (Vorabversionen, Entwürfe, fehlerhafte Einträge). Launcher-Erkennung (Ubisoft/EA/Battle.net-Registrierungen, Xbox `MicrosoftGame.config` inklusive DTD-Abweisung) läuft in den Windows-Tests.
+
+**GitHub Actions (Windows-Runner):** Runtime-, Setup-, UserCleanup-, GameDetection-, Bulk- und Shaper-Tests sowie der unsignierte Installer-Build laufen bei jedem Push; Lauf 7 (15.10.2026) war vollständig grün. Ein zeitabhängiger Updater-Test (Wettlauf zwischen Hintergrund- und manueller Prüfung) wurde dabei gefunden und behoben. Traffic- und Live-Tests benötigen echten Filter bzw. Router und bleiben manuell.
+
+Nicht automatisch prüfbar und deshalb offen: Infobereich-Benachrichtigungen und Assistent auf echtem Desktop, UPnP gegen echte Router, Launcher-Erkennung mit echten Installationen.
+
+**Upload-Begrenzung:** Die Klassifizierung (nur große Uploads identifizierter Nicht-Spiel-Programme; ACKs, Spiele, Sprachchat, unbekannte Eigentümer frei) und eine eigene Upload-Warteschlange sind mit simuliertem Paketgerät geprüft: Spielpakete und eingehende Pakete passieren sofort, während ein Upload gesättigt ist. Mit echtem NDIS-Filter noch nicht geprüft (Abnahmeschritt 19). **Bewusst nicht umgesetzt:** eine englische Oberfläche (alle Texte müssten in Ressourcen ausgelagert werden; eigenes Paket).
+
+### Abnahme auf zwei echten PCs (offen)
+
+Auf PC 1 und PC 2 jeweils DYNEX 1.0.6 installieren, beide im selben WLAN/LAN mit Windows-Profil **Privat**. Nach jedem Schritt „Diagnose exportieren“ sichern.
+
+| # | Schritt | Erwartung |
+| --- | --- | --- |
+| 1 | Beide starten (AutoLAN an) | Innerhalb von 10 s je 2 Geräte unter **Verbundene PCs**, keine Problemmeldung |
+| 2 | DYNEX auf PC 2 beenden | Auf PC 1 nach ≤ 10 s „„PC 2“ antwortet seit … nicht mehr“ mit nächstem Schritt |
+| 3 | DYNEX auf PC 2 wieder starten | Verbindung ohne Eingriff wieder da, Meldung verschwindet |
+| 4 | PC 2 in Standby, nach 2 min aufwecken | Verbindung ≤ 30 s nach Anmeldung wieder da |
+| 5 | PC 2 auf anderes WLAN/Gastnetz und zurück | Während der Trennung „antwortet nicht mehr“ bzw. „anderes Netz“; danach automatische Wiederverbindung |
+| 6 | Netzwerkprofil PC 2 auf **Öffentlich** | PC 2 zeigt „nicht als privat eingestuft“ + Schritt „Profil auf Privat“ |
+| 7 | AutoLAN auf PC 2 aus, PC 1 an | „anderer Verbindungsmodus“ |
+| 8 | Code auf PC 1 kopieren, auf PC 2 importieren | Verbindung über private Gruppe, auch bei blockiertem Multicast |
+| 9 | PC 2 mit 1.0.5, PC 1 mit 1.0.6 | PC 1 meldet „„PC 2“ vor 1.0.6 … aktualisieren“ |
+| 10 | Spiel auf PC 2 im Fokus, Download auf PC 1 | PC 1: Downloadbudget mit Grund „Gaming auf PC 2 (…) erkannt“, Tooltip mit aktueller Geschwindigkeit |
+| 11 | Update 1.0.6 → Folgeversion über **Jetzt prüfen** | Signatur akzeptiert, Installation beim nächsten Start, Version erhöht |
+| 12 | Folgeversion mit absichtlich defektem Helper | Setup stellt 1.0.6 wieder her, Hinweis beim Start, kein erneuter Auto-Download |
+| 13 | Tray → 30 min pausieren, während PC 2 spielt | Limitgrund „Von dir pausiert bis …“, Downloads frei; „Pause beenden“ stellt das Limit wieder her |
+| 14 | PC 1 Priorität Hoch, PC 2 Normal, Spiel auf PC 2 | Limit PC 1 ≈ 2/3, PC 2 ≈ 1/3 des Budgets |
+| 15 | Speedtest bei laufendem Download auf einem Handy | Bufferbloat-Bewertung und Empfehlung erscheinen |
+| 16 | Router mit UPnP-Status (FRITZ!Box) | Download-Karte „Ganzes Heimnetz“; Tooltip mit Geräten ohne DYNEX |
+| 17 | Spiel aus Ubisoft/EA/Battle.net/Xbox starten | Spiel wird erkannt, Launcher allein nicht |
+| 18 | 5 min spielen, beenden | Benachrichtigung „Spielsitzung beendet“ mit Dauer und Ping |
+| 20 | Steam-Update auf PC 2, Spiel auf PC 1 | Geräteliste zeigt bei PC 2 „steam“ in „Lädt gerade“ |
+| 21 | Download auf PC 2 starten, während PC 1 spielt (ohne Limit, z. B. Pause) | Ping-Alarm auf PC 1 nennt PC 2 als Ursache |
+| 22 | Planung: Nachtfenster auf die aktuelle Stunde setzen | Limitgrund „Zeitplan … ohne Limits“, Downloads frei |
+| 23 | Einstellungen → Analyse beim Spielen öffnen | Top-Programme und Router-Assistent passend zum Router |
+| 24 | Einen PC ins Gast-WLAN, dann „Verbindung prüfen“ | Hinweis „Gastnetz“ mit nächstem Schritt |
+| 19 | Spiel im Fokus, gleichzeitig großer OneDrive-/Google-Drive-Upload | Upload-Karte „Andere Uploads ≤ … Mbps“, Ping bleibt stabil, Spiel und Discord unbeeinträchtigt; parallel laufender Download wird nicht langsamer |
+
 
 ## PC-Kopplung und Verbindungsdiagnose (1.0.5)
 

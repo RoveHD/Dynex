@@ -1,6 +1,14 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.5'
+    [string]$Version = '1.0.6',
+    # Authenticode signing. Either a certificate in the Windows certificate store
+    # (thumbprint; works with hardware tokens/EV certificates) or a PFX file whose
+    # password is read only from DYNEX_SIGN_PFX_PASSWORD, never from the command line.
+    [string]$SignCertificateThumbprint = $env:DYNEX_SIGN_THUMBPRINT,
+    [string]$SignPfxPath = $env:DYNEX_SIGN_PFX,
+    [string]$TimestampUrl = 'http://timestamp.digicert.com',
+    # Release builds should pass this so an unsigned setup can never be published by accident.
+    [switch]$RequireSignature
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +29,44 @@ function Assert-ArtifactPath([string]$Path) {
 }
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { throw '.NET SDK nicht gefunden.' }
+
+$signScript = $null
+if ($SignCertificateThumbprint -or $SignPfxPath) {
+    $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if (-not $signtool) {
+        $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+        $signtool = Get-ChildItem -LiteralPath $kits -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'x64' } | Sort-Object { $_.Directory.Parent.Name } -Descending | Select-Object -First 1
+    }
+    if (-not $signtool) { throw 'signtool.exe nicht gefunden (Windows SDK installieren).' }
+    $signtoolPath = if ($signtool -is [System.IO.FileInfo]) { $signtool.FullName } else { $signtool.Source }
+    if ($SignCertificateThumbprint) {
+        if ($SignCertificateThumbprint -notmatch '^[0-9A-Fa-f]{40}$') { throw 'Ungültiger Zertifikat-Fingerabdruck.' }
+        $certificateArgs = "/sha1 $SignCertificateThumbprint"
+    } else {
+        if (-not (Test-Path -LiteralPath $SignPfxPath)) { throw "PFX-Datei nicht gefunden: $SignPfxPath" }
+        if (-not $env:DYNEX_SIGN_PFX_PASSWORD) { throw 'DYNEX_SIGN_PFX_PASSWORD ist nicht gesetzt.' }
+        $certificateArgs = '/f "' + (Resolve-Path -LiteralPath $SignPfxPath).Path + '" /p "%DYNEX_SIGN_PFX_PASSWORD%"'
+    }
+    # One script signs and verifies every file, including NSIS' generated uninstaller.
+    # The PFX password stays an environment reference and is never written to disk.
+    New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+    $signScript = Join-Path $artifactRoot 'sign.cmd'
+    Set-Content -LiteralPath $signScript -Encoding Ascii -Value @(
+        '@echo off',
+        ('"{0}" sign /fd SHA256 /tr "{1}" /td SHA256 /d "DYNEX" /du "https://github.com/RoveHD/Dynex" {2} "%~1" || exit /b 1' -f $signtoolPath, $TimestampUrl, $certificateArgs),
+        ('"{0}" verify /pa /q "%~1" || exit /b 1' -f $signtoolPath)
+    )
+} elseif ($RequireSignature) {
+    throw 'Signierung verlangt, aber weder -SignCertificateThumbprint noch -SignPfxPath (bzw. DYNEX_SIGN_THUMBPRINT/DYNEX_SIGN_PFX) gesetzt.'
+} else {
+    Write-Warning 'Kein Signaturzertifikat konfiguriert: App und Setup bleiben unsigniert (Windows SmartScreen warnt).'
+}
+function Invoke-Sign([string]$Path) {
+    if (-not $signScript) { return }
+    & $signScript $Path
+    if ($LASTEXITCODE -ne 0) { throw "Signieren fehlgeschlagen: $Path" }
+}
 if (-not (Test-Path $desktopProject) -or -not (Test-Path $shaperProject)) { throw 'DYNEX Desktop- oder Shaper-Projekt fehlt.' }
 
 New-Item -ItemType Directory -Force -Path $publishRoot | Out-Null
@@ -41,11 +87,11 @@ foreach ($path in $cleanPaths) {
 New-Item -ItemType Directory -Force -Path $desktopOut, $shaperOut, $docsOut | Out-Null
 
 Write-Host 'Veröffentliche DYNEX Desktop (self-contained win-x64)...'
-& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=$Version -o $desktopOut
+& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:Version=$Version -o $desktopOut
 if ($LASTEXITCODE -ne 0) { throw "Desktop-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 
 Write-Host 'Veröffentliche DYNEX Shaper (self-contained win-x64)...'
-& dotnet publish $shaperProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $shaperOut
+& dotnet publish $shaperProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:Version=$Version -o $shaperOut
 if ($LASTEXITCODE -ne 0) { throw "Shaper-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 
 $desktopExe = Join-Path $desktopOut 'DYNEX.exe'
@@ -57,6 +103,10 @@ if (-not (Test-Path $shaperAssembly)) { throw "Der erforderliche Shaper-Engineco
 $forbiddenPayloads = @('WinDivert.dll', 'WinDivert64.sys', 'ndisapi.dll', 'Windows.Packet.Filter.3.6.2.1.x64.msi')
 $unexpectedPayload = Get-ChildItem -LiteralPath $shaperOut -File -Recurse | Where-Object { $_.Name -in $forbiddenPayloads } | Select-Object -First 1
 if ($unexpectedPayload) { throw "Der Shaper-Publish enthält einen nicht erlaubten Treiber-/MSI-Bestandteil: $($unexpectedPayload.FullName)" }
+# Sign our own binaries before NSIS packs them. Runtime DLLs are already signed by Microsoft.
+Invoke-Sign $desktopExe
+Invoke-Sign $shaperExe
+Invoke-Sign $shaperAssembly
 Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $publishRoot 'DYNEX.exe') -Force
 Remove-Item -LiteralPath $desktopOut -Recurse -Force
 
@@ -127,12 +177,18 @@ if (-not $nsis) {
     $cache = Join-Path $env:LOCALAPPDATA 'electron-builder/Cache'
     $nsis = Get-ChildItem -LiteralPath $cache -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 }
+if (-not $nsis) {
+    # Standard NSIS installation (also used by the CI runner).
+    $nsis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | ForEach-Object { Get-Item -LiteralPath $_ } | Select-Object -First 1
+}
 if (-not $nsis) { throw 'NSIS makensis.exe nicht gefunden. Es wurde nichts global installiert.' }
 $nsisPath = if ($nsis -is [System.IO.FileInfo]) { $nsis.FullName } else { $nsis.Source }
 
+$signDefine = if ($signScript) { @("/DSIGN_SCRIPT=$signScript") } else { @() }
 $setup = Join-Path $repoRoot "artifacts/DYNEX-Setup-$Version.exe"
 Write-Host "Erzeuge Installer: $setup"
-& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DREPO_ROOT=$repoRoot" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$setup" $nsisSource
+& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DREPO_ROOT=$repoRoot" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$setup" @signDefine $nsisSource
 if ($LASTEXITCODE -ne 0) { throw "NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 if (-not (Test-Path $setup)) { throw 'NSIS meldete Erfolg, aber die Setup-EXE fehlt.' }
 Write-Host "Fertig: $setup"
@@ -141,7 +197,17 @@ Write-Host "Fertig: $setup"
 # This contains only the app's dedicated cleanup entry points, no MSI or driver.
 $cleanupSource = Join-Path $repoRoot 'installer/DYNEX-Cleanup.nsi'
 $cleanupExe = Join-Path $repoRoot "artifacts/DYNEX-Cleanup-$Version.exe"
-& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$cleanupExe" $cleanupSource
+& $nsisPath '/INPUTCHARSET' 'UTF8' "/DAPP_VERSION=$Version" "/DPUBLISH_ROOT=$publishRoot" "/DOUTPUT_FILE=$cleanupExe" @signDefine $cleanupSource
 if ($LASTEXITCODE -ne 0) { throw "Cleanup-NSIS fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 if (-not (Test-Path -LiteralPath $cleanupExe)) { throw 'NSIS hat kein Bereinigungsprogramm erzeugt.' }
 Write-Host "Fertig: $cleanupExe"
+
+# Release assets: the app's updater requires DYNEX-Setup-X.Y.Z.exe.sha256 (hash and exact name).
+foreach ($file in @($setup, $cleanupExe)) {
+    $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+    $leaf = Split-Path $file -Leaf
+    Set-Content -LiteralPath "$file.sha256" -Encoding Ascii -NoNewline -Value "$hash  $leaf"
+    $signature = Get-AuthenticodeSignature -LiteralPath $file
+    Write-Host ("{0}: SHA-256 {1} · Signatur: {2}{3}" -f $leaf, $hash, $signature.Status, $(if ($signature.SignerCertificate) { ' · ' + $signature.SignerCertificate.Subject } else { '' }))
+    if ($RequireSignature -and $signature.Status -ne 'Valid') { throw "$leaf ist nicht gültig signiert." }
+}

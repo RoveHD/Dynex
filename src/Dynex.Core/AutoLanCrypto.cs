@@ -8,7 +8,9 @@ namespace Dynex.Core;
 
 internal sealed record AutoHello(Guid DeviceId, Guid SessionId, string SigningPublicKey,
     string ExchangePublicKey, string Challenge, long SentAtUnixMs,
-    Guid? TargetId = null, Guid? TargetSession = null, string? TargetChallenge = null, string? TargetExchangePublicKey = null);
+    Guid? TargetId = null, Guid? TargetSession = null, string? TargetChallenge = null, string? TargetExchangePublicKey = null,
+    // Optional and signed. Releases before 1.0.6 ignore this unknown property and do not send it.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? AppVersion = null);
 
 internal sealed class AutoLanCrypto : IDisposable
 {
@@ -19,14 +21,17 @@ internal sealed class AutoLanCrypto : IDisposable
     private readonly ECDiffieHellman _exchange = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
     internal AutoHello Local { get; }
 
-    internal AutoLanCrypto(string privateKey)
+    internal AutoLanCrypto(string privateKey, string? appVersion = null)
     {
         _signing = AutoLanIdentity.ImportPrivate(privateKey);
         var pub = _signing.ExportSubjectPublicKeyInfo();
         Local = new(AutoLanIdentity.PublicId(pub), Guid.NewGuid(), Convert.ToBase64String(pub),
             Convert.ToBase64String(_exchange.ExportSubjectPublicKeyInfo()),
-            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 0);
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 0, AppVersion: appVersion);
     }
+
+    internal static bool IsVersion(string value) => value.Length <= 16 && value.All(c => char.IsAsciiDigit(c) || c == '.') &&
+        Version.TryParse(value, out var parsed) && parsed.Major < 1000;
 
     internal byte[] Hello(DateTimeOffset now) => Sign(Local with { SentAtUnixMs = now.ToUnixTimeMilliseconds() }, 1);
     internal byte[] Ack(AutoHello remote, DateTimeOffset now) => Sign(Local with
@@ -58,6 +63,7 @@ internal sealed class AutoLanCrypto : IDisposable
             if (hello is null || hello.DeviceId == Guid.Empty || hello.SessionId == Guid.Empty ||
                 hello.SigningPublicKey?.Length != 124 || hello.ExchangePublicKey?.Length != 124 || hello.Challenge?.Length != 44 ||
                 Math.Abs((decimal)now.ToUnixTimeMilliseconds() - hello.SentAtUnixMs) > 30000 ||
+                hello.AppVersion is { } version && !IsVersion(version) ||
                 packet[5] == 1 && (hello.TargetId is not null || hello.TargetSession is not null || hello.TargetChallenge is not null || hello.TargetExchangePublicKey is not null) ||
                 packet[5] == 2 && (hello.TargetId is null || hello.TargetSession is null || hello.TargetChallenge?.Length != 44 || hello.TargetExchangePublicKey?.Length != 124)) return null;
             var pub = Convert.FromBase64String(hello.SigningPublicKey);
@@ -142,7 +148,8 @@ internal sealed class AutoLanCrypto : IDisposable
                 wire.DeviceName.Length > 80 || wire.DeviceName.Any(char.IsControl) || wire.Game?.Length > 80 || wire.Game?.Any(char.IsControl) == true ||
                 !Valid(wire.DownloadMbps, 100000) || !Valid(wire.UploadMbps, 100000) || !Valid(wire.LatencyMs, 10000) || !Valid(wire.AppliedLimitMbps, 100000) ||
                 !Valid(wire.IdleBaselineMs, 10000) || wire.LatencyTargetId?.Length > 256 || wire.LatencyTargetId?.Any(char.IsControl) == true ||
-                wire.LatencySampleSequence is <= 0 || wire.BudgetProposal is { IsValid: false }) return null;
+                wire.LatencySampleSequence is <= 0 || wire.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(wire.ShareWeight) ||
+                !WireAdvertisement.ValidProgram(wire.TopProgram)) return null;
             channel.LastReceivedSequence = sequence;
             return wire;
         }

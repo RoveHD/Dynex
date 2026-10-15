@@ -85,6 +85,77 @@ await Scenario("installed version rejects stale cache", async () =>
     Check(await updated.TakeReadyInstallerAsync() is null, "current installed version cannot reinstall cached same version");
 });
 
+await Scenario("beta channel", async () =>
+{
+    using var stable = new Fixture();
+    stable.Handler.Variant = "prerelease";
+    stable.Service.SetEnabled(true, startBackground: false);
+    await stable.Service.CheckNowAsync();
+    Check(!stable.Service.Status.UpdateReady, "stable channel ignores pre-releases");
+    using var fixture = new Fixture();
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady && fixture.Service.Status.AvailableVersion == "0.5.0",
+        "beta channel installs the newest verified pre-release and skips malformed entries");
+    using var drafts = new Fixture();
+    drafts.Handler.Variant = "draft";
+    drafts.Service.SetBetaChannel(true);
+    drafts.Service.SetEnabled(true, startBackground: false);
+    await drafts.Service.CheckNowAsync();
+    Check(!drafts.Service.Status.UpdateReady, "beta channel never installs drafts");
+});
+
+var publisher = new SignatureCheck(true, true, "CN=DYNEX Publisher");
+foreach (var (name, candidate, current, accepted) in new[]
+{
+    ("signed install requires signed update", SignatureCheck.Unsigned, publisher, false),
+    ("same publisher is accepted", publisher, publisher, true),
+    ("other publisher is rejected", new SignatureCheck(true, true, "CN=Someone Else"), publisher, false),
+    ("broken signature is rejected even on unsigned install", new SignatureCheck(true, false, "CN=DYNEX Publisher"), SignatureCheck.Unsigned, false),
+    ("unsigned legacy install accepts hash-verified unsigned update", SignatureCheck.Unsigned, SignatureCheck.Unsigned, true),
+})
+{
+    await Scenario("signature: " + name, async () =>
+    {
+        using var fixture = new Fixture(current: current) { Candidate = candidate };
+        fixture.Service.SetEnabled(true, startBackground: false);
+        await fixture.Service.CheckNowAsync();
+        Check(fixture.Service.Status.UpdateReady == accepted, name);
+        if (!accepted)
+        {
+            Check(fixture.Service.Status.Message.StartsWith("Update verworfen:"), name + " explains the rejection");
+            Check(!System.IO.Directory.EnumerateFiles(fixture.Directory).Any(f => f.EndsWith(".exe") || f.EndsWith(".part")), name + " keeps no installer");
+        }
+    });
+}
+
+await Scenario("signature re-checked before handoff", async () =>
+{
+    using var fixture = new Fixture(current: publisher) { Candidate = publisher };
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady, "signed update becomes ready");
+    fixture.Candidate = SignatureCheck.Unsigned; // File swapped on disk after download.
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "installer whose signature changed after download is not executed");
+    Check(!File.Exists(Path.Combine(fixture.Directory, "ready.json")) && !File.Exists(Path.Combine(fixture.Directory, "DYNEX-Setup-0.5.0.exe")),
+        "rejected ready installer is removed");
+});
+
+await Scenario("rolled back version is not downloaded again", async () =>
+{
+    using var fixture = new Fixture();
+    System.IO.Directory.CreateDirectory(fixture.Directory);
+    File.WriteAllText(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.5.0\r\n");
+    Check(fixture.Service.RolledBackVersion == "0.5.0", "installer rollback marker is read");
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    Check(!fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("wiederhergestellt"),
+        "a version that failed to install is reported instead of re-downloaded");
+    File.WriteAllText(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.4.0");
+    Check(fixture.Service.RolledBackVersion is null, "marker for an older version is ignored");
+});
+
 foreach (var variant in new[] { "current", "older", "prerelease", "draft", "version-suffix", "version-leading-zero", "foreign-url", "wrong-name", "missing-hash", "duplicate", "oversized", "bad-digest", "bad-hash", "bad-size", "bad-json", "stream-short", "stream-long" })
 {
     await Scenario("reject " + variant, async () =>
@@ -136,7 +207,9 @@ await Scenario("defer gaming and resume", async () =>
     using var fixture = new Fixture(deferInterval: TimeSpan.FromMilliseconds(20));
     fixture.Gaming = true;
     fixture.Service.SetEnabled(true);
-    await fixture.Service.CheckNowAsync();
+    // Wait for the background loop's own check. An extra manual CheckNowAsync could race it
+    // and legitimately issue a second API request.
+    for (var i = 0; i < 250 && !fixture.Service.Status.Message.Contains("Spiel"); i++) await Task.Delay(20);
     Check(fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("Spiel"), "gaming defers installer network traffic");
     await Task.Delay(100);
     Check(fixture.Handler.ApiCalls == 1, "gaming polls local state without repeated GitHub requests");
@@ -240,11 +313,13 @@ sealed class Fixture : IDisposable
     public bool Gaming;
     public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly HttpClient client;
-    public Fixture(TimeSpan? deferInterval = null)
+    public SignatureCheck Candidate = SignatureCheck.Unsigned;
+    public Fixture(TimeSpan? deferInterval = null, SignatureCheck? current = null)
     {
         client = new(Handler);
         Service = new(Directory, new Version(0, 4, 1), () => Gaming, client,
-            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), 1024 * 1024 * 1024);
+            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), 1024 * 1024 * 1024,
+            _ => Candidate, current ?? SignatureCheck.Unsigned);
         Service.Changed += () => { if (Service.Status.UpdateReady) Ready.TrySetResult(); };
     }
     public void Dispose()
@@ -285,6 +360,17 @@ sealed class FakeGitHub : HttpMessageHandler
             if (Variant == "duplicate") assets.Add(installer);
             if (Variant != "missing-hash") assets.Add(new { name = name + ".sha256", browser_download_url = url + name + ".sha256", size = 100 });
             var json = Variant == "bad-json" ? "{bad" : JsonSerializer.Serialize(new { tag_name = tag, draft = Variant == "draft", prerelease = Variant == "prerelease", assets });
+            if (uri.AbsolutePath.EndsWith("/releases"))
+            {
+                // Beta list: a malformed entry, an older stable release and the requested entry as pre-release.
+                var list = new object[]
+                {
+                    new { tag_name = "nightly", draft = false, prerelease = true, assets = Array.Empty<object>() },
+                    new { tag_name = "v0.4.0", draft = false, prerelease = false, assets = Array.Empty<object>() },
+                    new { tag_name = tag, draft = Variant == "draft", prerelease = true, assets }
+                };
+                json = JsonSerializer.Serialize(list);
+            }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         }
         if (uri.Host != "github.com" && uri.Host != "release-assets.githubusercontent.com")

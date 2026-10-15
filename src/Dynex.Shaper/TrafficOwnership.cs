@@ -216,6 +216,8 @@ public sealed class TrafficOwnership : IDisposable
     private OwnershipSnapshot _snapshot = new([], DateTimeOffset.UtcNow, Stopwatch.GetTimestamp(), false);
     private string? _lastError;
     private bool _disposed;
+    private IReadOnlyDictionary<int, Dynex.Native.ProcessTable.Identity> _processTable = new Dictionary<int, Dynex.Native.ProcessTable.Identity>();
+    private long _processTableTick;
     public OwnershipSnapshot Snapshot => Volatile.Read(ref _snapshot);
     public string? LastError => Volatile.Read(ref _lastError);
 
@@ -232,13 +234,25 @@ public sealed class TrafficOwnership : IDisposable
                 ReadTable(rows, true, 2); ReadTable(rows, false, 2);
                 ReadTable(rows, true, 23); ReadTable(rows, false, 23);
                 var identities = new Dictionary<int, (DateTimeOffset? Started, string? Name)>();
+                // Handle-free process identities (never opening the game). The table is re-read only when a
+                // socket belongs to a PID it does not know yet, and otherwise at most every two seconds;
+                // the 250 ms refresh then costs only the IP Helper table reads.
+                var table = _processTable;
+                if (Stopwatch.GetElapsedTime(_processTableTick, tick) >= TimeSpan.FromSeconds(2) ||
+                    rows.Any(row => row.ProcessId > 0 && !table.ContainsKey(row.ProcessId)))
+                {
+                    table = _processTable = Dynex.Native.ProcessTable.Snapshot();
+                    _processTableTick = tick;
+                }
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i];
                     if (!identities.TryGetValue(row.ProcessId, out var identity))
                     {
                         if (identities.Count >= 4096) throw new InvalidOperationException("Zu viele unterschiedliche Socket-Prozesse.");
-                        identity = ReadIdentity(row.ProcessId); identities[row.ProcessId] = identity;
+                        identity = table.TryGetValue(row.ProcessId, out var known)
+                            ? (known.StartedAtUtc, known.Name.Trim().ToLowerInvariant()) : (null, null);
+                        identities[row.ProcessId] = identity;
                     }
                     // Missing process identity cannot establish safe per-program ownership.
                     rows[i] = row with { ProcessId = identity.Started is not null && identity.Name is not null ? row.ProcessId : 0,
@@ -311,19 +325,6 @@ public sealed class TrafficOwnership : IDisposable
             pid = BinaryPrimitives.ReadUInt32LittleEndian(row.Slice(tcp ? 52 : 24, 4));
         }
         return new(new(tcp ? TransportProtocol.Tcp : TransportProtocol.Udp, local, localPort, remote, remotePort), pid <= int.MaxValue ? (int)pid : 0);
-    }
-
-    private static (DateTimeOffset? Started, string? Name) ReadIdentity(int pid)
-    {
-        if (pid <= 0) return (null, null);
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            var started = new DateTimeOffset(process.StartTime.ToUniversalTime());
-            var name = process.ProcessName.Trim().ToLowerInvariant();
-            return string.IsNullOrWhiteSpace(name) ? (null, null) : (started, name);
-        }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception or NotSupportedException) { return (null, null); }
     }
 
     public void Dispose()

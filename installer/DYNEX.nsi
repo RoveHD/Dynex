@@ -6,7 +6,7 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.5"
+  !define APP_VERSION "1.0.6"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -18,6 +18,13 @@ ManifestDPIAware true
   !define OUTPUT_FILE "${REPO_ROOT}\artifacts\DYNEX-Setup-${APP_VERSION}.exe"
 !endif
 !include "${PUBLISH_ROOT}\install-files.nsh"
+
+; Optional Authenticode signing. scripts/build.ps1 passes SIGN_SCRIPT when a
+; code-signing certificate is configured; %1 is the file NSIS just produced.
+!ifdef SIGN_SCRIPT
+  !finalize '"${SIGN_SCRIPT}" "%1"' = 0
+  !uninstfinalize '"${SIGN_SCRIPT}" "%1"' = 0
+!endif
 !include "${PUBLISH_ROOT}\uninstall-files.nsh"
 
 Name "DYNEX · Dynamic Network Experience"
@@ -51,6 +58,9 @@ Var CleanupMutex
 Var CleanupRestart
 Var CleanupDeleteFailed
 Var UpgradeLegacy
+Var RollbackReady
+Var PreviousVersion
+Var SelfTestExit
 
 Function ReleaseUpdateGate
   ${If} $UpdateMutex != 0
@@ -77,7 +87,59 @@ Function .onInstSuccess
 FunctionEnd
 
 Function .onInstFailed
+  ; Restore before restarting so the update handoff reopens the previous, working version.
+  Call RestoreRollback
   Call RestartAfterUpdate
+FunctionEnd
+
+; Copies the installed program before an upgrade overwrites it. Settings, pairing and
+; identity live in %LOCALAPPDATA%\DYNEX and are never touched by the rollback.
+Function BackupForRollback
+  StrCpy $RollbackReady 0
+  StrCpy $PreviousVersion ""
+  IfFileExists "$INSTDIR\DYNEX.exe" 0 backup_done
+  RMDir /r "$INSTDIR\rollback"
+  CreateDirectory "$INSTDIR\rollback\shaper"
+  ClearErrors
+  CopyFiles /SILENT "$INSTDIR\DYNEX.exe" "$INSTDIR\rollback\DYNEX.exe"
+  IfFileExists "$INSTDIR\shaper\*.*" 0 +2
+    CopyFiles /SILENT "$INSTDIR\shaper\*.*" "$INSTDIR\rollback\shaper"
+  IfErrors backup_failed
+  IfFileExists "$INSTDIR\rollback\DYNEX.exe" 0 backup_failed
+  ReadRegStr $PreviousVersion HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "DisplayVersion"
+  StrCpy $RollbackReady 1
+  Goto backup_done
+  backup_failed:
+    RMDir /r "$INSTDIR\rollback"
+    StrCpy $RollbackReady -1
+  backup_done:
+FunctionEnd
+
+Function RestoreRollback
+  ${If} $RollbackReady == 1
+    DetailPrint "Update fehlgeschlagen. Vorherige DYNEX-Version wird wiederhergestellt ..."
+    ClearErrors
+    Delete "$INSTDIR\DYNEX.exe"
+    CopyFiles /SILENT "$INSTDIR\rollback\DYNEX.exe" "$INSTDIR\DYNEX.exe"
+    RMDir /r "$INSTDIR\shaper"
+    CreateDirectory "$INSTDIR\shaper"
+    CopyFiles /SILENT "$INSTDIR\rollback\shaper\*.*" "$INSTDIR\shaper"
+    ${IfNot} ${Errors}
+      ${If} $PreviousVersion != ""
+        WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "DisplayVersion" "$PreviousVersion"
+      ${EndIf}
+      ; Tells the app not to download this version again automatically.
+      CreateDirectory "$LOCALAPPDATA\DYNEX\updates"
+      FileOpen $PrerequisiteLog "$LOCALAPPDATA\DYNEX\updates\rolled-back.txt" w
+      FileWrite $PrerequisiteLog "${APP_VERSION}"
+      FileClose $PrerequisiteLog
+      RMDir /r "$INSTDIR\rollback"
+      DetailPrint "Vorherige Version $PreviousVersion wiederhergestellt."
+    ${Else}
+      DetailPrint "Wiederherstellung unvollständig. Sicherung bleibt unter $INSTDIR\rollback erhalten."
+    ${EndIf}
+    StrCpy $RollbackReady 2
+  ${EndIf}
 FunctionEnd
 
 Function .onGUIEnd
@@ -162,11 +224,31 @@ Section "DYNEX Anwendung" SEC_MAIN
     SetErrorLevel 13
     Abort
   ${EndIf}
+  Call BackupForRollback
+  ${If} $RollbackReady == -1
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Die installierte DYNEX-Version konnte nicht gesichert werden. Setup abgebrochen; Dateien wurden nicht überschrieben."
+    SetErrorLevel 14
+    Abort
+  ${EndIf}
   SetOutPath "$INSTDIR"
   File "${PUBLISH_ROOT}\DYNEX.exe"
   SetOutPath "$INSTDIR\shaper"
   File /r "${PUBLISH_ROOT}\shaper\*"
   !insertmacro InstallDocumentation
+  ; Prove the new binary starts and its payload is complete before anything else changes.
+  ClearErrors
+  ExecWait '"$INSTDIR\DYNEX.exe" --self-test ${APP_VERSION}' $SelfTestExit
+  ${If} ${Errors}
+    StrCpy $SelfTestExit 1
+  ${EndIf}
+  ${If} $SelfTestExit != 0
+    DetailPrint "Starttest der neuen Version fehlgeschlagen (Fehler $SelfTestExit)."
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Die neue DYNEX-Version ließ sich nicht starten (Fehler $SelfTestExit). Die vorherige Version wird wiederhergestellt."
+    SetErrorLevel 15
+    Abort
+  ${EndIf}
   CreateDirectory "$SMPROGRAMS\DYNEX"
   CreateShortcut "$SMPROGRAMS\DYNEX\DYNEX.lnk" "$INSTDIR\DYNEX.exe"
   CreateShortcut "$SMPROGRAMS\DYNEX\Installation.lnk" "$INSTDIR\docs\installation.md"
@@ -210,6 +292,10 @@ Section "DYNEX Anwendung" SEC_MAIN
     SetErrorLevel $PrerequisiteExit
     Abort
   ${EndIf}
+  ; Success: the backup is no longer needed, and a previous failure marker is obsolete.
+  RMDir /r "$INSTDIR\rollback"
+  StrCpy $RollbackReady 0
+  Delete "$LOCALAPPDATA\DYNEX\updates\rolled-back.txt"
 SectionEnd
 
 Section /o "Desktop-Verknüpfung" SEC_DESKTOP
@@ -280,6 +366,7 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall-result.txt"
   Delete "$INSTDIR\user-cleanup-result.txt"
   Delete "$INSTDIR\Uninstall.exe"
+  RMDir /r "$INSTDIR\rollback"
   RMDir "$INSTDIR"
   ${If} $CleanupRestart == 3010
     IfSilent +2

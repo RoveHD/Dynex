@@ -62,6 +62,12 @@ internal sealed class SettingsStore
         Range(value.BackgroundPercent, 10, 95, "Downloadbudget (%)");
         Range(value.ReservePerGamerMbps, 0, value.CapacityMbps, "Reserve je Gaming-PC");
         if (value.ManualLimitMbps is double limit) Range(limit, 0.1, 10000, "Manuelles Limit");
+        if (value.Profile is not ("Turnier" or "Standard" or "Entspannt" or "Eigenes")) throw new ArgumentException("Unbekanntes Profil.");
+        if (value.SharePriority is not (0.5 or 1 or 2)) throw new ArgumentException("Priorität muss Niedrig, Normal oder Hoch sein.");
+        if (value.UploadCapacityMbps is double upload) Range(upload, 0.1, 10000, "Gemessener Upload");
+        if (value.ManualUploadLimitMbps is double uploadLimit) Range(uploadLimit, 0.1, 10000, "Upload-Obergrenze");
+        foreach (var latency in new[] { value.IdleLatencyMs, value.LoadedLatencyMs })
+            if (latency is double ms) Range(ms, 0, 10000, "Gemessener Ping");
         if (!Enum.IsDefined(value.Mode)) throw new ArgumentException("Ungültiger Gaming-Modus.");
         foreach (var target in new[] { value.RouterTarget, value.ExternalTarget })
             if (!string.IsNullOrWhiteSpace(target) && (!IPAddress.TryParse(target, out var ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))) throw new ArgumentException("Messziele müssen gültige IP-Adressen sein.");
@@ -69,6 +75,15 @@ internal sealed class SettingsStore
         if (value.GameProcesses.Length > 4096) throw new ArgumentException("Zu viele Prozessnamen.");
         foreach (var process in Split(value.GameProcesses))
             if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,79}$")) throw new ArgumentException("Nur Prozessnamen ohne Pfad (maximal 80 Zeichen) angeben.");
+        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Spiele mit früher Begrenzung") })
+        {
+            if (list.Length > 2048 || Split(list).Length > 32) throw new ArgumentException($"{label}: höchstens 32 Namen.");
+            foreach (var process in Split(list))
+                if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,63}$")) throw new ArgumentException($"{label}: nur Prozessnamen ohne Pfad angeben.");
+        }
+        if (!TimeOnly.TryParseExact(value.NightFrom, "HH:mm", out _) || !TimeOnly.TryParseExact(value.NightTo, "HH:mm", out _))
+            throw new ArgumentException("Zeitplan: Uhrzeiten im Format HH:mm angeben (z. B. 01:00).");
+        if (value.WeekendProfile is not ("" or "Turnier" or "Standard" or "Entspannt")) throw new ArgumentException("Zeitplan: unbekanntes Wochenendprofil.");
         if (Split(value.DirectPeers).Length > 32) throw new ArgumentException("Maximal 32 direkte Geräteadressen.");
         foreach (var address in Split(value.DirectPeers))
             if (!IPAddress.TryParse(address, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork || !IsPrivate(ip)) throw new ArgumentException("Direkte Geräte benötigen eine private IPv4-Adresse.");

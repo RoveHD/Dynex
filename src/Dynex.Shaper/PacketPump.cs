@@ -41,21 +41,36 @@ public sealed class CapturedPacket : IDisposable
 
 public sealed class PacketPump : IAsyncDisposable
 {
-    private readonly IPacketDevice _device;
-    private readonly Channel<CapturedPacket> _queue = Channel.CreateBounded<CapturedPacket>(new BoundedChannelOptions(256)
+    /// <summary>One paced direction: its own bounded queue, pacer and sender, so a full upload backlog
+    /// never delays downloads (or vice versa). Interactive traffic never enters either lane.</summary>
+    private sealed class Lane
     {
-        SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
-    });
+        internal readonly Channel<CapturedPacket> Queue = Channel.CreateBounded<CapturedPacket>(new BoundedChannelOptions(256)
+        {
+            SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait
+        });
+        internal PacketPacer? Pacer;
+        internal long QueuedBytes;
+        internal long MaxQueuedBytes;
+        internal void Update(double? mbps)
+        {
+            Interlocked.Exchange(ref MaxQueuedBytes, (long)Math.Clamp((mbps ?? 0) * 125000 * .25, 65575, 2 * 1024 * 1024));
+            Volatile.Write(ref Pacer, mbps.HasValue ? new PacketPacer(mbps.Value) : null);
+        }
+    }
+
+    private readonly IPacketDevice _device;
+    private readonly Lane _download = new(), _upload = new();
     private readonly CancellationTokenSource _stop = new();
-    private PacketPacer? _pacer;
     private readonly Func<CapturedPacket, bool>? _shouldLimit;
+    private readonly Func<CapturedPacket, bool>? _shouldLimitUpload;
     private readonly Func<CapturedPacket, PacketPriority>? _priority;
     private readonly Task _receiver;
     private readonly Task _sender;
-    private long _maxQueuedBytes;
-    private long _queuedBytes;
+    private readonly Task _uploadSender;
     private long _receivedBytes;
     private long _sentBytes;
+    private long _uploadSentBytes;
     private long _droppedPackets;
     private long _bypassedBytes;
     private long _gamePriorityPackets, _voicePriorityPackets;
@@ -66,19 +81,22 @@ public sealed class PacketPump : IAsyncDisposable
     private Task? _disposeTask;
 
     public PacketPump(IPacketDevice device, double? mbps, Func<CapturedPacket, bool>? shouldLimit = null,
-        Func<CapturedPacket, PacketPriority>? priority = null)
+        Func<CapturedPacket, PacketPriority>? priority = null, double? uploadMbps = null, Func<CapturedPacket, bool>? shouldLimitUpload = null)
     {
-        _pacer = mbps.HasValue ? new PacketPacer(mbps.Value) : null;
+        _download.Update(mbps);
+        _upload.Update(uploadMbps);
         _device = device;
         _shouldLimit = shouldLimit;
+        _shouldLimitUpload = shouldLimitUpload;
         _priority = priority;
-        _maxQueuedBytes = (long)Math.Clamp((mbps ?? 0) * 125000 * .25, 65575, 2 * 1024 * 1024);
         _receiver = Task.Factory.StartNew(ReceiveLoop, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        _sender = Task.Run(SendLoopAsync);
+        _sender = Task.Run(() => SendLoopAsync(_download, false));
+        _uploadSender = Task.Run(() => SendLoopAsync(_upload, true));
     }
 
     public bool Active => Volatile.Read(ref _closed) == 0;
-    public bool HasDownloadLimit => Volatile.Read(ref _pacer) is not null;
+    public bool HasDownloadLimit => Volatile.Read(ref _download.Pacer) is not null;
+    public bool HasUploadLimit => Volatile.Read(ref _upload.Pacer) is not null;
     public bool QosEnabled => _priority is not null;
     public long GamePriorityPackets => Interlocked.Read(ref _gamePriorityPackets);
     public long VoicePriorityPackets => Interlocked.Read(ref _voicePriorityPackets);
@@ -86,6 +104,7 @@ public sealed class PacketPump : IAsyncDisposable
     public string? CleanupError => Volatile.Read(ref _cleanupError);
     public long ReceivedBytes => Interlocked.Read(ref _receivedBytes);
     public long SentBytes => Interlocked.Read(ref _sentBytes);
+    public long UploadSentBytes => Interlocked.Read(ref _uploadSentBytes);
     public long DroppedPackets => Interlocked.Read(ref _droppedPackets);
     public long BypassedBytes => Interlocked.Read(ref _bypassedBytes);
 
@@ -94,12 +113,8 @@ public sealed class PacketPump : IAsyncDisposable
     /// unrelated ICMP/DNS/game frames in the native bidirectional queue.
     /// Only the sender mutates a pacer; updates publish a fresh instance.
     /// </summary>
-    public void UpdateLimit(double? mbps)
-    {
-        var pacer = mbps.HasValue ? new PacketPacer(mbps.Value) : null;
-        Interlocked.Exchange(ref _maxQueuedBytes, (long)Math.Clamp((mbps ?? 0) * 125000 * .25, 65575, 2 * 1024 * 1024));
-        Volatile.Write(ref _pacer, pacer);
-    }
+    public void UpdateLimit(double? mbps) => _download.Update(mbps);
+    public void UpdateUploadLimit(double? mbps) => _upload.Update(mbps);
 
     private void ReceiveLoop()
     {
@@ -112,10 +127,19 @@ public sealed class PacketPump : IAsyncDisposable
                 PacketPriority priority;
                 try { priority = _priority?.Invoke(packet) ?? PacketPriority.None; }
                 catch { packet.Dispose(); throw; }
-                // Interactive traffic never enters the download queue. A full
-                // download backlog therefore cannot hold up voice or games.
-                if (priority != PacketPriority.None || packet.Direction == PacketDirection.Outbound || Volatile.Read(ref _pacer) is null ||
-                    _shouldLimit is not null && !_shouldLimit(packet))
+                // Interactive traffic (games, voice) never enters a queue. Downloads are
+                // paced only when a limit exists; uploads only through an explicit policy,
+                // so TCP acknowledgements and unknown flows always leave immediately.
+                Lane? lane = null;
+                if (priority == PacketPriority.None)
+                {
+                    if (packet.Direction == PacketDirection.Inbound)
+                    {
+                        if (Volatile.Read(ref _download.Pacer) is not null && (_shouldLimit is null || _shouldLimit(packet))) lane = _download;
+                    }
+                    else if (_shouldLimitUpload is not null && Volatile.Read(ref _upload.Pacer) is not null && _shouldLimitUpload(packet)) lane = _upload;
+                }
+                if (lane is null)
                 {
                     using (packet)
                     {
@@ -132,10 +156,10 @@ public sealed class PacketPump : IAsyncDisposable
                     Interlocked.Add(ref _bypassedBytes, packet.Length);
                     continue;
                 }
-                var queued = Interlocked.Add(ref _queuedBytes, packet.Length);
-                if (queued > Interlocked.Read(ref _maxQueuedBytes) || !_queue.Writer.TryWrite(packet))
+                var queued = Interlocked.Add(ref lane.QueuedBytes, packet.Length);
+                if (queued > Interlocked.Read(ref lane.MaxQueuedBytes) || !lane.Queue.Writer.TryWrite(packet))
                 {
-                    Interlocked.Add(ref _queuedBytes, -packet.Length);
+                    Interlocked.Add(ref lane.QueuedBytes, -packet.Length);
                     Interlocked.Increment(ref _droppedPackets);
                     packet.Dispose();
                 }
@@ -143,25 +167,25 @@ public sealed class PacketPump : IAsyncDisposable
         }
         catch (Exception e) when (_stop.IsCancellationRequested) { _ = e; }
         catch (Exception e) { Fail(e); }
-        finally { _queue.Writer.TryComplete(); }
+        finally { _download.Queue.Writer.TryComplete(); _upload.Queue.Writer.TryComplete(); }
     }
 
-    private async Task SendLoopAsync()
+    private async Task SendLoopAsync(Lane lane, bool upload)
     {
         try
         {
-            await foreach (var packet in _queue.Reader.ReadAllAsync(_stop.Token))
+            await foreach (var packet in lane.Queue.Reader.ReadAllAsync(_stop.Token))
             {
                 using (packet)
                 {
                     // Classification belongs to the receiver thread. A newly
                     // protected game bypasses immediately on future arrivals;
                     // packets already queued retain their bounded pacing delay.
-                    Interlocked.Add(ref _queuedBytes, -packet.Length);
+                    Interlocked.Add(ref lane.QueuedBytes, -packet.Length);
                     // A rate update applies from the next queued packet. The
                     // current packet keeps its bounded, already scheduled delay.
-                    var pacer = Volatile.Read(ref _pacer);
-                    // Do not allow a saturated UDP sender to create seconds of latency.
+                    var pacer = Volatile.Read(ref lane.Pacer);
+                    // Do not allow a saturated sender to create seconds of latency.
                     if (pacer is not null && Stopwatch.GetElapsedTime(packet.CapturedAt).TotalSeconds > .3)
                     {
                         Interlocked.Increment(ref _droppedPackets);
@@ -174,12 +198,12 @@ public sealed class PacketPump : IAsyncDisposable
                         var remaining = deadline - Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
                         if (remaining <= 0) break;
                         // Task.Delay truncates sub-millisecond durations to zero.
-                        // Always yield instead of spinning at fast download rates.
+                        // Always yield instead of spinning at fast rates.
                         await Task.Delay(TimeSpan.FromSeconds(Math.Max(.001, remaining)), _stop.Token).ConfigureAwait(false);
                     }
                     _stop.Token.ThrowIfCancellationRequested();
                     _device.Send(packet);
-                    Interlocked.Add(ref _sentBytes, packet.Length);
+                    Interlocked.Add(ref upload ? ref _uploadSentBytes : ref _sentBytes, packet.Length);
                 }
             }
         }
@@ -187,7 +211,7 @@ public sealed class PacketPump : IAsyncDisposable
         catch (Exception e) { Fail(e); }
         finally
         {
-            while (_queue.Reader.TryRead(out var packet)) packet.Dispose();
+            while (lane.Queue.Reader.TryRead(out var packet)) packet.Dispose();
         }
     }
 
@@ -222,9 +246,10 @@ public sealed class PacketPump : IAsyncDisposable
     private async Task DisposeCoreAsync()
     {
         Close();
-        await Task.WhenAll(_receiver, _sender).ConfigureAwait(false);
-        // Receive may have enqueued its final packet after the sender exited.
-        while (_queue.Reader.TryRead(out var packet)) packet.Dispose();
+        await Task.WhenAll(_receiver, _sender, _uploadSender).ConfigureAwait(false);
+        // Receive may have enqueued its final packet after a sender exited.
+        foreach (var lane in new[] { _download, _upload })
+            while (lane.Queue.Reader.TryRead(out var packet)) packet.Dispose();
         _stop.Dispose();
     }
 }

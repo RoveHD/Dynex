@@ -12,8 +12,18 @@ public partial class App : System.Windows.Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) CrashLog.Write(error, "AppDomain"); };
+        DispatcherUnhandledException += (_, args) => CrashLog.Write(args.Exception, "UI");
+        TaskScheduler.UnobservedTaskException += (_, args) => CrashLog.Write(args.Exception, "Task");
         try
         {
+            if (e.Args.Length > 0 && e.Args[0] == "--self-test")
+            {
+                // Run by the updater right after copying files. A non-zero result makes
+                // the installer restore the previous version instead of leaving a broken app.
+                Shutdown(UpdateSelfTest.Run(e.Args.Skip(1).FirstOrDefault()));
+                return;
+            }
             if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall"
                 or "--uninstall-system" or "--uninstall-machine" or "--cleanup-removed-installation" or "--cleanup-machine" or "--remove-user-data")
             {
@@ -28,8 +38,10 @@ public partial class App : System.Windows.Application
                 Shutdown(DesktopLifecycle.ExitCode);
                 return;
             }
+            if (DesktopLifecycle.ProfilePath is null) Dynex.Native.ProcessEfficiency.UseBackgroundMode();
             _runtime = new DynexRuntime(DesktopLifecycle.ProfilePath);
-            string? startupWarning = null;
+            string? startupWarning = DesktopLifecycle.ProfilePath is null && CrashLog.TakeUnseen() is not null
+                ? "DYNEX wurde zuletzt unerwartet beendet. Ein lokaler Bericht liegt bei; „Diagnose exportieren“ enthält ihn." : null;
             if (CanUseInstalledUpdates())
             {
                 try { _runtime.ApplyAutostartPreference(); }
@@ -41,7 +53,10 @@ public partial class App : System.Windows.Application
                     () => _runtime.IsSpeedTestRunning || _runtime.IsSpeedTestWaiting || _runtime.Snapshot is not { } snapshot ||
                           snapshot.IsGaming || snapshot.GamingCount > 0 || !string.IsNullOrEmpty(snapshot.Game) ||
                           snapshot.Devices.Any(device => !string.IsNullOrEmpty(device.Game)));
+                _updates.SetBetaChannel(_runtime.Settings.BetaUpdates);
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
+                if (_updates.RolledBackVersion is { } failed)
+                    startupWarning = $"Das Update auf Version {failed} ist fehlgeschlagen. DYNEX hat die vorherige Version {DynexRuntime.AppVersion} wiederhergestellt; Einstellungen bleiben erhalten.";
                 if (!e.Args.Contains("--skip-update-once") && !e.Args.Contains("--verify-live"))
                 {
                     var installer = await _updates.TakeReadyInstallerAsync();
@@ -56,7 +71,9 @@ public partial class App : System.Windows.Application
                 }
             }
             await _runtime.StartAsync();
-            var window = new MainWindow(_runtime, _updates);
+            Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            // The first-run guide is for real installations; isolated test profiles keep their fixed layout.
+            var window = new MainWindow(_runtime, _updates, showSetupGuide: DesktopLifecycle.ProfilePath is null);
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
             window.Show();
@@ -74,8 +91,21 @@ public partial class App : System.Windows.Application
         }
     }
 
+    private async void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume || _runtime is null) return;
+        try
+        {
+            // Give Windows a moment to bring the adapter back and classify the network profile.
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            await _runtime.ReconnectNetworkAsync();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { /* The next heartbeat reports the network state. */ }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _updates?.Dispose();
         DesktopLifecycle.Cleanup();
         base.OnExit(e);

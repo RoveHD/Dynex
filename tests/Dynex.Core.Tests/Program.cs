@@ -277,6 +277,16 @@ await using (var observer = new PeerService(aSettings with
         "fresh unmeasured PSK peer publishes gaming and throughput without a default budget proposal");
 }
 await AutoLanTests.Run(Check);
+await ConnectionAdviceTests.Run(Check);
+LimitExplanationTests.Run(Check);
+StatusNotificationTests.Run(Check);
+BufferbloatTests.Run(Check);
+ShareWeightTests.Run(Check);
+SessionTrackerTests.Run(Check);
+await RouterTrafficTests.Run(Check);
+UploadLimitTests.Run(Check);
+ComfortTests.Run(Check);
+IsolationTests.Run(Check);
 await PeerConnectionTests.Run(Check);
 await SharedBudgetTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");

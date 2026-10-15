@@ -7,7 +7,7 @@ namespace Dynex.Shaper;
 /// Receiver-thread-only real-time classification. Unknown ownership/protocols
 /// remain unmarked. No payload decryption or browser-wide exemptions.
 /// </summary>
-public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<double>? clock = null)
+public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<double>? clock = null, TrafficAccounting? accounting = null)
 {
     // Additional low-volume UDP candidates only; these names do not exempt
     // their file transfers or other traffic from BulkDownloadPolicy.
@@ -33,7 +33,9 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
             return PacketPriority.None;
         var owner = snapshot().Classify(flow);
         if (owner?.ProcessStartedAtUtc is not { } started || string.IsNullOrEmpty(owner.ProcessName)) return PacketPriority.None;
-        if (Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId && p.StartedAtUtcTicks == started.UtcTicks))
+        var isGame = Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId && p.StartedAtUtcTicks == started.UtcTicks);
+        accounting?.Observe(owner.ProcessName, packet.Direction == PacketDirection.Inbound, packet.Length - packet.IpOffset);
+        if (isGame)
         {
             // Game asset downloads must not automatically receive CS4. TCP
             // controls and small interactive payloads, plus standard UDP gaming.
@@ -119,12 +121,17 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
 /// <summary>RFC2474 DS field, RFC3168 ECN preservation, RFC1071 IPv4 header checksum.</summary>
 public static class QosPacketMarker
 {
+    /// <summary>
+    /// Only voice packets are ever marked. Game packets are prioritized (they skip every queue) but are
+    /// never modified: they leave this PC byte-for-byte as the game sent them. There is no option to change that.
+    /// </summary>
     public static bool TryMark(CapturedPacket packet, PacketPriority priority)
     {
-        if (packet.Direction != PacketDirection.Outbound || priority is not (PacketPriority.Game or PacketPriority.Voice) ||
+        if (priority != PacketPriority.Voice) return false;
+        if (packet.Direction != PacketDirection.Outbound ||
             packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);
-        var dscp = priority == PacketPriority.Voice ? 46 : 32;
+        const int dscp = 46; // Expedited Forwarding for voice.
         if (ip[0] >> 4 == 4)
         {
             if (ip.Length < 20) return false;

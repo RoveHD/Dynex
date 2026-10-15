@@ -13,7 +13,7 @@ OwnershipEntry[] owners = [new(flow, 501, started, "steam")];
 OwnershipSnapshot Snapshot() => OwnershipSnapshot.Create(owners);
 var policy = new BulkDownloadPolicy(Snapshot, [], () => now);
 
-CapturedPacket Packet(SocketFlow f, int payload = 1400, bool ethernet = false)
+CapturedPacket Packet(SocketFlow f, int payload = 1400, bool ethernet = false, PacketDirection direction = PacketDirection.Inbound)
 {
     var transportSize = f.Protocol == TransportProtocol.Tcp ? 20 : 8;
     var ipv6 = f.LocalAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
@@ -38,7 +38,7 @@ CapturedPacket Packet(SocketFlow f, int payload = 1400, bool ethernet = false)
     BinaryPrimitives.WriteUInt16BigEndian(p[headerSize..], f.RemotePort); BinaryPrimitives.WriteUInt16BigEndian(p[(headerSize + 2)..], f.LocalPort);
     if (f.Protocol == TransportProtocol.Tcp) p[headerSize + 12] = 0x50;
     else BinaryPrimitives.WriteUInt16BigEndian(p[(headerSize + 4)..], (ushort)(payload + 8));
-    return new(rented, length + offset) { IpOffset = offset };
+    return new(rented, length + offset) { IpOffset = offset, Direction = direction };
 }
 bool Feed(BulkDownloadPolicy p, SocketFlow f, int count = 300, double step = .002, int payload = 1400)
 {
@@ -163,6 +163,72 @@ catch (FormatException) { Check(true, "invalid protected PID rejected"); }
 }
 owners = [new(flow, 501, started, "WhatsApp")];
 Check(Feed(new(Snapshot, [], () => now), flow), "additional voice-app QoS eligibility does not exempt its TCP file downloads");
+// Uploads: same flow seen from this PC. The packet's source is the local socket.
+CapturedPacket Out(SocketFlow f, int payload = 1400) =>
+    Packet(new SocketFlow(f.Protocol, f.RemoteAddress, f.RemotePort, f.LocalAddress, f.LocalPort), payload, direction: PacketDirection.Outbound);
+bool FeedUpload(BulkDownloadPolicy p, SocketFlow f, int count = 300, double step = .002, int payload = 1400)
+{
+    var limited = false;
+    for (var i = 0; i < count; i++) { now += step; using var packet = Out(f, payload); limited = p.ShouldLimitUpload(packet); }
+    return limited;
+}
+owners = [new(flow, 601, started, "OneDrive")];
+var uploads = new BulkDownloadPolicy(Snapshot, [], () => now);
+using (var packet = Out(flow)) Check(!uploads.ShouldLimitUpload(packet), "first small upload request bypasses immediately");
+Check(FeedUpload(uploads, flow), "sustained cloud-sync upload enters the upload limiter");
+using (var packet = Out(flow, 0)) Check(!uploads.ShouldLimitUpload(packet), "TCP ACKs of downloads are never upload-limited");
+using (var packet = Out(flow)) Check(!uploads.ShouldLimit(packet), "outbound packets never enter the download limiter");
+using (var packet = Packet(flow)) Check(!uploads.ShouldLimitUpload(packet), "inbound packets never enter the upload limiter");
+uploads.Protect([new(601, started.UtcTicks)]);
+using (var packet = Out(flow)) Check(!uploads.ShouldLimitUpload(packet), "a game's own uploads are never limited, even as a bulk flow");
+uploads.Protect([]);
+owners = [new(flow, 602, started, "Discord")];
+Check(!FeedUpload(new(Snapshot, [], () => now), flow, 1200), "voice chat uploads are never limited");
+owners = [];
+Check(!FeedUpload(new(Snapshot, [], () => now), flow), "uploads of unknown owners stay free");
+
+// Pump: a saturated upload is paced while game packets and inbound traffic pass immediately.
+var game = new SocketFlow(TransportProtocol.Udp, IPAddress.Parse("10.0.0.5"), 52010, IPAddress.Parse("198.51.100.20"), 27015);
+owners = [new(flow, 601, started, "OneDrive"), new(game, 700, started, "game")];
+var pumpPolicy = new BulkDownloadPolicy(Snapshot, []);
+pumpPolicy.Protect([new(700, started.UtcTicks)]);
+var sentOut = new ConcurrentDictionary<ushort, int>();
+byte[] gameTemplate;
+using (var template = Out(game, 200)) gameTemplate = template.Buffer.AsSpan(0, template.Length).ToArray();
+var modifiedGamePackets = 0;
+using (var device = new PacketTestDevice(packet =>
+{
+    var port = BinaryPrimitives.ReadUInt16BigEndian(packet.Buffer.AsSpan(packet.IpOffset + 20));
+    if (port == 52010 && !packet.Buffer.AsSpan(0, packet.Length).SequenceEqual(gameTemplate)) Interlocked.Increment(ref modifiedGamePackets);
+    sentOut.AddOrUpdate(port, 1, (_, n) => n + 1);
+}))
+{
+    var qos = new RealtimeQosPolicy(Snapshot);
+    qos.Protect([new(700, started.UtcTicks)]);
+    await using var pump = new PacketPump(device, null, pumpPolicy.ShouldLimit, qos.Classify, uploadMbps: 1, shouldLimitUpload: pumpPolicy.ShouldLimitUpload);
+    Check(pump.HasUploadLimit && !pump.HasDownloadLimit, "upload-only limit is active without a download limit");
+    for (var i = 0; i < 600; i++) device.Enqueue(Out(flow));
+    for (var i = 0; i < 40; i++) device.Enqueue(Out(game, 200));
+    for (var i = 0; i < 40; i++) device.Enqueue(Packet(flow));
+    var deadline = DateTime.UtcNow.AddSeconds(2);
+    while (sentOut.GetValueOrDefault((ushort)52010) < 40 && DateTime.UtcNow < deadline) await Task.Delay(5);
+    await Task.Delay(300);
+    Check(sentOut.GetValueOrDefault((ushort)52010) == 40, "all game packets leave immediately while an upload is saturated");
+    Check(modifiedGamePackets == 0, "prioritized game packets leave byte-for-byte unchanged");
+    Check(sentOut.GetValueOrDefault((ushort)443) == 40, "inbound download packets are untouched by the upload limit");
+    Check(pump.UploadSentBytes < 600 * 1440 / 2, "bulk upload is paced to the configured rate instead of leaving at once");
+    pump.UpdateUploadLimit(null);
+    Check(!pump.HasUploadLimit, "upload limit can be lifted without restarting capture");
+}
+// Accounting: read-only per-program rates.
+var clockNow = 0d;
+var accounting = new TrafficAccounting(() => clockNow);
+for (var i = 0; i < 100; i++) accounting.Observe("steam", true, 25_000);
+for (var i = 0; i < 50; i++) accounting.Observe("game", false, 2000);
+clockNow = 2;
+accounting.Observe("steam", true, 1);
+var top = accounting.Snapshot();
+Check(top.Length == 2 && top[0] is { Name: "steam", DownMbps: 10 } && top[1].Name == "game", "per-program rates rank the busiest program first");
 Console.WriteLine($"{passed}/{passed} bulk checks passed. No kernel filter installed or activated.");
 
 sealed class PacketTestDevice(Action<CapturedPacket> send) : IPacketDevice

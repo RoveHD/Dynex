@@ -76,16 +76,16 @@ public sealed class PeerService : IPeerService
     public void Publish(bool isGaming, double? downloadMbps = null, double? latencyMs = null,
         double? appliedLimitMbps = null, string? game = null, bool shaperActive = false,
         double? idleBaselineMs = null, string? latencyTargetId = null, DateTimeOffset? idleBaselineAtUtc = null,
-        double? uploadMbps = null)
+        double? uploadMbps = null, string? topProgram = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!Valid(downloadMbps, 100000) || !Valid(uploadMbps, 100000) || !Valid(latencyMs, 10000) || !Valid(appliedLimitMbps, 100000) ||
             game?.Length > 80 || game?.Any(char.IsControl) == true || !Valid(idleBaselineMs, 10000) ||
-            latencyTargetId?.Length > 256 || latencyTargetId?.Any(char.IsControl) == true)
+            latencyTargetId?.Length > 256 || latencyTargetId?.Any(char.IsControl) == true || !WireAdvertisement.ValidProgram(topProgram))
             throw new ArgumentException("Ungültiger lokaler Status.");
         Volatile.Write(ref _local, new(isGaming, downloadMbps, latencyMs, appliedLimitMbps, game, shaperActive,
             idleBaselineMs, latencyTargetId, idleBaselineAtUtc, Interlocked.Increment(ref _sampleSequence), uploadMbps,
-            Stopwatch.GetTimestamp()));
+            Stopwatch.GetTimestamp(), topProgram));
     }
 
     public IReadOnlyList<PeerAdvertisement> Snapshot()
@@ -138,6 +138,7 @@ public sealed class PeerService : IPeerService
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken cancellationToken)
     {
         var bytes = new byte[PacketCodec.MaxPacketBytes + 1];
+        var failures = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -145,6 +146,12 @@ public sealed class PeerService : IPeerService
                 var result = await socket.ReceiveFromAsync(bytes.AsMemory(), SocketFlags.None,
                     new IPEndPoint(IPAddress.Any, 0), cancellationToken).ConfigureAwait(false);
                 var endpoint = (IPEndPoint)result.RemoteEndPoint;
+                if (failures > 0)
+                {
+                    failures = 0;
+                    if (NetworkStatus?.StartsWith("LAN-Empfang: ", StringComparison.Ordinal) == true)
+                    { Volatile.Write(ref _networkStatus, null); Notify(); }
+                }
                 Interlocked.Increment(ref _received);
                 Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 if (!LanAddress.IsAllowed(endpoint.Address, _settings.LoopbackOnly))
@@ -179,7 +186,7 @@ public sealed class PeerService : IPeerService
                         wire.DownloadMbps, wire.LatencyMs, now, endpoint.Address.ToString(), wire.AppliedLimitMbps,
                         wire.Game, wire.ShaperActive, wire.IdleBaselineMs, wire.LatencyTargetId,
                         wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId, UploadMbps: wire.UploadMbps,
-                        BudgetProposal: wire.BudgetProposal), wire.SessionId, tick, endpoint);
+                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram), wire.SessionId, tick, endpoint);
                     Interlocked.Increment(ref _accepted);
                     changed = true;
                 }
@@ -195,8 +202,11 @@ public sealed class PeerService : IPeerService
                 // it must not permanently stop discovery of peers that start later.
                 if (e.SocketErrorCode is SocketError.MessageSize or SocketError.ConnectionReset or SocketError.ConnectionRefused) continue;
                 SetError("LAN-Empfang: " + e.Message);
-                // Do not spin on a broken UDP socket. TTL still expires through Snapshot/heartbeat.
-                break;
+                // Standby and WLAN changes report transient adapter errors. Back off instead of
+                // spinning, but keep receiving so peers reconnect without restarting DYNEX.
+                failures++;
+                try { await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 250 << Math.Min(failures, 5))), cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }
@@ -216,7 +226,8 @@ public sealed class PeerService : IPeerService
                     throughputIsFresh ? state.Download : null, state.Latency, state.Limit, state.Game, state.Shaper,
                     state.Baseline, state.Target, state.SampleSequence > 0 ? state.SampleSequence : null, state.BaselineAt,
                     throughputIsFresh ? state.Upload : null,
-                    throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null));
+                    throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight,
+                        throughputIsFresh ? state.TopProgram : null));
                 IPEndPoint[] targets;
                 bool expired;
                 lock (_gate)
@@ -310,7 +321,7 @@ public sealed class PeerService : IPeerService
     }
 
     private sealed record LocalState(bool Gaming, double? Download, double? Latency, double? Limit, string? Game, bool Shaper,
-        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick);
+        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick, string? TopProgram = null);
     private sealed record ReceivedPeer(PeerAdvertisement Advertisement, Guid Session, long Tick, IPEndPoint Endpoint);
     private sealed record ReplayEntry(long Sequence, long Tick, bool Retired = false);
 }

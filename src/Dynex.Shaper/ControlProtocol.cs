@@ -19,15 +19,26 @@ public static class ControlProtocol
     }
 
     public sealed record ProtectedProcess(int ProcessId, long? StartedAtUtcTicks);
-    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false);
+    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false, double? UploadMbps = null);
+
+
+    /// <summary>Optional limit for large non-game uploads. Absent or null means uploads stay unlimited.</summary>
+    public static double? ParseUploadRate(JsonElement root)
+    {
+        if (!root.TryGetProperty("uploadMbps", out var rate) || rate.ValueKind == JsonValueKind.Null) return null;
+        var value = rate.GetDouble();
+        PacketPacer.ValidateRate(value);
+        return value;
+    }
 
     public static Command ParseCommand(string line)
     {
         var rate = ParseRate(line);
         using var json = JsonDocument.Parse(line);
         var qos = json.RootElement.TryGetProperty("qosEnabled", out var qosValue) && qosValue.GetBoolean();
+        var upload = ParseUploadRate(json.RootElement);
         if (!json.RootElement.TryGetProperty("protectedProcesses", out var processes))
-            return new(rate, [], qos);
+            return new(rate, [], qos, upload);
         if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() > 128)
             throw new FormatException("Ungültige Liste geschützter Programme.");
         var result = new List<ProtectedProcess>();
@@ -38,7 +49,7 @@ public static class ControlProtocol
             if (pid <= 0 || ticks is <= 0 || ticks > DateTime.MaxValue.Ticks) throw new FormatException("Ungültige Prozessidentität.");
             result.Add(new(pid, ticks));
         }
-        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos);
+        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, upload);
     }
 
     public static async Task<string?> ReadLineAsync(TextReader reader, CancellationToken cancellationToken)

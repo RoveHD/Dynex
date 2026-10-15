@@ -38,8 +38,105 @@ public sealed class DynexRuntime : IAsyncDisposable
     private volatile bool speedTestLoadStarted;
     private volatile bool pendingGamingSettings;
     private string? peerStartError;
+    private bool? firewallConfigured;
+    private readonly SessionTracker sessions = new();
+    private readonly PingAlarm pingAlarm = new();
+    private string? lastPingAlert;
+    private readonly QualityMonitor quality = new();
+    private readonly List<QualityEvent> qualityEvents = [];
+    private string? scheduleProfileAtStart;
+    private int scheduleRestartRequested;
+    internal static ScheduleSettings ScheduleOf(UserSettings settings) => new(settings.NightFree,
+        TimeOnly.TryParseExact(settings.NightFrom, "HH:mm", out var from) ? from : new TimeOnly(1, 0),
+        TimeOnly.TryParseExact(settings.NightTo, "HH:mm", out var to) ? to : new TimeOnly(8, 0),
+        string.IsNullOrEmpty(settings.WeekendProfile) ? null : settings.WeekendProfile);
+    /// <summary>Background share after the schedule: a weekend profile overrides the chosen profile.</summary>
+    private double EffectiveBackgroundPercent(UserSettings settings) =>
+        Schedule.Evaluate(ScheduleOf(settings), DateTime.Now).Profile is { } profile && ProfileBackgroundPercent.TryGetValue(profile, out var percent)
+            ? percent : settings.BackgroundPercent;
+    private void RecordQuality(QualityEvent value)
+    {
+        lock (qualityEvents) { qualityEvents.Add(value); if (qualityEvents.Count > 1000) qualityEvents.RemoveAt(0); }
+        if (isolated) return;
+        try
+        {
+            QualityEvent[] copy;
+            lock (qualityEvents) copy = qualityEvents.ToArray();
+            File.WriteAllText(Path.Combine(store.DirectoryPath, "quality.json"), JsonSerializer.Serialize(copy));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* Log is optional. */ }
+    }
+    private IReadOnlyList<SessionSummary> LoadSessions()
+    {
+        try
+        {
+            var path = Path.Combine(store.DirectoryPath, "sessions.json");
+            return File.Exists(path) && new FileInfo(path).Length < 256 * 1024
+                ? JsonSerializer.Deserialize<List<SessionSummary>>(File.ReadAllText(path)) ?? [] : [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return []; }
+    }
+    public string WeeklyReportText()
+    {
+        QualityEvent[] events;
+        lock (qualityEvents) events = qualityEvents.ToArray();
+        return WeeklyReport.Build(LoadSessions(), events, DateTimeOffset.UtcNow);
+    }
+    public int QualityEventCount { get { lock (qualityEvents) return qualityEvents.Count; } }
+    public string QualityLogCsv()
+    {
+        lock (qualityEvents) return "Beginn;Dauer (s);Art;Spitze (ms)" + Environment.NewLine + string.Join(Environment.NewLine, qualityEvents.Select(e => e.Csv));
+    }
+    public RouterGuideText RouterGuideFor() => lastRouterSample is { } router
+        ? RouterGuide.For(router.Manufacturer, router.Model, router.RouterName) : RouterGuide.For(null, null, null);
+    private readonly RouterTrafficMonitor? routerTraffic;
+    private Task<RouterTrafficSample?>? routerSample;
+    private RouterTrafficSample? lastRouterSample;
+    private long routerSampleStarted;
+    private SessionSummary? lastSession;
+    internal static readonly IReadOnlyDictionary<string, double> ProfileBackgroundPercent =
+        new Dictionary<string, double> { ["Turnier"] = 40, ["Standard"] = 65, ["Entspannt"] = 85 };
+    public async Task ApplyProfileAsync(string profile)
+    {
+        if (!ProfileBackgroundPercent.TryGetValue(profile, out var percent)) throw new ArgumentException("Unbekanntes Profil.");
+        await SaveSettingsAsync(Settings with { Profile = profile, BackgroundPercent = percent });
+    }
+    public async Task CompleteSetupGuideAsync()
+    {
+        if (Settings.SetupGuideDone) return;
+        await lifecycle.WaitAsync();
+        try { var next = Settings with { SetupGuideDone = true }; store.Save(next); Settings = next; }
+        finally { lifecycle.Release(); }
+    }
+    private void RecordSession(SessionSummary summary)
+    {
+        lastSession = summary;
+        if (isolated) return;
+        try
+        {
+            var path = Path.Combine(store.DirectoryPath, "sessions.json");
+            var list = File.Exists(path) && new FileInfo(path).Length < 256 * 1024
+                ? JsonSerializer.Deserialize<List<SessionSummary>>(File.ReadAllText(path)) ?? [] : [];
+            list.Insert(0, summary);
+            File.WriteAllText(path, JsonSerializer.Serialize(list.Take(20)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { /* History is optional. */ }
+    }
+    internal static string AppVersion { get; } = (typeof(DynexRuntime).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
     private TaskCompletionSource monitoringPulse = NewPulse();
     public bool IsSpeedTestWaiting { get; private set; }
+    private long pausedUntilTicks;
+    /// <summary>User pause of automatic and manual download limits. Not persisted: a restart ends it.</summary>
+    public DateTimeOffset? PausedUntil
+    {
+        get { var ticks = Interlocked.Read(ref pausedUntilTicks); return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero); }
+    }
+    public void PauseLimits(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero || duration > TimeSpan.FromHours(24)) throw new ArgumentOutOfRangeException(nameof(duration));
+        Interlocked.Exchange(ref pausedUntilTicks, DateTimeOffset.UtcNow.Add(duration).UtcTicks);
+    }
+    public void ResumeLimits() => Interlocked.Exchange(ref pausedUntilTicks, 0);
     public SpeedTestWaitReason SpeedTestWaitingFor { get; private set; }
     private static TaskCompletionSource NewPulse() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsSpeedTestRunning { get; private set; }
@@ -49,7 +146,36 @@ public sealed class DynexRuntime : IAsyncDisposable
     internal int PeerPort { get; }
     public RuntimeSnapshot? Snapshot { get; private set; }
     public PeerNetworkDiagnostics? GetNetworkDiagnostics() => peers?.GetNetworkDiagnostics();
-    internal Task<NetworkConnectionCheck> CheckNetworkAsync() => NetworkConnectionCheck.ReadAsync(isolated);
+    private LanEnvironment? lanEnvironment;
+    internal async Task<NetworkConnectionCheck> CheckNetworkAsync()
+    {
+        var result = await NetworkConnectionCheck.ReadAsync(isolated);
+        firewallConfigured = result.FirewallConfigured;
+        lanEnvironment = result.Lan;
+        return result;
+    }
+    private async Task RefreshFirewallAsync()
+    {
+        // Read-only; feeds the connection advice so "firewall missing" is not guessed from silence.
+        try { if (!isolated) await CheckNetworkAsync(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { firewallConfigured = null; }
+    }
+    /// <summary>
+    /// After standby Windows may hand back a socket whose multicast memberships, interface binding and
+    /// peer sessions are stale. Rebuilding the worker starts a fresh signed session; peers reconnect within
+    /// one or two heartbeats once both PCs are back on the same private network.
+    /// </summary>
+    public async Task ReconnectNetworkAsync()
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            if (!started || stopping || IsSpeedTestRunning || IsSpeedTestWaiting) return;
+            await StopWorkerAsync();
+            await StartWorkerAsync();
+        }
+        finally { lifecycle.Release(); }
+    }
     public event Action<RuntimeSnapshot>? Updated;
     public DynexRuntime(string? profilePath = null) : this(profilePath, null) { }
     internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest,
@@ -65,7 +191,19 @@ public sealed class DynexRuntime : IAsyncDisposable
         this.readForeground = readForeground ?? ForegroundGame.Read;
         automaticSpeedTestEnabled = !isolated || speedTest is not null;
         store = new(profilePath);
+        // Isolated test profiles never contact the real router.
+        routerTraffic = isolated ? null : new RouterTrafficMonitor();
         Settings = store.Load();
+        if (!isolated)
+        {
+            try
+            {
+                var path = Path.Combine(store.DirectoryPath, "quality.json");
+                if (File.Exists(path) && new FileInfo(path).Length < 1024 * 1024)
+                    qualityEvents.AddRange(JsonSerializer.Deserialize<List<QualityEvent>>(File.ReadAllText(path)) ?? []);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
+        }
         identity = store.LoadIdentity();
     }
     private DynexSettings CoreSettings() => new()
@@ -73,9 +211,9 @@ public sealed class DynexRuntime : IAsyncDisposable
         DeviceId = Settings.AutoConnectLan ? AutoLanIdentity.GetDeviceId(identity.SigningPrivateKeyBase64!) : identity.DeviceId,
         DeviceName = Environment.MachineName, GroupKeyBase64 = identity.GroupKey,
         CapacityMeasured = Settings.CapacityMeasuredAtUtc is not null,
-        LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - Settings.BackgroundPercent,
+        LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - EffectiveBackgroundPercent(Settings),
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
-        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort,
+        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion, ShareWeight = Settings.SharePriority,
         DirectPeers = SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
     };
     private static int GetIsolatedPeerPort()
@@ -189,7 +327,11 @@ public sealed class DynexRuntime : IAsyncDisposable
                         var measured = SettingsStore.Normalize(Settings with
                         {
                             CapacityMbps = Math.Round(result.DownloadMbps, 2),
-                            CapacityMeasuredAtUtc = DateTimeOffset.UtcNow
+                            CapacityMeasuredAtUtc = DateTimeOffset.UtcNow,
+                            IdleLatencyMs = result.IdleLatencyMs is { } idle ? Math.Round(idle, 1) : null,
+                            LoadedLatencyMs = result.LoadedLatencyMs is { } loaded ? Math.Round(loaded, 1) : null,
+                            // A blocked upload test keeps the previous upload measurement.
+                            UploadCapacityMbps = result.UploadMbps ?? Settings.UploadCapacityMbps
                         });
                         SettingsStore.Validate(measured);
                         store.Save(measured);
@@ -280,10 +422,13 @@ public sealed class DynexRuntime : IAsyncDisposable
         peerStartError = networkError;
         peers.PeersChanged += PeerStatusChanged;
         peerStartedAt = Stopwatch.GetTimestamp();
+        scheduleProfileAtStart = Schedule.Evaluate(ScheduleOf(Settings), DateTime.Now).Profile;
+        Interlocked.Exchange(ref scheduleRestartRequested, 0);
+        _ = RefreshFirewallAsync();
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
-        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
+        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
         if (activePlanner == null || plannerPolicy != policy)
         { activePlanner = new LimitPlanner(CoreSettings()); plannerPolicy = policy; }
         var planner = activePlanner;
@@ -309,7 +454,15 @@ public sealed class DynexRuntime : IAsyncDisposable
                     // publish a stale active game. All detected games still bypass shaping.
                     var focusedGame = ForegroundGame.Find(detectedGames, readForeground());
                     var game = focusedGame?.GameName ?? detectedGames.FirstOrDefault()?.GameName ?? "";
-                    var gaming = settings.Mode != GamingMode.Off && focusedGame is not null;
+                    var early = SettingsStore.Split(settings.EarlyLimitGames).Select(n => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? n[..^4] : n)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    // Opt-in per game: loading screens and matchmaking count before the game has focus.
+                    var earlyGame = focusedGame is null && early.Count > 0 ? detectedGames.FirstOrDefault(g => g.IsRunning && g.ProcessName is { } name && early.Contains(name)) : null;
+                    var gaming = settings.Mode != GamingMode.Off && (focusedGame ?? earlyGame) is not null;
+                    var schedule = Schedule.Evaluate(ScheduleOf(settings), DateTime.Now);
+                    if (schedule.Profile != scheduleProfileAtStart && Interlocked.Exchange(ref scheduleRestartRequested, 1) == 0)
+                        // Rebuild the planner with the scheduled profile; retried if a speed test blocked it.
+                        _ = Task.Run(async () => { await ReconnectNetworkAsync(); Interlocked.Exchange(ref scheduleRestartRequested, 0); });
                     var remote = service.Snapshot();
                     var now = DateTimeOffset.UtcNow;
                     var latencyTarget = settings.ExternalTarget + "|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(measurement.RouteId)))[..16];
@@ -318,26 +471,45 @@ public sealed class DynexRuntime : IAsyncDisposable
                         decision = decision with { DownloadLimitMbps = null, SharedDownloadBudgetMbps = null, SharedCapacityMbps = null, SharedBudgetComplete = false };
                     // A manual value is a maximum while gaming, never an always-on limit.
                     if (!decision.GamingActive) decision = decision with { DownloadLimitMbps = null };
+                    var pausedUntil = PausedUntil;
+                    if (pausedUntil is { } until && until <= now) { Interlocked.CompareExchange(ref pausedUntilTicks, 0, until.UtcTicks); pausedUntil = null; }
+                    var limitsOff = pausedUntil is not null || schedule.LimitsOff;
+                    if (limitsOff) decision = decision with { DownloadLimitMbps = null };
                     PlannedDownloadLimitMbps = IsSpeedTestRunning ? null : decision.DownloadLimitMbps;
+                    var plannedUpload = IsSpeedTestRunning || settings.CapacityMeasuredAtUtc is null ? null
+                        : UploadLimit.Compute(decision, settings.UploadCapacityMbps, EffectiveBackgroundPercent(settings),
+                            settings.ManualUploadLimitMbps, settings.UploadLimitEnabled, limitsOff);
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
-                                settings.Mode != GamingMode.Off && ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null);
+                                settings.Mode != GamingMode.Off && (ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null ||
+                                    early.Count > 0 && scanGames(settings.GameProcesses).Any(g => g.IsRunning && g.ProcessName is { } name && early.Contains(name))),
+                            uploadMbps: plannedUpload);
+                    // Read the release flag before the status: a release completing in between then shows
+                    // up as "not yet idle" for one cycle instead of "idle but QoS still active".
+                    var captureReleased = shaper.CaptureReleased;
                     var driver = shaper.Status;
-                    var sharedShare = decision.SharedDownloadBudgetMbps is { } pool
-                        ? Math.Floor(pool / decision.ParticipantCount * 100) / 100 : (double?)null;
-                    bool ConfirmedShare(bool active, double? applied) => active && applied is { } rate &&
-                        double.IsFinite(rate) && rate > 0 && (sharedShare is null || rate <= sharedShare + .000001);
+                    // Each PC's confirmed limit must stay within its (priority-weighted) part of the pool.
+                    double? ShareFor(double weight) => decision.SharedDownloadBudgetMbps is { } pool
+                        ? Math.Floor(pool * weight / (decision.ShareWeightTotal ?? decision.ParticipantCount) * 100) / 100 : null;
+                    bool ConfirmedShare(bool active, double? applied, double weight) => active && applied is { } rate &&
+                        double.IsFinite(rate) && rate > 0 && (ShareFor(weight) is not { } share || rate <= share + .000001);
                     service.Publish(gaming, measurement.Down, measurement.External.Current, driver.Mbps, game[..Math.Min(80, game.Length)], driver.Active,
-                        decision.IdleBaselineMs, latencyTarget, decision.IdleBaselineAtUtc, uploadMbps: measurement.Up);
-                    var devices = new List<DeviceView> { new(settings.DeviceName + " · dieser PC", measurement.Adapter, gaming, game, driver.Mbps, driver.Active ? "Begrenzt" : gaming ? "Gaming" : "Unbegrenzt", measurement.Down, measurement.Up) };
-                    devices.AddRange(remote.Select(p => new DeviceView(p.DeviceName, p.Address ?? "LAN", p.IsGaming, p.Game ?? "", p.ShaperActive ? p.AppliedLimitMbps : null, p.ShaperActive ? "Begrenzt" : p.IsGaming ? "Gaming" : "Unbegrenzt", p.DownloadMbps, p.UploadMbps)));
+                        decision.IdleBaselineMs, latencyTarget, decision.IdleBaselineAtUtc, uploadMbps: measurement.Up,
+                        topProgram: driver.TopPrograms?.FirstOrDefault()?.Name);
+                    var devices = new List<DeviceView> { new(settings.DeviceName + " · dieser PC", measurement.Adapter, gaming, game, driver.Mbps, driver.Active ? "Begrenzt" : gaming ? "Gaming" : "Unbegrenzt", measurement.Down, measurement.Up,
+                        driver.TopPrograms?.FirstOrDefault()?.Name) };
+                    devices.AddRange(remote.Select(p => new DeviceView(p.DeviceName, p.Address ?? "LAN", p.IsGaming, p.Game ?? "", p.ShaperActive ? p.AppliedLimitMbps : null, p.ShaperActive ? "Begrenzt" : p.IsGaming ? "Gaming" : "Unbegrenzt", p.DownloadMbps, p.UploadMbps, p.TopProgram)));
+                    if (settings.PingAlarm && pingAlarm.Observe(measurement.External.Current, gaming,
+                        devices.Select(d => new LoadSource(d.Name, d.DownloadMbps, d.UploadMbps, d.TopProgram)).ToArray(), now) is { } alert)
+                        lastPingAlert = alert;
+                    if (quality.Observe(measurement.External.Current, measurement.Router.Current, now) is { } qualityEvent) RecordQuality(qualityEvent);
                     var state = driver.Active ? "Downloads werden begrenzt" : gaming ? "Gaming-Modus aktiv" : decision.GamingActive ? "Gaming im LAN erkannt" : "Bereit für deine nächste Runde";
                     var detail = gaming
                         ? "Große Downloads werden auf diesem und verbundenen DYNEX-PCs begrenzt. Spiele und Sprachchat bleiben frei."
                         : decision.AdaptiveReduced ? "Der Ping ist gestiegen. DYNEX bremst die Downloads stärker."
                         : decision.GamingActive ? "Ein anderer PC spielt. Deine Downloads sollen langsamer weiterlaufen."
-                        : shaper.CaptureReleased ? "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv."
+                        : captureReleased ? "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv."
                         : "Kein Spiel im Fokus. DYNEX gibt den Netzwerkfilter frei: " + driver.Message;
                     if (settings.CapacityMeasuredAtUtc is null)
                         detail = decision.GamingActive
@@ -347,21 +519,40 @@ public sealed class DynexRuntime : IAsyncDisposable
                     else if (IsSpeedTestWaiting) detail = SpeedTestMessage;
                     if (decision.DownloadLimitMbps.HasValue && !driver.Active && !IsSpeedTestRunning)
                         detail = "Gaming erkannt. Die Downloadbegrenzung ist noch nicht aktiv: " + driver.Message;
+                    // Router discovery can take seconds; never let it delay game detection or limits.
+                    // Every six seconds is enough for a home overview and spares the router's CPU.
+                    if (routerTraffic is not null && routerSample is not { IsCompleted: false } &&
+                        (routerSampleStarted == 0 || Stopwatch.GetElapsedTime(routerSampleStarted) >= TimeSpan.FromSeconds(6)))
+                    {
+                        routerSampleStarted = Stopwatch.GetTimestamp();
+                        if (routerSample is { IsCompletedSuccessfully: true }) lastRouterSample = routerSample.Result;
+                        routerSample = routerTraffic.SampleAsync(token);
+                    }
+                    var homeTraffic = lastRouterSample;
+                    if (sessions.Observe(gaming, game, measurement.External.Current, driver.Active, now) is { } ended) RecordSession(ended);
                     var point = new HistoryPoint(now, measurement.Router.Current, measurement.External.Current, measurement.Down, driver.Active || remote.Any(p => p.ShaperActive));
                     lock (history) { history.Add(point); if (history.Count > 300) history.RemoveAt(0); }
                     HistoryPoint[] points;
                     lock (history) points = history.ToArray();
                     var networkState = initialNetworkError ?? service.NetworkStatus;
+                    var diagnostics = service.GetNetworkDiagnostics();
+                    var limitReason = LimitExplanation.Describe(decision, gaming, focusedGame?.GameName, remote,
+                        settings.CapacityMeasuredAtUtc is not null, IsSpeedTestRunning, settings.DriverEnabled && shapingAllowed,
+                        driver.Active, settings.ManualLimitMbps, driver.Mbps, pausedUntil);
+                    if (schedule.LimitsOff && pausedUntil is null && decision.GamingActive) limitReason = schedule.Reason + " · Downloads frei";
                     var snapshot = new RuntimeSnapshot(state, detail, gaming, game, driver.Active,
                         driver.Message, driver.Mbps, measurement.Down, measurement.Up, measurement.Router, measurement.External, devices, points,
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
                         decision.SharedDownloadBudgetMbps, decision.ParticipantCount, decision.GamingCount,
                         decision.SharedCapacityMbps, decision.SharedBudgetComplete,
-                        (ConfirmedShare(driver.Active, driver.Mbps) ? 1 : 0) +
-                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps)),
+                        (ConfirmedShare(driver.Active, driver.Mbps, decision.LocalShareWeight) ? 1 : 0) +
+                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps, p.ShareWeight ?? 1)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
-                        ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
-                        NetworkDiagnostics: service.GetNetworkDiagnostics());
+                        ProtectionIdle: !decision.GamingActive && captureReleased,
+                        NetworkDiagnostics: diagnostics, LimitReason: limitReason,
+                        Connection: diagnostics.Assess(firewallConfigured, lanEnvironment), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic, UploadLimitMbps: driver.UploadMbps,
+                        PingAlert: lastPingAlert, TopPrograms: driver.TopPrograms,
+                        ScheduleReason: schedule.Reason);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -378,13 +569,48 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var prior = Snapshot ?? new RuntimeSnapshot("", "", false, "", false, "", null, 0, 0, emptyPing, emptyPing, [], [], initialNetworkError ?? service.NetworkStatus ?? "", Fingerprint());
                     Snapshot = prior with { State = "Messung unterbrochen", Detail = ex.Message, IsGaming = false, DriverActive = false, LimitMbps = null, DownloadMbps = null, UploadMbps = null, Devices = [], Router = emptyPing, External = emptyPing, DriverState = shaper.Status.Message,
                         SharedDownloadBudgetMbps = null, ParticipantCount = 1, GamingCount = 0, SharedCapacityMbps = null, SharedBudgetComplete = false, ConfirmedParticipantCount = 0,
-                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null };
+                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null,
+                        LimitReason = "Messung unterbrochen · kein Limit aktiv", Connection = null };
                     Updated?.Invoke(Snapshot);
                 }
             } while (await timer.WaitForNextTickAsync(token));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
+    public async Task SaveBetaUpdatePreferenceAsync(bool enabled)
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            var next = Settings with { BetaUpdates = enabled };
+            store.Save(next);
+            Settings = next;
+        }
+        finally { lifecycle.Release(); }
+    }
+    /// <summary>Portable settings backup. Contains no keys; measured capacity stays specific to this PC.</summary>
+    public string ExportSettings() => JsonSerializer.Serialize(new SettingsBackup(1, AppVersion, Settings with
+    {
+        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false, IdleLatencyMs = null, LoadedLatencyMs = null,
+        UploadCapacityMbps = null
+    }), new JsonSerializerOptions { WriteIndented = true });
+    public async Task ImportSettingsAsync(string json)
+    {
+        if (json.Length > 256 * 1024) throw new ArgumentException("Die Sicherungsdatei ist zu groß.");
+        SettingsBackup? backup;
+        try { backup = JsonSerializer.Deserialize<SettingsBackup>(json); }
+        catch (JsonException) { throw new ArgumentException("Die Datei ist keine DYNEX-Einstellungssicherung."); }
+        if (backup is not { Format: 1, Settings: { } imported }) throw new ArgumentException("Die Datei ist keine DYNEX-Einstellungssicherung.");
+        var current = Settings;
+        // Keep this PC's own identity-like values: name, measured line and the once-only speed test marker.
+        await SaveSettingsAsync(imported with
+        {
+            DeviceName = current.DeviceName, CapacityMbps = current.CapacityMbps,
+            CapacityMeasuredAtUtc = current.CapacityMeasuredAtUtc, AutomaticSpeedTestAttempted = current.AutomaticSpeedTestAttempted,
+            IdleLatencyMs = current.IdleLatencyMs, LoadedLatencyMs = current.LoadedLatencyMs, UploadCapacityMbps = current.UploadCapacityMbps
+        });
+    }
+    private sealed record SettingsBackup(int Format, string Version, UserSettings Settings);
     public async Task SaveAutoUpdatePreferenceAsync(bool enabled)
     {
         await lifecycle.WaitAsync();
@@ -415,7 +641,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                 settings = settings with { AutomaticSpeedTestAttempted = true };
             // A settings action queued during the test must not restore its old capacity.
             if (settings.CapacityMeasuredAtUtc != prior.CapacityMeasuredAtUtc)
-                settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc });
+                settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc,
+                    IdleLatencyMs = prior.IdleLatencyMs, LoadedLatencyMs = prior.LoadedLatencyMs, UploadCapacityMbps = prior.UploadCapacityMbps });
             store.Save(settings);
             try { if (!isolated && settings.AutoStart != prior.AutoStart) SetAutostart(settings.AutoStart); }
             catch { store.Save(prior); throw; }
@@ -516,9 +743,12 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.5", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = AppVersion, CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             NetworkTransport = GetNetworkDiagnostics(), NetworkEnvironment = networkEnvironment,
+            ConnectionAdvice = GetNetworkDiagnostics()?.Assess(networkEnvironment.FirewallConfigured),
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
+            RecentSessions = File.Exists(Path.Combine(store.DirectoryPath, "sessions.json")) ? File.ReadAllText(Path.Combine(store.DirectoryPath, "sessions.json")) : null,
+            LatestCrash = CrashLog.Reports().FirstOrDefault() is { } crash ? File.ReadAllText(crash) : null,
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
         return path;
@@ -552,5 +782,5 @@ public sealed class DynexRuntime : IAsyncDisposable
         var pending = speedTestTask;
         if (pending is { IsCompleted: false }) await pending;
     }
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync() { await StopAsync(); routerTraffic?.Dispose(); }
 }
