@@ -44,9 +44,6 @@ public sealed class DynexRuntime : IAsyncDisposable
     private string? lastPingAlert;
     private readonly QualityMonitor quality = new();
     private readonly List<QualityEvent> qualityEvents = [];
-    private string? gameServer;
-    private readonly Queue<double?> gameServerSamples = new();
-    private Task<double?>? gameServerProbe;
     private string? scheduleProfileAtStart;
     private int scheduleRestartRequested;
     internal static ScheduleSettings ScheduleOf(UserSettings settings) => new(settings.NightFree,
@@ -219,16 +216,6 @@ public sealed class DynexRuntime : IAsyncDisposable
         AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion, ShareWeight = Settings.SharePriority,
         DirectPeers = SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
     };
-    private static async Task<double?> PingOnceAsync(IPAddress address, CancellationToken token)
-    {
-        try
-        {
-            using var ping = new System.Net.NetworkInformation.Ping();
-            var reply = await ping.SendPingAsync(address, 1000).WaitAsync(token);
-            return reply.Status == System.Net.NetworkInformation.IPStatus.Success ? reply.RoundtripTime : null;
-        }
-        catch (System.Net.NetworkInformation.PingException) { return null; }
-    }
     private static int GetIsolatedPeerPort()
     {
         using var reservation = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
@@ -470,7 +457,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var early = SettingsStore.Split(settings.EarlyLimitGames).Select(n => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? n[..^4] : n)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     // Opt-in per game: loading screens and matchmaking count before the game has focus.
-                    var earlyGame = focusedGame is null && early.Count > 0 ? detectedGames.FirstOrDefault(g => g.IsRunning && early.Contains(g.ProcessName)) : null;
+                    var earlyGame = focusedGame is null && early.Count > 0 ? detectedGames.FirstOrDefault(g => g.IsRunning && g.ProcessName is { } name && early.Contains(name)) : null;
                     var gaming = settings.Mode != GamingMode.Off && (focusedGame ?? earlyGame) is not null;
                     var schedule = Schedule.Evaluate(ScheduleOf(settings), DateTime.Now);
                     if (schedule.Profile != scheduleProfileAtStart && Interlocked.Exchange(ref scheduleRestartRequested, 1) == 0)
@@ -492,12 +479,11 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var plannedUpload = IsSpeedTestRunning || settings.CapacityMeasuredAtUtc is null ? null
                         : UploadLimit.Compute(decision, settings.UploadCapacityMbps, EffectiveBackgroundPercent(settings),
                             settings.ManualUploadLimitMbps, settings.UploadLimitEnabled, limitsOff);
-                    shaper.AlwaysLimit = SettingsStore.Split(settings.AlwaysLimitPrograms);
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
                                 settings.Mode != GamingMode.Off && (ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null ||
-                                    early.Count > 0 && scanGames(settings.GameProcesses).Any(g => g.IsRunning && early.Contains(g.ProcessName))),
+                                    early.Count > 0 && scanGames(settings.GameProcesses).Any(g => g.IsRunning && g.ProcessName is { } name && early.Contains(name))),
                             uploadMbps: plannedUpload);
                     // Read the release flag before the status: a release completing in between then shows
                     // up as "not yet idle" for one cycle instead of "idle but QoS still active".
@@ -518,17 +504,6 @@ public sealed class DynexRuntime : IAsyncDisposable
                         devices.Select(d => new LoadSource(d.Name, d.DownloadMbps, d.UploadMbps, d.TopProgram)).ToArray(), now) is { } alert)
                         lastPingAlert = alert;
                     if (quality.Observe(measurement.External.Current, measurement.Router.Current, now) is { } qualityEvent) RecordQuality(qualityEvent);
-                    // Ping the server the game talks to with separate ICMP echoes; game packets stay untouched.
-                    if (driver.GameServer != gameServer) { gameServer = driver.GameServer; gameServerSamples.Clear(); }
-                    if (gameServerProbe is { IsCompleted: true } probe)
-                    {
-                        gameServerSamples.Enqueue(probe.IsCompletedSuccessfully ? probe.Result : null);
-                        if (gameServerSamples.Count > 30) gameServerSamples.Dequeue();
-                        gameServerProbe = null;
-                    }
-                    if (gameServer is { } server && gameServerProbe is null && IPAddress.TryParse(server, out var serverIp))
-                        gameServerProbe = PingOnceAsync(serverIp, token);
-                    var gameServerPing = gameServer is { } shown && gameServerSamples.Count > 0 ? NetworkMonitor.View(gameServerSamples, shown) : null;
                     var state = driver.Active ? "Downloads werden begrenzt" : gaming ? "Gaming-Modus aktiv" : decision.GamingActive ? "Gaming im LAN erkannt" : "Bereit für deine nächste Runde";
                     var detail = gaming
                         ? "Große Downloads werden auf diesem und verbundenen DYNEX-PCs begrenzt. Spiele und Sprachchat bleiben frei."
@@ -576,7 +551,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         ProtectionIdle: !decision.GamingActive && captureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
                         Connection: diagnostics.Assess(firewallConfigured, lanEnvironment), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic, UploadLimitMbps: driver.UploadMbps,
-                        PingAlert: lastPingAlert, TopPrograms: driver.TopPrograms, GameServer: gameServer, GameServerPing: gameServerPing,
+                        PingAlert: lastPingAlert, TopPrograms: driver.TopPrograms,
                         ScheduleReason: schedule.Reason);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);

@@ -19,16 +19,8 @@ public static class ControlProtocol
     }
 
     public sealed record ProtectedProcess(int ProcessId, long? StartedAtUtcTicks);
-    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false, double? UploadMbps = null,
-        string[]? AlwaysLimit = null);
+    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false, double? UploadMbps = null);
 
-    public static string[] ParseAlwaysLimit(JsonElement root)
-    {
-        if (!root.TryGetProperty("alwaysLimit", out var list) || list.ValueKind == JsonValueKind.Null) return [];
-        if (list.ValueKind != JsonValueKind.Array || list.GetArrayLength() > 32) throw new FormatException("Ungültige Liste zu begrenzender Programme.");
-        return list.EnumerateArray().Select(item => item.GetString() is { Length: > 0 and <= 64 } name && !name.Any(char.IsControl)
-            ? name : throw new FormatException("Ungültiger Programmname.")).ToArray();
-    }
 
     /// <summary>Optional limit for large non-game uploads. Absent or null means uploads stay unlimited.</summary>
     public static double? ParseUploadRate(JsonElement root)
@@ -45,9 +37,8 @@ public static class ControlProtocol
         using var json = JsonDocument.Parse(line);
         var qos = json.RootElement.TryGetProperty("qosEnabled", out var qosValue) && qosValue.GetBoolean();
         var upload = ParseUploadRate(json.RootElement);
-        var alwaysLimit = ParseAlwaysLimit(json.RootElement);
         if (!json.RootElement.TryGetProperty("protectedProcesses", out var processes))
-            return new(rate, [], qos, upload, alwaysLimit);
+            return new(rate, [], qos, upload);
         if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() > 128)
             throw new FormatException("Ungültige Liste geschützter Programme.");
         var result = new List<ProtectedProcess>();
@@ -58,7 +49,7 @@ public static class ControlProtocol
             if (pid <= 0 || ticks is <= 0 || ticks > DateTime.MaxValue.Ticks) throw new FormatException("Ungültige Prozessidentität.");
             result.Add(new(pid, ticks));
         }
-        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, upload, alwaysLimit);
+        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, upload);
     }
 
     public static async Task<string?> ReadLineAsync(TextReader reader, CancellationToken cancellationToken)

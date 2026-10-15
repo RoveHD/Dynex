@@ -29,8 +29,6 @@ public sealed record UserSettings
     public double? ManualUploadLimitMbps { get; init; }
     /// <summary>Games (process names) that count as gaming as soon as they run, e.g. during loading or matchmaking.</summary>
     public string EarlyLimitGames { get; init; } = "";
-    /// <summary>Programs limited at once while gaming, without the bulk threshold (e.g. steam).</summary>
-    public string AlwaysLimitPrograms { get; init; } = "";
     public bool PingAlarm { get; init; } = true;
     public bool NightFree { get; init; }
     public string NightFrom { get; init; } = "01:00";
@@ -61,4 +59,4 @@ public sealed record RuntimeSnapshot(
     string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null,
     Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null,
     double? UploadLimitMbps = null, string? PingAlert = null, IReadOnlyList<ProgramTraffic>? TopPrograms = null,
-    string? GameServer = null, PingView? GameServerPing = null, string? ScheduleReason = null);
+    string? ScheduleReason = null);

@@ -82,8 +82,6 @@ internal sealed class ShaperController : IAsyncDisposable
             Set(new(false, null, "Windows konnte die Downloadbegrenzung nicht starten: " + ex.Message));
         }
     }
-    /// <summary>Programs to limit at once while gaming (never games or voice; enforced in the helper).</summary>
-    public IReadOnlyList<string> AlwaysLimit { get; set; } = [];
     public async Task ApplyAsync(double? mbps, CancellationToken token, IReadOnlyList<GameDetectionResult>? games = null, bool qosEnabled = false,
         Func<bool>? protectionStillNeeded = null, double? uploadMbps = null)
     {
@@ -117,7 +115,7 @@ internal sealed class ShaperController : IAsyncDisposable
                         else commandId = pendingReleaseId;
                     }
                 }
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled, alwaysLimit = AlwaysLimit, commandId }).AsMemory(), timeout.Token);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled, commandId }).AsMemory(), timeout.Token);
             }
             finally { writeGate.Release(); }
         }
@@ -150,12 +148,10 @@ internal sealed class ShaperController : IAsyncDisposable
                     foreach (var item in list.EnumerateArray().Take(5))
                         if (item.TryGetProperty("name", out var programName) && programName.GetString() is { Length: > 0 and <= 64 } name && !name.Any(char.IsControl))
                             programs.Add(new(name, item.GetProperty("downMbps").GetDouble(), item.GetProperty("upMbps").GetDouble()));
-                var gameServer = root.TryGetProperty("gameServer", out var serverValue) && serverValue.ValueKind == JsonValueKind.String &&
-                    System.Net.IPAddress.TryParse(serverValue.GetString(), out var serverAddress) ? serverAddress.ToString() : null;
                 var next = new ShaperStatus(active, active ? limit : null, error ?? (active
                     ? qosActive ? "Große Downloads begrenzt · Spiele und Sprachchat priorisiert." : "Große Downloads begrenzt · Spiele und Sprachchat frei."
                     : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt." : "Bereit. Downloads sind momentan nicht begrenzt."),
-                    qosActive, gamePackets, voicePackets, uploadLimit, programs, gameServer);
+                    qosActive, gamePackets, voicePackets, uploadLimit, programs);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
@@ -254,5 +250,5 @@ internal sealed class ShaperController : IAsyncDisposable
     public async ValueTask DisposeAsync() => await StopAsync();
     internal sealed record ShaperStatus(bool Active, double? Mbps, string Message,
         bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0, double? UploadMbps = null,
-        IReadOnlyList<ProgramTraffic>? TopPrograms = null, string? GameServer = null);
+        IReadOnlyList<ProgramTraffic>? TopPrograms = null);
 }

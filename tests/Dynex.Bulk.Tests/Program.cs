@@ -220,28 +220,15 @@ using (var device = new PacketTestDevice(packet =>
     pump.UpdateUploadLimit(null);
     Check(!pump.HasUploadLimit, "upload limit can be lifted without restarting capture");
 }
-// "Limit at once" list: listed programs skip the bulk threshold, games and voice never.
-owners = [new(flow, 801, started, "steam")];
-var immediate = new BulkDownloadPolicy(Snapshot, [], () => now);
-immediate.AlwaysLimit(["Steam"]);
-using (var packet = Packet(flow)) Check(immediate.ShouldLimit(packet), "a listed program is limited from its first data packet");
-using (var packet = Packet(flow, 0)) Check(!immediate.ShouldLimit(packet), "ACKs of a listed program still pass");
-immediate.Protect([new(801, started.UtcTicks)]);
-using (var packet = Packet(flow)) Check(!immediate.ShouldLimit(packet), "the list can never limit a protected game");
-Check(ControlProtocol.ParseCommand("{\"mbps\":5,\"alwaysLimit\":[\"steam\",\"EpicGamesLauncher\"]}").AlwaysLimit!.Length == 2,
-    "always-limit list travels over IPC");
-
-// Accounting: read-only per-program rates and the game's server.
+// Accounting: read-only per-program rates.
 var clockNow = 0d;
 var accounting = new TrafficAccounting(() => clockNow);
-for (var i = 0; i < 100; i++) accounting.Observe("steam", true, 25_000, false, IPAddress.Parse("203.0.113.8"));
-for (var i = 0; i < 50; i++) accounting.Observe("game", false, 2000, true, IPAddress.Parse("198.51.100.20"));
-accounting.Observe("game", false, 200, true, IPAddress.Parse("192.168.1.9"));
+for (var i = 0; i < 100; i++) accounting.Observe("steam", true, 25_000);
+for (var i = 0; i < 50; i++) accounting.Observe("game", false, 2000);
 clockNow = 2;
-accounting.Observe("steam", true, 1, false, IPAddress.Parse("203.0.113.8"));
-var (top, server) = accounting.Snapshot();
+accounting.Observe("steam", true, 1);
+var top = accounting.Snapshot();
 Check(top.Length == 2 && top[0] is { Name: "steam", DownMbps: 10 } && top[1].Name == "game", "per-program rates rank the busiest program first");
-Check(server?.ToString() == "198.51.100.20", "the game's public server is identified; LAN addresses are ignored");
 Console.WriteLine($"{passed}/{passed} bulk checks passed. No kernel filter installed or activated.");
 
 sealed class PacketTestDevice(Action<CapturedPacket> send) : IPacketDevice

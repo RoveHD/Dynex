@@ -17,11 +17,9 @@ DYNEX ist so gebaut, dass Spiele und ihre Anti-Cheat-Systeme (z. B. Riot Vanguar
 - Nur der Programmpfad (für die Launcher-Zuordnung) braucht ein Handle mit dem schwächsten Recht `PROCESS_QUERY_LIMITED_INFORMATION` – dasselbe, das der Task-Manager nutzt. Ab 1.0.6 einmal pro Prozessstart statt alle zwei Sekunden; vorher öffnete der Helper beim Spielen mehrmals pro Sekunde Handles auf das Spiel.
 - Verbindungen werden über die Windows-Verbindungstabellen (`GetExtendedTcpTable`/`UdpTable`) Programmen zugeordnet, nicht durch Einblick in Prozesse.
 
-## Zählen und Server-Ping
+## Zählen
 
 - „Wer lädt gerade?“ zählt nur Bytes pro Programm, während die Pakete ohnehin durch die Priorisierung laufen. Kein Paket wird dafür angehalten oder verändert.
-- Der Spielserver-Ping nutzt eigene ICMP-Echo-Pakete an die Serveradresse, die das Spiel ohnehin verwendet – wie ein normaler `ping`. Es werden keine Spielpakete erzeugt, kopiert oder verändert.
-- „Sofort begrenzen“ prüft Spiele und Sprachchat zuerst; ein laufendes Spiel kann darüber nie gebremst werden.
 
 ## Der Netzwerkfilter
 

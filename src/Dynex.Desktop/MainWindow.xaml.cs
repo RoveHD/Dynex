@@ -133,10 +133,7 @@ public partial class MainWindow : Window
         lines.AddRange(s.Devices.Skip(1).Where(d => d.TopProgram is not null)
             .Select(d => $"{d.Name} · {d.TopProgram}: ↓ {d.DownloadMbps ?? 0:0.0} Mbit/s gesamt"));
         TopProgramsText.Text = lines.Count > 0 ? string.Join("\n", lines)
-            : "Programme erscheinen, sobald beim Spielen die Priorisierung läuft. Mit „Beim Spielen sofort begrenzen“ (Spiele) lassen sie sich direkt bremsen.";
-        GameServerDetail.Text = s.GameServer is { } server
-            ? $"Spielserver {server}: {(s.GameServerPing?.Current is { } ms ? $"{ms:0} ms" : "antwortet nicht auf Ping")} · Schwankung {s.GameServerPing?.Jitter:0.0} ms. Gemessen mit eigenen Ping-Paketen; Spielpakete bleiben unberührt."
-            : "Während du spielst, misst DYNEX den Ping zum Server deines Spiels mit eigenen Ping-Paketen. Spielpakete werden dafür nicht angefasst.";
+            : "Programme erscheinen, sobald beim Spielen die Priorisierung läuft.";
     }
     private void UpdateTray(RuntimeSnapshot s)
     {
@@ -184,7 +181,6 @@ public partial class MainWindow : Window
         NotificationsCheck.IsChecked = s.Notifications;
         PingAlarmCheck.IsChecked = s.PingAlarm;
         EarlyGamesBox.Text = s.EarlyLimitGames;
-        AlwaysLimitBox.Text = s.AlwaysLimitPrograms;
         NightFreeCheck.IsChecked = s.NightFree;
         NightFromBox.Text = s.NightFrom;
         NightToBox.Text = s.NightTo;
@@ -216,7 +212,7 @@ public partial class MainWindow : Window
                 Notifications = NotificationsCheck.IsChecked == true,
                 UploadLimitEnabled = UploadLimitCheck.IsChecked == true,
                 PingAlarm = PingAlarmCheck.IsChecked == true,
-                EarlyLimitGames = EarlyGamesBox.Text.Trim(), AlwaysLimitPrograms = AlwaysLimitBox.Text.Trim(),
+                EarlyLimitGames = EarlyGamesBox.Text.Trim(),
                 NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
                 WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                 ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
@@ -623,9 +619,6 @@ public partial class MainWindow : Window
             ? "Nur aktiv, wenn auf einem deiner DYNEX-PCs ein Spiel im Fokus ist. Ohne Gaming bleibt der Netzwerkfilter inaktiv."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
-        GameServerText.Visibility = s.GameServer is null ? Visibility.Collapsed : Visibility.Visible;
-        GameServerText.Text = s.GameServer is null ? "" : $"Spielserver: {(s.GameServerPing?.Current is { } serverMs ? $"{serverMs:0} ms" : "kein Ping")}";
-        GameServerText.ToolTip = s.GameServer is { } gs ? $"Server {gs}, gemessen mit eigenen Ping-Paketen." : null;
         ScheduleStatusText.Text = s.ScheduleReason ?? "Gerade gilt kein Zeitplan.";
         RenderAnalysis(s);
         _deviceSnapshot = s.Devices;

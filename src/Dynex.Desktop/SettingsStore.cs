@@ -75,7 +75,7 @@ internal sealed class SettingsStore
         if (value.GameProcesses.Length > 4096) throw new ArgumentException("Zu viele Prozessnamen.");
         foreach (var process in Split(value.GameProcesses))
             if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,79}$")) throw new ArgumentException("Nur Prozessnamen ohne Pfad (maximal 80 Zeichen) angeben.");
-        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Spiele mit früher Begrenzung"), (value.AlwaysLimitPrograms, "Sofort zu begrenzende Programme") })
+        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Spiele mit früher Begrenzung") })
         {
             if (list.Length > 2048 || Split(list).Length > 32) throw new ArgumentException($"{label}: höchstens 32 Namen.");
             foreach (var process in Split(list))
