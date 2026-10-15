@@ -98,7 +98,8 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.value }}'
           $signed = if ($env:HAS_PFX -eq 'true') { 'Setup und Programme sind signiert.' } else { 'Diese Version ist noch nicht code-signiert; Windows SmartScreen kann beim Start des Setups warnen („Weitere Informationen“ → „Trotzdem ausführen“). Die SHA-256-Prüfsummen liegen bei.' }
-          $notes = "Änderungen: siehe README („Neu in $v“). $signed"
+          # Single quotes only: PowerShell treats typographic quotes („ “) as string delimiters.
+          $notes = 'Änderungen: siehe README, Abschnitt "Neu in ' + $v + '". ' + $signed
           $assets = @("artifacts/DYNEX-Setup-$v.exe", "artifacts/DYNEX-Setup-$v.exe.sha256", "artifacts/DYNEX-Cleanup-$v.exe", "artifacts/DYNEX-Cleanup-$v.exe.sha256")
           # --target creates the tag on the tested commit when it does not exist yet (manual start).
           $mode = if ($env:PUBLISH -eq 'true') { @('--latest') } else { @('--draft') }
