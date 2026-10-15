@@ -64,7 +64,8 @@ public partial class App : System.Windows.Application
             var window = new MainWindow(_runtime, _updates, showSetupGuide: DesktopLifecycle.ProfilePath is null);
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
-            window.Show();
+            // A background update must not briefly activate a window over the game.
+            if (!e.Args.Contains("--tray") || e.Args.Contains("--verify-live")) window.Show();
             var startupHandoff = true;
             if (_updates is not null && !e.Args.Contains("--verify-live"))
             {
@@ -77,7 +78,8 @@ public partial class App : System.Windows.Application
                     {
                         // The channel or opt-in may have changed while verification or helper shutdown awaited.
                         if (!updates.CanStartInstaller(installer)) return false;
-                        if (!StartUpdateInstaller(installer, !window.IsVisible || startupHandoff && e.Args.Contains("--tray")))
+                        if (!StartUpdateInstaller(installer, !window.IsVisible || !window.IsActive ||
+                            window.WindowState == WindowState.Minimized || startupHandoff && e.Args.Contains("--tray")))
                         {
                             updates.ReportInstallerLaunchFailure("Windows konnte den Update-Installer nicht starten.");
                             return false;
