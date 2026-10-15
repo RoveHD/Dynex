@@ -121,12 +121,21 @@ public sealed class GitHubUpdateService : IDisposable
         lock (sync) beta = value;
     }
 
-    public Task CheckNowAsync()
+    public Task CheckNowAsync() => CheckCoreAsync(background: false);
+
+    private long operationStartedTick;
+
+    private Task CheckCoreAsync(bool background)
     {
         lock (sync)
         {
             if (disposed) return Task.CompletedTask;
             if (!operation.IsCompleted && operationEpoch == generation) return operation;
+            // The background loop's first check right after a manual one would only repeat the same
+            // GitHub request (and briefly show "checking" again).
+            if (background && operationEpoch == generation && operationStartedTick != 0 &&
+                Stopwatch.GetElapsedTime(operationStartedTick) < TimeSpan.FromMinutes(1)) return operation;
+            operationStartedTick = Stopwatch.GetTimestamp();
             var epoch = generation;
             var download = enabled;
             var token = download ? enabledLifetime!.Token : lifetime.Token;
@@ -140,11 +149,14 @@ public sealed class GitHubUpdateService : IDisposable
 
     private async Task BackgroundAsync(long epoch, CancellationToken token)
     {
+        var first = true;
         try
         {
             while (!token.IsCancellationRequested)
             {
-                await CheckNowAsync().ConfigureAwait(false);
+                // Only the loop's first check may reuse a manual check that just ran.
+                await CheckCoreAsync(background: first).ConfigureAwait(false);
+                first = false;
                 token.ThrowIfCancellationRequested();
                 TimeSpan delay;
                 lock (sync) delay = deferred ? deferredInterval : checkInterval;

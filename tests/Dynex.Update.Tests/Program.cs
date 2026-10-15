@@ -89,19 +89,19 @@ await Scenario("beta channel", async () =>
 {
     using var stable = new Fixture();
     stable.Handler.Variant = "prerelease";
-    stable.Service.SetEnabled(true);
+    stable.Service.SetEnabled(true, startBackground: false);
     await stable.Service.CheckNowAsync();
     Check(!stable.Service.Status.UpdateReady, "stable channel ignores pre-releases");
     using var fixture = new Fixture();
     fixture.Service.SetBetaChannel(true);
-    fixture.Service.SetEnabled(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
     await fixture.Service.CheckNowAsync();
     Check(fixture.Service.Status.UpdateReady && fixture.Service.Status.AvailableVersion == "0.5.0",
         "beta channel installs the newest verified pre-release and skips malformed entries");
     using var drafts = new Fixture();
     drafts.Handler.Variant = "draft";
     drafts.Service.SetBetaChannel(true);
-    drafts.Service.SetEnabled(true);
+    drafts.Service.SetEnabled(true, startBackground: false);
     await drafts.Service.CheckNowAsync();
     Check(!drafts.Service.Status.UpdateReady, "beta channel never installs drafts");
 });
@@ -119,7 +119,7 @@ foreach (var (name, candidate, current, accepted) in new[]
     await Scenario("signature: " + name, async () =>
     {
         using var fixture = new Fixture(current: current) { Candidate = candidate };
-        fixture.Service.SetEnabled(true);
+        fixture.Service.SetEnabled(true, startBackground: false);
         await fixture.Service.CheckNowAsync();
         Check(fixture.Service.Status.UpdateReady == accepted, name);
         if (!accepted)
@@ -133,7 +133,7 @@ foreach (var (name, candidate, current, accepted) in new[]
 await Scenario("signature re-checked before handoff", async () =>
 {
     using var fixture = new Fixture(current: publisher) { Candidate = publisher };
-    fixture.Service.SetEnabled(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
     await fixture.Service.CheckNowAsync();
     Check(fixture.Service.Status.UpdateReady, "signed update becomes ready");
     fixture.Candidate = SignatureCheck.Unsigned; // File swapped on disk after download.
@@ -148,7 +148,7 @@ await Scenario("rolled back version is not downloaded again", async () =>
     System.IO.Directory.CreateDirectory(fixture.Directory);
     File.WriteAllText(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.5.0\r\n");
     Check(fixture.Service.RolledBackVersion == "0.5.0", "installer rollback marker is read");
-    fixture.Service.SetEnabled(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
     await fixture.Service.CheckNowAsync();
     Check(!fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("wiederhergestellt"),
         "a version that failed to install is reported instead of re-downloaded");
