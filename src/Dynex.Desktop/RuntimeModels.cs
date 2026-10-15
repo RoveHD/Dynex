@@ -25,6 +25,9 @@ public sealed record UserSettings
     public string Profile { get; init; } = "Standard";
     public bool SetupGuideDone { get; init; }
     public bool MarkGamePackets { get; init; }
+    public double? UploadCapacityMbps { get; init; }
+    public bool UploadLimitEnabled { get; init; } = true;
+    public double? ManualUploadLimitMbps { get; init; }
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";
@@ -48,4 +51,5 @@ public sealed record RuntimeSnapshot(
     string? NetworkProblem = null, bool ProtectionIdle = false,
     Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null,
     string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null,
-    Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null);
+    Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null,
+    double? UploadLimitMbps = null);

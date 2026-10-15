@@ -147,6 +147,8 @@ public partial class MainWindow : Window
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
+        UploadLimitCheck.IsChecked = s.UploadLimitEnabled;
+        ManualUploadBox.Text = s.ManualUploadLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
         PriorityCombo.SelectedIndex = s.SharePriority switch { 0.5 => 0, 2 => 2, _ => 1 };
         ProfileCombo.SelectedIndex = s.Profile switch { "Turnier" => 0, "Entspannt" => 2, "Standard" => 1, _ => -1 };
@@ -165,6 +167,8 @@ public partial class MainWindow : Window
                 AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
                 Notifications = NotificationsCheck.IsChecked == true, MarkGamePackets = MarkGameCheck.IsChecked == true,
+                UploadLimitEnabled = UploadLimitCheck.IsChecked == true,
+                ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
                 GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
@@ -335,7 +339,8 @@ public partial class MainWindow : Window
         } : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
         SpeedTestProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         var measured = settings.CapacityMeasuredAtUtc is { } at
-            ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}. "
+            ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}" +
+              (settings.UploadCapacityMbps is { } upload ? $" · Upload {upload:0.#} Mbit/s. " : ". ")
             : "Noch nicht gemessen. ";
         SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
             (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
@@ -511,6 +516,10 @@ public partial class MainWindow : Window
             : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
+        UpCaption.Text = s.UploadLimitMbps is { } upCap ? $"Andere Uploads ≤ {upCap:0.0} Mbps" : "Gesamter Versand";
+        UpCaption.ToolTip = s.UploadLimitMbps is not null
+            ? "Große Uploads anderer Programme sind begrenzt. Spiele, Sprachchat und Download-Bestätigungen bleiben frei."
+            : _runtime.Settings.UploadCapacityMbps is null ? "Upload-Begrenzung braucht einen Speedtest ab DYNEX 1.0.6 (misst auch den Upload)." : null;
         if (s.HomeTraffic is { } home)
         {
             // NIC counters include LAN traffic, so the remainder is only an estimate.

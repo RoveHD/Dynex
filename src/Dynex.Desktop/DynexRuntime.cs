@@ -268,7 +268,9 @@ public sealed class DynexRuntime : IAsyncDisposable
                             CapacityMbps = Math.Round(result.DownloadMbps, 2),
                             CapacityMeasuredAtUtc = DateTimeOffset.UtcNow,
                             IdleLatencyMs = result.IdleLatencyMs is { } idle ? Math.Round(idle, 1) : null,
-                            LoadedLatencyMs = result.LoadedLatencyMs is { } loaded ? Math.Round(loaded, 1) : null
+                            LoadedLatencyMs = result.LoadedLatencyMs is { } loaded ? Math.Round(loaded, 1) : null,
+                            // A blocked upload test keeps the previous upload measurement.
+                            UploadCapacityMbps = result.UploadMbps ?? Settings.UploadCapacityMbps
                         });
                         SettingsStore.Validate(measured);
                         store.Save(measured);
@@ -402,11 +404,15 @@ public sealed class DynexRuntime : IAsyncDisposable
                     if (pausedUntil is { } until && until <= now) { Interlocked.CompareExchange(ref pausedUntilTicks, 0, until.UtcTicks); pausedUntil = null; }
                     if (pausedUntil is not null) decision = decision with { DownloadLimitMbps = null };
                     PlannedDownloadLimitMbps = IsSpeedTestRunning ? null : decision.DownloadLimitMbps;
+                    var plannedUpload = IsSpeedTestRunning || settings.CapacityMeasuredAtUtc is null ? null
+                        : UploadLimit.Compute(decision, settings.UploadCapacityMbps, settings.BackgroundPercent,
+                            settings.ManualUploadLimitMbps, settings.UploadLimitEnabled, pausedUntil is not null);
                     shaper.MarkGamePackets = settings.MarkGamePackets;
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
-                                settings.Mode != GamingMode.Off && ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null);
+                                settings.Mode != GamingMode.Off && ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null,
+                            uploadMbps: plannedUpload);
                     var driver = shaper.Status;
                     // Each PC's confirmed limit must stay within its (priority-weighted) part of the pool.
                     double? ShareFor(double weight) => decision.SharedDownloadBudgetMbps is { } pool
@@ -462,7 +468,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
-                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic);
+                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic, UploadLimitMbps: driver.UploadMbps);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -501,7 +507,8 @@ public sealed class DynexRuntime : IAsyncDisposable
     /// <summary>Portable settings backup. Contains no keys; measured capacity stays specific to this PC.</summary>
     public string ExportSettings() => JsonSerializer.Serialize(new SettingsBackup(1, AppVersion, Settings with
     {
-        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false, IdleLatencyMs = null, LoadedLatencyMs = null
+        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false, IdleLatencyMs = null, LoadedLatencyMs = null,
+        UploadCapacityMbps = null
     }), new JsonSerializerOptions { WriteIndented = true });
     public async Task ImportSettingsAsync(string json)
     {
@@ -516,7 +523,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         {
             DeviceName = current.DeviceName, CapacityMbps = current.CapacityMbps,
             CapacityMeasuredAtUtc = current.CapacityMeasuredAtUtc, AutomaticSpeedTestAttempted = current.AutomaticSpeedTestAttempted,
-            IdleLatencyMs = current.IdleLatencyMs, LoadedLatencyMs = current.LoadedLatencyMs
+            IdleLatencyMs = current.IdleLatencyMs, LoadedLatencyMs = current.LoadedLatencyMs, UploadCapacityMbps = current.UploadCapacityMbps
         });
     }
     private sealed record SettingsBackup(int Format, string Version, UserSettings Settings);
@@ -551,7 +558,7 @@ public sealed class DynexRuntime : IAsyncDisposable
             // A settings action queued during the test must not restore its old capacity.
             if (settings.CapacityMeasuredAtUtc != prior.CapacityMeasuredAtUtc)
                 settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc,
-                    IdleLatencyMs = prior.IdleLatencyMs, LoadedLatencyMs = prior.LoadedLatencyMs });
+                    IdleLatencyMs = prior.IdleLatencyMs, LoadedLatencyMs = prior.LoadedLatencyMs, UploadCapacityMbps = prior.UploadCapacityMbps });
             store.Save(settings);
             try { if (!isolated && settings.AutoStart != prior.AutoStart) SetAutostart(settings.AutoStart); }
             catch { store.Save(prior); throw; }

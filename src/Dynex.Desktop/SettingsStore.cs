@@ -64,6 +64,8 @@ internal sealed class SettingsStore
         if (value.ManualLimitMbps is double limit) Range(limit, 0.1, 10000, "Manuelles Limit");
         if (value.Profile is not ("Turnier" or "Standard" or "Entspannt" or "Eigenes")) throw new ArgumentException("Unbekanntes Profil.");
         if (value.SharePriority is not (0.5 or 1 or 2)) throw new ArgumentException("Priorität muss Niedrig, Normal oder Hoch sein.");
+        if (value.UploadCapacityMbps is double upload) Range(upload, 0.1, 10000, "Gemessener Upload");
+        if (value.ManualUploadLimitMbps is double uploadLimit) Range(uploadLimit, 0.1, 10000, "Upload-Obergrenze");
         foreach (var latency in new[] { value.IdleLatencyMs, value.LoadedLatencyMs })
             if (latency is double ms) Range(ms, 0, 10000, "Gemessener Ping");
         if (!Enum.IsDefined(value.Mode)) throw new ArgumentException("Ungültiger Gaming-Modus.");

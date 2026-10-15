@@ -14,7 +14,7 @@ Zusätzlich geprüft: Benachrichtigungslogik (Übergänge, Ratenbegrenzung), Pau
 
 Nicht automatisch prüfbar und deshalb offen: Infobereich-Benachrichtigungen und Assistent auf echtem Desktop, UPnP gegen echte Router, Launcher-Erkennung mit echten Installationen.
 
-**Bewusst nicht umgesetzt:** Upload-Begrenzung (würde den nativen Paketpfad für ausgehende Pakete ändern; ohne Test mit echtem NDIS-Filter zu riskant für Spiel- und ACK-Pakete) und eine englische Oberfläche (alle Texte müssten in Ressourcen ausgelagert werden; eigenes Paket).
+**Upload-Begrenzung:** Die Klassifizierung (nur große Uploads identifizierter Nicht-Spiel-Programme; ACKs, Spiele, Sprachchat, unbekannte Eigentümer frei) und eine eigene Upload-Warteschlange sind mit simuliertem Paketgerät geprüft: Spielpakete und eingehende Pakete passieren sofort, während ein Upload gesättigt ist. Mit echtem NDIS-Filter noch nicht geprüft (Abnahmeschritt 19). **Bewusst nicht umgesetzt:** eine englische Oberfläche (alle Texte müssten in Ressourcen ausgelagert werden; eigenes Paket).
 
 ### Abnahme auf zwei echten PCs (offen)
 
@@ -40,6 +40,7 @@ Auf PC 1 und PC 2 jeweils DYNEX 1.0.6 installieren, beide im selben WLAN/LAN mit
 | 16 | Router mit UPnP-Status (FRITZ!Box) | Download-Karte „Ganzes Heimnetz“; Tooltip mit Geräten ohne DYNEX |
 | 17 | Spiel aus Ubisoft/EA/Battle.net/Xbox starten | Spiel wird erkannt, Launcher allein nicht |
 | 18 | 5 min spielen, beenden | Benachrichtigung „Spielsitzung beendet“ mit Dauer und Ping |
+| 19 | Spiel im Fokus, gleichzeitig großer OneDrive-/Google-Drive-Upload | Upload-Karte „Andere Uploads ≤ … Mbps“, Ping bleibt stabil, Spiel und Discord unbeeinträchtigt; parallel laufender Download wird nicht langsamer |
 
 
 ## PC-Kopplung und Verbindungsdiagnose (1.0.5)

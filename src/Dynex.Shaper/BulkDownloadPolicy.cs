@@ -19,6 +19,8 @@ public sealed class BulkDownloadPolicy
     private readonly (IPAddress Address, int Prefix)[] _localNetworks;
     private readonly Dictionary<FlowIdentity, FlowActivity> _flows = new();
     private readonly Dictionary<(int Pid, long StartedAt), FlowActivity> _programs = new();
+    private readonly Dictionary<FlowIdentity, FlowActivity> _uploadFlows = new();
+    private readonly Dictionary<(int Pid, long StartedAt), FlowActivity> _uploadPrograms = new();
     private ControlProtocol.ProtectedProcess[] _protected = [];
     private double _lastCleanup;
 
@@ -36,12 +38,26 @@ public sealed class BulkDownloadPolicy
         Volatile.Write(ref _protected, processes.Take(128).ToArray());
 
     // Called by one receiver thread. Updating protected identities is atomic.
-    public bool ShouldLimit(CapturedPacket packet)
+    public bool ShouldLimit(CapturedPacket packet) =>
+        packet.Direction == PacketDirection.Inbound && IsBulk(packet, _flows, _programs);
+
+    /// <summary>
+    /// Same rules for uploads: only sustained bulk flows of identified non-game, non-voice programs.
+    /// Games, voice chat, pure TCP ACKs (no payload), DNS, LAN and unknown owners are never limited,
+    /// so download acknowledgements and game traffic always leave immediately.
+    /// </summary>
+    public bool ShouldLimitUpload(CapturedPacket packet) =>
+        packet.Direction == PacketDirection.Outbound && IsBulk(packet, _uploadFlows, _uploadPrograms);
+
+    private bool IsBulk(CapturedPacket packet, Dictionary<FlowIdentity, FlowActivity> flows,
+        Dictionary<(int Pid, long StartedAt), FlowActivity> programs)
     {
-        if (packet.Direction == PacketDirection.Outbound) return false;
         if (packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);
         if (!InboundPacketParser.TryParse(ip, out var flow, out var payloadLength) || payloadLength <= 0) return false;
+        // The parser names the destination "local"; for outbound packets the source is this PC.
+        if (packet.Direction == PacketDirection.Outbound)
+            flow = new(flow.Protocol, flow.RemoteAddress, flow.RemotePort, flow.LocalAddress, flow.LocalPort);
         if (IsLocal(flow.RemoteAddress) || flow.LocalPort is 53 or 5353 or 5355 or 39274 || flow.RemotePort is 53 or 5353 or 5355 or 39274)
             return false;
         var snapshot = _snapshot();
@@ -58,20 +74,22 @@ public sealed class BulkDownloadPolicy
         var now = _clock();
         if (now - _lastCleanup > 5)
         {
-            foreach (var key in _flows.Where(p => now - p.Value.LastAt > 5).Select(p => p.Key).ToArray()) _flows.Remove(key);
-            foreach (var key in _programs.Where(p => now - p.Value.LastAt > 5).Select(p => p.Key).ToArray()) _programs.Remove(key);
+            foreach (var table in new[] { _flows, _uploadFlows })
+                foreach (var key in table.Where(p => now - p.Value.LastAt > 5).Select(p => p.Key).ToArray()) table.Remove(key);
+            foreach (var table in new[] { _programs, _uploadPrograms })
+                foreach (var key in table.Where(p => now - p.Value.LastAt > 5).Select(p => p.Key).ToArray()) table.Remove(key);
             _lastCleanup = now;
         }
         var identity = new FlowIdentity(flow, owner.ProcessId, owner.ProcessStartedAtUtc.Value.UtcTicks);
         var programId = (owner.ProcessId, owner.ProcessStartedAtUtc.Value.UtcTicks);
-        if (!_programs.TryGetValue(programId, out var program) || now - program.StartedAt > 1)
-            _programs[programId] = program = new FlowActivity { StartedAt = now };
+        if (!programs.TryGetValue(programId, out var program) || now - program.StartedAt > 1)
+            programs[programId] = program = new FlowActivity { StartedAt = now };
         program.Bytes += payloadLength;
         program.LastAt = now;
-        if (!_flows.TryGetValue(identity, out var activity) || now - activity.LastAt > 5)
+        if (!flows.TryGetValue(identity, out var activity) || now - activity.LastAt > 5)
         {
-            if (_flows.Count >= 8192) return false;
-            _flows[identity] = activity = new FlowActivity { StartedAt = now, LastAt = now };
+            if (flows.Count >= 8192) return false;
+            flows[identity] = activity = new FlowActivity { StartedAt = now, LastAt = now };
         }
         activity.LastAt = now;
         if (activity.IsBulk) return true;

@@ -8,7 +8,7 @@ DYNEX ist so gebaut, dass Spiele und ihre Anti-Cheat-Systeme (z. B. Riot Vanguar
 - **Keine Code-Injektion:** keine Remote-Threads, keine DLLs im Spielprozess, keine APCs.
 - **Keine Eingabe- oder Fenster-Hooks:** kein `SetWindowsHookEx`, `SetWinEventHook`, `SendInput`; DYNEX liest nur, welches Fenster im Vordergrund ist.
 - **Kein Overlay:** DYNEX zeichnet nicht über Spiele. Status gibt es im Infobereich und in Windows-Benachrichtigungen.
-- **Keine verzögerten oder verworfenen Spielpakete:** Pakete erkannter Spiele umgehen die Downloadwarteschlange immer (`PacketPump`). Ein „Lag-Switch“-Muster entsteht dadurch nicht. Begrenzt werden nur große Downloads anderer Programme.
+- **Keine verzögerten oder verworfenen Spielpakete:** Pakete erkannter Spiele umgehen Download- und Upload-Warteschlange immer (`PacketPump`, `BulkDownloadPolicy.ShouldLimitUpload`). Ein „Lag-Switch“-Muster entsteht dadurch nicht. Begrenzt werden nur große Downloads anderer Programme.
 - **Spielpakete bleiben unverändert (ab 1.0.6 Standard):** Die QoS-Markierung (DSCP) ausgehender Spielpakete ist nur noch eine Option (Einstellungen → „Spielpakete für Router-QoS markieren“) und standardmäßig aus. Sprachchat-Pakete werden weiter markiert.
 
 ## Wie DYNEX Spiele erkennt

@@ -192,3 +192,21 @@ internal static class SessionTrackerTests
         check(tracker.Observe(false, null, null, false, t.AddMinutes(10).AddSeconds(30)) is null, "very short sessions are not reported");
     }
 }
+
+internal static class UploadLimitTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        var gaming = new LimitDecision(16, "", true, null, false, ParticipantCount: 2, GamingCount: 1, ShareWeightTotal: 2, LocalShareWeight: 1);
+        check(UploadLimit.Compute(gaming, 40, 65, null, true, false) == 13, "upload share = capacity × background share / PCs");
+        check(UploadLimit.Compute(gaming with { ShareWeightTotal = 3, LocalShareWeight = 2 }, 40, 65, null, true, false) == 17.33,
+            "PC priority applies to uploads as well");
+        check(UploadLimit.Compute(gaming with { GamingActive = false }, 40, 65, null, true, false) is null, "no game in focus means uploads stay free");
+        check(UploadLimit.Compute(gaming, 40, 65, null, true, paused: true) is null, "a user pause also frees uploads");
+        check(UploadLimit.Compute(gaming, 40, 65, null, enabled: false, false) is null, "upload limiting can be switched off");
+        check(UploadLimit.Compute(gaming, null, 65, null, true, false) is null, "no upload measurement means no automatic upload limit");
+        check(UploadLimit.Compute(gaming, null, 65, 5, true, false) == 5 && UploadLimit.Compute(gaming, 40, 65, 5, true, false) == 5,
+            "a manual upload cap works alone and as an upper bound");
+        check(UploadLimit.Compute(gaming, 1, 10, null, true, false) == 0.5, "very slow lines keep a usable minimum upload");
+    }
+}

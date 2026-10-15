@@ -36,6 +36,32 @@ Check(Dynex.Core.Bufferbloat.Rate(loadedResult.IdleLatencyMs, loadedResult.Loade
 var noProbe = await new SpeedTestService(new HttpClient(successfulHandler), successfulOptions).MeasureAsync(CancellationToken.None);
 Check(noProbe.IdleLatencyMs is null && noProbe.LoadedLatencyMs is null, "without a latency probe the result stays unrated");
 
+var uploadHandler = new TestHandler(async (request, token) =>
+{
+    if (request.Method == HttpMethod.Post)
+    {
+        await request.Content!.CopyToAsync(Stream.Null, token);
+        await Task.Delay(1100, token);
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    }
+    await Task.Delay(1100, token);
+    return Response(HttpStatusCode.OK, new byte[1_048_576], 1_048_576);
+});
+var uploadOptions = Options(1, 1_048_576, 1_048_576, TimeSpan.FromSeconds(3)) with
+    { UploadEndpoint = new Uri("https://speed.example/__up"), UploadDeadline = TimeSpan.FromSeconds(3), UploadStreams = 1, UploadBytesPerStream = 2_000_000 };
+var withUpload = await new SpeedTestService(new HttpClient(uploadHandler), uploadOptions).MeasureAsync(CancellationToken.None);
+Check(withUpload.UploadMbps is > 5 and < 20, "upload capacity is measured from the bytes actually sent");
+var failingUpload = new TestHandler(async (request, token) =>
+{
+    if (request.Method == HttpMethod.Post) return new HttpResponseMessage(HttpStatusCode.Forbidden);
+    await Task.Delay(1100, token);
+    return Response(HttpStatusCode.OK, new byte[1_048_576], 1_048_576);
+});
+var noUpload = await new SpeedTestService(new HttpClient(failingUpload), uploadOptions).MeasureAsync(CancellationToken.None);
+Check(noUpload.UploadMbps is null && noUpload.DownloadMbps > 0, "a failed upload test keeps the download result");
+await ThrowsAsync<ArgumentOutOfRangeException>(() => Task.Run(() => new SpeedTestService(new HttpClient(), uploadOptions with { UploadBytesPerStream = 64L * 1024 * 1024 })),
+    "upload test volume is bounded");
+
 await ThrowsAsync<ArgumentOutOfRangeException>(() => Task.Run(() => new SpeedTestService(new HttpClient(), Options(2, 65_536, 65_536))), "configured stream budget cannot exceed maximum bytes");
 await ThrowsAsync<HttpRequestException>(() => new SpeedTestService(new HttpClient(new TestHandler((_, _) => Task.FromResult(Response(HttpStatusCode.InternalServerError, [], 0)))),
     Options(1, 65_536, 65_536)).MeasureAsync(CancellationToken.None), "HTTP errors fail the measurement");
