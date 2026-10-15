@@ -1,6 +1,6 @@
 # Updates von GitHub
 
-Unter **Einstellungen → Updates** gibt es **Updates automatisch im Hintergrund herunterladen**.
+Unter **Einstellungen → Updates** gibt es **Updates automatisch herunterladen und installieren**.
 Der Haken ist anfangs aus. Änderungen werden sofort gespeichert; ein zusätzlicher
 Klick auf „Einstellungen speichern“ ist dafür nicht nötig. Die laufende
 Downloadbegrenzung wird beim Umschalten nicht neu gestartet.
@@ -11,17 +11,18 @@ Ohne Haken zeigt diese manuelle Prüfung lediglich an, ob eine Version verfügba
 Es wird dann nichts heruntergeladen oder installiert. Ausschalten bricht einen
 laufenden Update-Download ab und verhindert auch die Installation vorgemerkter Updates.
 
-Update-Downloads warten, solange DYNEX auf diesem oder einem verbundenen PC ein geöffnetes Spiel
-erkennt (auch im Hintergrund) oder die Internetgeschwindigkeit misst. Beginnt während des Downloads ein
-Spiel, wird der Download abgebrochen und nach dem Spielen neu versucht. Außerhalb
-dieser Zeiten liest DYNEX höchstens 512 KiB pro Sekunde. Die Anzeige meldet Prüfung,
-Warten, Download, Fehler oder die bereitliegende Version.
+Update-Downloads laufen auch dann weiter, wenn DYNEX auf diesem oder einem verbundenen PC ein Spiel
+erkennt (auch im Hintergrund); die Rate bleibt auf höchstens 512 KiB pro Sekunde begrenzt. Nur ein
+aktiver Internet-Speedtest pausiert den Download. Die Anzeige enthält den Fortschritt in MB und
+Prozent. Stehen über 30 Sekunden keine Bytes zur Verfügung, meldet DYNEX einen Fehler; **Jetzt prüfen**
+startet einen neuen Versuch. Ausschalten der Option bricht den Download ab und verhindert die Übergabe
+eines fertigen Updates an den Installer.
 
-Ein vollständig geladenes Update wird **beim nächsten regulären Programmstart**
-installiert, bevor Messung und Netzwerkhelper starten. Die App schließt sich nicht
-während einer laufenden Sitzung. Fenster schließen minimiert DYNEX weiterhin in
-den Infobereich; zum vollständigen Beenden dient dessen Menü. Nach der Installation
-öffnet DYNEX sich wieder, bei Windows-Autostart im Infobereich. Vorhandene
+Nach vollständigem Download und erfolgreichem Bestehen der geltenden Hash- und Signaturprüfungen installiert DYNEX das Update
+automatisch. Vor der Übergabe wartet es, bis Einstellungen gespeichert, aktive Speedtests und UI-Aktionen beendet
+sind. Danach beendet DYNEX den Runtime-Filter sauber, schließt sich und startet den Installer still.
+Nach erfolgreichem Installerstart wird der Cachemarker verbraucht; die neue Version wird anschließend
+gestartet. Die gespeicherten Einstellungen bleiben erhalten. Vorhandene
 Netzwerkvoraussetzungen mit vorhandenem Besitznachweis werden übersprungen. Fehlt die private Heimnetz-Firewallfreigabe,
 der Netzwerkfilter oder der für die spätere Deinstallation benötigte Nachweis, richtet das Setup dies nach Windows-UAC-Bestätigung ein.
 Bei Upgrades alter Versionen bleibt eine unbekannte Filterherkunft ausdrücklich unbekannt; vorhandene Filter werden dabei nicht neu installiert.
@@ -76,16 +77,19 @@ und prüft jede Signatur sofort mit `signtool verify /pa`. Benötigt werden das 
 (`signtool.exe`) und ein Code-Signing-Zertifikat:
 
 ```powershell
-# Zertifikat im Windows-Zertifikatspeicher oder auf einem Token (empfohlen, z. B. EV/OV):
-./scripts/build.ps1 -Version 1.0.6 -SignCertificateThumbprint <SHA1-Fingerabdruck> -RequireSignature
+# Zertifikat im Windows-Zertifikatspeicher oder auf einem Token:
+./scripts/build.ps1 -Version 1.0.7 -SignCertificateThumbprint <SHA1-Fingerabdruck> -RequireSignature
 # oder PFX-Datei; das Kennwort nur über die Umgebung, nie als Parameter:
 $env:DYNEX_SIGN_PFX_PASSWORD = '…'
-./scripts/build.ps1 -Version 1.0.6 -SignPfxPath C:\keys\dynex.pfx -RequireSignature
+./scripts/build.ps1 -Version 1.0.7 -SignPfxPath C:\keys\dynex.pfx -RequireSignature
 ```
 
 `-RequireSignature` bricht ab, wenn kein Zertifikat konfiguriert ist oder eine Datei nicht
-gültig signiert wurde; für Releases immer verwenden. Ohne Zertifikat entsteht ein
-unsignierter Entwicklungsbuild mit Warnung. Der Build schreibt zu Setup und
+gültig signiert wurde. Das Release-Workflow verwendet die PFX-Secrets
+`DYNEX_SIGN_PFX_BASE64` und `DYNEX_SIGN_PFX_PASSWORD`: Sobald `DYNEX_SIGN_PFX_BASE64` gesetzt ist,
+ist Signieren Pflicht und das Kennwort muss ebenfalls konfiguriert sein. Fehlt das Zertifikatsecret,
+wird das Release unsigniert gebaut und in Actions sowie Release-Notizen gewarnt.
+Lokale Builds ohne Zertifikat sind ebenfalls unsigniert und warnen. Der Build schreibt zu Setup und
 Bereinigungsprogramm jeweils eine `.sha256`-Datei und gibt Hash und Signaturstatus aus.
 
 Grenzen: Eine Signatur macht die Herkunft überprüfbar und verhindert Manipulation nach
@@ -96,10 +100,11 @@ Der Packet-Filter-Treiber stammt weiterhin vom Hersteller und wird separat gepr�
 ## Folgeversion veröffentlichen
 
 **Automatisch (empfohlen):** Version in `src/Dynex.Desktop/Dynex.Desktop.csproj` erhöhen, committen und das Tag
-`vX.Y.Z` pushen. `.github/workflows/release.yml` führt alle Tests aus, baut und signiert und legt einen
-**Release-Entwurf** mit Setup, Bereinigung und `.sha256`-Dateien an. Dafür als Repository-Secrets hinterlegen:
-`DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD`. Solange diese Secrets fehlen, baut der
-Workflow unsigniert (mit Hinweis in den Release-Notizen); sobald sie hinterlegt sind, ist Signieren Pflicht. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
+`vX.Y.Z` pushen. `.github/workflows/release.yml` führt alle Tests aus und baut Setup und Bereinigung. Sind die
+Repository-Secrets `DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD` vorhanden,
+ist Signieren Pflicht; fehlt das Zertifikatsecret `DYNEX_SIGN_PFX_BASE64`, entsteht ein unsigniertes Release mit Warnhinweis in Actions und Release-Notizen. Ist das Zertifikatsecret gesetzt, aber das Kennwort fehlt, schlägt der Build fehl.
+Ein Tag erstellt einen **Release-Entwurf**. Der manuelle Workflow kann den Release direkt veröffentlichen oder als
+Entwurf anlegen. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
 
 **Manuell:**
 

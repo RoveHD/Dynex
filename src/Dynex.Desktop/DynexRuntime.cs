@@ -771,13 +771,13 @@ public sealed class DynexRuntime : IAsyncDisposable
         cancellation?.Dispose(); cancellation = null; worker = null;
         PlannedDownloadLimitMbps = null;
     }
-    public async Task StopAsync()
+    public async Task StopAsync(bool requireHelperExit = false)
     {
         stopping = true;
         // Cancel before taking the gate: the running test owns it until its streams close.
         lock (speedTestSync) speedTestCancellation?.Cancel();
         await lifecycle.WaitAsync();
-        try { started = false; await StopWorkerAsync(); await shaper.StopAsync(); }
+        try { started = false; await StopWorkerAsync(); await shaper.StopAsync(requireExit: requireHelperExit); }
         finally { lifecycle.Release(); }
         var pending = speedTestTask;
         if (pending is { IsCompleted: false }) await pending;

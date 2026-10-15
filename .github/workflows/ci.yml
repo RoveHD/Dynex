@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [Core, Update, Adaptive, SpeedTest]
+        suite: [Core, Update, UpdateLifecycle, Adaptive, SpeedTest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

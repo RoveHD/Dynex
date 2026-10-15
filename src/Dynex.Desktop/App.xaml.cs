@@ -9,6 +9,8 @@ public partial class App : System.Windows.Application
 {
     private DynexRuntime? _runtime;
     private GitHubUpdateService? _updates;
+    private UpdateInstallCoordinator? _updateInstall;
+    private MainWindow? _updateWindow;
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -50,25 +52,11 @@ public partial class App : System.Windows.Application
                 _updates = new GitHubUpdateService(
                     Path.Combine(new SettingsStore().DirectoryPath, "updates"),
                     typeof(App).Assembly.GetName().Version ?? new Version(0, 0, 0),
-                    () => _runtime.IsSpeedTestRunning || _runtime.IsSpeedTestWaiting || _runtime.Snapshot is not { } snapshot ||
-                          snapshot.IsGaming || snapshot.GamingCount > 0 || !string.IsNullOrEmpty(snapshot.Game) ||
-                          snapshot.Devices.Any(device => !string.IsNullOrEmpty(device.Game)));
+                    () => _runtime.IsSpeedTestRunning);
                 _updates.SetBetaChannel(_runtime.Settings.BetaUpdates);
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
                 if (_updates.RolledBackVersion is { } failed)
                     startupWarning = $"Das Update auf Version {failed} ist fehlgeschlagen. DYNEX hat die vorherige Version {DynexRuntime.AppVersion} wiederhergestellt; Einstellungen bleiben erhalten.";
-                if (!e.Args.Contains("--skip-update-once") && !e.Args.Contains("--verify-live"))
-                {
-                    var installer = await _updates.TakeReadyInstallerAsync();
-                    if (installer is not null && StartUpdateInstaller(installer, e.Args.Contains("--tray")))
-                    {
-                        // No network worker/helper has started. The installer waits
-                        // for this process to exit and then reopens the application.
-                        _updates.Dispose();
-                        Shutdown();
-                        return;
-                    }
-                }
             }
             await _runtime.StartAsync();
             Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -77,7 +65,39 @@ public partial class App : System.Windows.Application
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
             window.Show();
+            var startupHandoff = true;
+            if (_updates is not null && !e.Args.Contains("--verify-live"))
+            {
+                var updates = _updates;
+                _updateWindow = window;
+                _updateInstall = new UpdateInstallCoordinator(
+                    () => _runtime.Settings.AutoUpdate && window.IsUpdateRestartSafe,
+                    updates.TakeReadyInstallerAsync,
+                    installer => window.RequestUpdateRestartAsync(() =>
+                    {
+                        // The channel or opt-in may have changed while verification or helper shutdown awaited.
+                        if (!updates.CanStartInstaller(installer)) return false;
+                        if (!StartUpdateInstaller(installer, !window.IsVisible || startupHandoff && e.Args.Contains("--tray")))
+                        {
+                            updates.ReportInstallerLaunchFailure("Windows konnte den Update-Installer nicht starten.");
+                            return false;
+                        }
+                        updates.ConfirmInstallerStarted(installer);
+                        return true;
+                    }),
+                    updates.ReportInstallerLaunchFailure);
+                // Remember an unconsumed cache before ready/safety events can run.
+                // A different future release remains eligible for automatic installation.
+                if (e.Args.Contains("--skip-update-once"))
+                    await _updateInstall.SkipReadyInstallerAsync();
+                updates.Changed += QueueReadyUpdateInstall;
+                window.UpdateRestartSafetyChanged += QueueReadyUpdateInstall;
+                if (!e.Args.Contains("--skip-update-once"))
+                    await _updateInstall.TryInstallAsync();
+            }
+            if (Dispatcher.HasShutdownStarted) return;
             await DesktopLifecycle.AfterWindowAsync(window, _runtime, e.Args);
+            startupHandoff = false;
         }
         catch (Exception ex)
         {
@@ -106,9 +126,27 @@ public partial class App : System.Windows.Application
     protected override void OnExit(ExitEventArgs e)
     {
         Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        _updateInstall?.Dispose();
+        if (_updates is not null) _updates.Changed -= QueueReadyUpdateInstall;
+        if (_updateWindow is not null) _updateWindow.UpdateRestartSafetyChanged -= QueueReadyUpdateInstall;
         _updates?.Dispose();
         DesktopLifecycle.Cleanup();
         base.OnExit(e);
+    }
+
+    private void QueueReadyUpdateInstall()
+    {
+        if (_updates?.Status.UpdateReady != true || _updateInstall is null || Dispatcher.HasShutdownStarted) return;
+        Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            if (_updateInstall is not null) await _updateInstall.TryInstallAsync();
+        }));
+    }
+
+    internal void RetryReadyUpdateInstall()
+    {
+        _updateInstall?.AllowRetry();
+        QueueReadyUpdateInstall();
     }
 
     private static bool CanUseInstalledUpdates()

@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/anticheat-guard.ps1
-          foreach ($suite in 'Core','Update','Adaptive','SpeedTest','Runtime','Setup','UserCleanup','GameDetection','Bulk','Shaper') {
+          foreach ($suite in 'Core','Update','UpdateLifecycle','Adaptive','SpeedTest','Runtime','Setup','UserCleanup','GameDetection','Bulk','Shaper') {
             dotnet run --project "tests/Dynex.$suite.Tests" -c Release
             if ($LASTEXITCODE -ne 0) { throw "$suite-Tests fehlgeschlagen." }
           }
@@ -78,8 +78,8 @@ jobs:
         env:
           DYNEX_SIGN_PFX_PASSWORD: ${{ secrets.DYNEX_SIGN_PFX_PASSWORD }}
         run: |
-          # Signed whenever the certificate secrets exist; until then an unsigned build
-          # (Windows SmartScreen warns). Once a certificate is configured, signing is mandatory.
+          # Signed whenever the certificate secrets exist; otherwise the build warns and stays unsigned.
+          # Once the certificate is configured, signing is mandatory.
           if ($env:DYNEX_SIGN_PFX) {
             ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }} -RequireSignature
           } else {

@@ -4,6 +4,9 @@ using System.Text;
 using System.Text.Json;
 using Dynex.Desktop.Updates;
 
+try
+{
+if (OperatingSystem.IsWindows()) TestErrorMode.SuppressDialogs();
 if (args.Contains("--live-check", StringComparer.Ordinal))
 {
     var cache = Path.Combine(Path.GetTempPath(), "dynex-readonly-update-check-" + Guid.NewGuid().ToString("N"));
@@ -41,8 +44,47 @@ await Scenario("opt in and consume", async () =>
     Check(fixture.Service.Status.UpdateReady, "opt in downloads a verified release");
     var path = await fixture.Service.TakeReadyInstallerAsync();
     Check(path is not null && File.ReadAllBytes(path).SequenceEqual(fixture.Handler.Payload), "ready installer has the exact GitHub payload");
-    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "ready marker is consumed once");
+    Check(fixture.Service.CanStartInstaller(path!) && !fixture.Service.CanStartInstaller(Path.Combine(fixture.Directory, "other.exe")),
+        "launch guard accepts the verified installer path only");
+    Check(await fixture.Service.TakeReadyInstallerAsync() == path && File.Exists(Path.Combine(fixture.Directory, "ready.json")),
+        "validation preserves the ready marker until a confirmed installer launch");
+    Check(!fixture.Service.ConfirmInstallerStarted(Path.Combine(fixture.Directory, "other.exe")) &&
+        File.Exists(Path.Combine(fixture.Directory, "ready.json")), "confirming a different installer cannot consume the marker");
+    Check(fixture.Service.ConfirmInstallerStarted(path!), "successful installer launch can commit the cache marker");
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "confirmed launch consumes the ready marker once");
+    Check(!fixture.Service.CanStartInstaller(path!), "consumed marker cannot start the same installer again");
     Check(!Directory.EnumerateFiles(fixture.Directory, "*.part").Any(), "completed download leaves no partial file");
+});
+
+await Scenario("installer launch failure preserves verified cache", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    var path = await fixture.Service.TakeReadyInstallerAsync();
+    fixture.Service.ReportInstallerLaunchFailure("Testfehler.");
+    Check(!fixture.Service.Status.UpdateReady && !fixture.Service.Status.IsBusy && fixture.Service.Status.Message.Contains("Jetzt prüfen"),
+        "installer launch failure exposes a manual retry instead of triggering a ready-event loop");
+    Check(File.Exists(Path.Combine(fixture.Directory, "ready.json")) && await fixture.Service.TakeReadyInstallerAsync() == path,
+        "failed installer launch keeps the verified installer available");
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 1,
+        "manual retry reuses the verified installer without a second download");
+});
+
+await Scenario("failed marker commit and installer rollback", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    var metadata = Path.Combine(fixture.Directory, "ready.json");
+    var path = await fixture.Service.TakeReadyInstallerAsync();
+    using (var locked = new FileStream(metadata, FileMode.Open, FileAccess.Read, FileShare.Read))
+        Check(!fixture.Service.ConfirmInstallerStarted(path!) && File.Exists(metadata),
+            "locked cache marker after a successful process launch is a nonthrowing bookkeeping failure");
+    await File.WriteAllTextAsync(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.5.0");
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null,
+        "a retained marker cannot reinstall a version that the installer already rolled back");
 });
 
 await Scenario("checksum asset fallback", async () =>
@@ -65,13 +107,15 @@ await Scenario("startup handoff without network", async () =>
     await fixture.Service.CheckNowAsync();
     Check(fixture.Service.Status.UpdateReady, "background loop can start after cache-only activation");
     fixture.Service.Dispose();
-    using var nextClient = new HttpClient(new FakeGitHub());
+    var nextHandler = new FakeGitHub();
+    using var nextClient = new HttpClient(nextHandler);
     using var nextStart = new GitHubUpdateService(fixture.Directory, new Version(0, 4, 1), () => false,
         nextClient, TimeSpan.FromHours(6), TimeSpan.FromHours(1), 1024 * 1024,
         // Explicit: on Windows the signed test host would otherwise be the "installed" publisher.
         _ => SignatureCheck.Unsigned, SignatureCheck.Unsigned);
     nextStart.SetEnabled(true, startBackground: false);
-    Check(await nextStart.TakeReadyInstallerAsync() is not null, "next startup can hand off the previously verified download offline");
+    Check(await nextStart.TakeReadyInstallerAsync() is not null && nextHandler.ApiCalls == 0,
+        "next startup can hand off the previously verified download offline");
 });
 
 await Scenario("installed version rejects stale cache", async () =>
@@ -109,6 +153,124 @@ await Scenario("beta channel", async () =>
     await drafts.Service.CheckNowAsync();
     Check(!drafts.Service.Status.UpdateReady, "beta channel never installs drafts");
 });
+
+await Scenario("switch channel during blocked beta download", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Handler.Variant = "prerelease";
+    fixture.Handler.BlockPayload = true;
+    fixture.Handler.IgnoreReadCancellation = true;
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
+    var previous = fixture.Service.CheckNowAsync();
+    await fixture.Handler.PayloadReadBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    fixture.Service.SetBetaChannel(false);
+    await previous.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!fixture.Service.Status.IsBusy && !fixture.Service.Status.UpdateReady,
+        "leaving beta cancels a stalled transfer without stale progress or readiness");
+    Check(!Directory.GetFiles(fixture.Directory, "*.part").Any() && !File.Exists(Path.Combine(fixture.Directory, "ready.json")),
+        "cancelled beta generation leaves no installable marker or partial file");
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "cancelled beta generation cannot hand off an installer");
+    fixture.Handler.BlockPayload = false;
+    fixture.Handler.Variant = "";
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady && await fixture.Service.TakeReadyInstallerAsync() is not null,
+        "a stable release can be downloaded after the cancelled beta generation");
+});
+
+await Scenario("channel change restarts automatic checks", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Handler.Variant = "prerelease";
+    fixture.Handler.BlockPayload = true;
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true);
+    await fixture.Handler.PayloadReadBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    var stableChecked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    fixture.Service.Changed += () =>
+    {
+        if (fixture.Service.Status.Message == "DYNEX ist auf dem neuesten Stand.") stableChecked.TrySetResult();
+    };
+    fixture.Service.SetBetaChannel(false);
+    await stableChecked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(fixture.Handler.ApiCalls == 2 && !fixture.Service.Status.UpdateReady,
+        "switching from beta restarts the existing background loop on the stable endpoint");
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "restarted stable checks cannot return the old beta installer");
+});
+
+await Scenario("ready beta cache cannot survive opt out", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    var installer = await fixture.Service.TakeReadyInstallerAsync();
+    Check(installer is not null && fixture.Service.CanStartInstaller(installer), "opted-in beta cache can be handed off");
+    using (var marker = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(fixture.Directory, "ready.json"))))
+        Check(marker.RootElement.GetProperty("Prerelease").GetBoolean(), "cached beta installer records its prerelease channel");
+    fixture.Service.SetBetaChannel(false);
+    Check(!fixture.Service.Status.UpdateReady && await fixture.Service.TakeReadyInstallerAsync() is null &&
+        !fixture.Service.CanStartInstaller(installer!),
+        "unchecking beta immediately rejects an already downloaded beta installer");
+    Check(fixture.Handler.ApiCalls == 1, "changing a cache-only channel does not start an unwanted background loop");
+    fixture.Service.SetBetaChannel(true);
+    Check(!fixture.Service.CanStartInstaller(installer!), "a second channel switch cannot revive an earlier handoff generation");
+    Check(await fixture.Service.TakeReadyInstallerAsync() == installer && fixture.Service.CanStartInstaller(installer!),
+        "opting in again requires and permits a freshly verified beta handoff");
+});
+
+await Scenario("stable cache survives channel switches offline", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    fixture.Service.SetBetaChannel(true);
+    Check(await fixture.Service.TakeReadyInstallerAsync() is not null, "beta channel still accepts a verified stable cache");
+    fixture.Service.SetBetaChannel(false);
+    Check(await fixture.Service.TakeReadyInstallerAsync() is not null && fixture.Handler.ApiCalls == 1,
+        "known stable cache remains available offline after opting out of beta");
+});
+
+await Scenario("beta opt out during cached installer verification", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    fixture.Inspecting = () => fixture.Service.SetBetaChannel(false);
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null && !fixture.Service.Status.UpdateReady,
+        "channel changes during publisher verification invalidate the in-flight handoff");
+});
+
+foreach (var legacyBeta in new[] { false, true })
+{
+    await Scenario("legacy channel metadata migration " + legacyBeta, async () =>
+    {
+        using var fixture = new Fixture();
+        Directory.CreateDirectory(fixture.Directory);
+        await File.WriteAllBytesAsync(Path.Combine(fixture.Directory, "DYNEX-Setup-0.5.0.exe"), fixture.Handler.Payload);
+        await File.WriteAllTextAsync(Path.Combine(fixture.Directory, "ready.json"), JsonSerializer.Serialize(new
+        {
+            Version = "0.5.0", FileName = "DYNEX-Setup-0.5.0.exe", Hash = fixture.Handler.Hash, Size = fixture.Handler.Payload.Length
+        }));
+        fixture.Service.SetBetaChannel(legacyBeta);
+        fixture.Service.SetEnabled(true, startBackground: false);
+        Check(await fixture.Service.TakeReadyInstallerAsync() is null && fixture.Handler.ApiCalls == 0,
+            "legacy cache without release channel cannot be installed before API validation: " + legacyBeta);
+        await fixture.Service.CheckNowAsync();
+        Check(fixture.Service.Status.UpdateReady && await fixture.Service.TakeReadyInstallerAsync() is not null &&
+            fixture.Handler.DownloadCalls == 0, "API establishes the legacy cache channel without downloading it again: " + legacyBeta);
+        using (var marker = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(fixture.Directory, "ready.json"))))
+            Check(marker.RootElement.GetProperty("Prerelease").GetBoolean() == legacyBeta,
+                "legacy cache persists its API-validated channel: " + legacyBeta);
+        if (legacyBeta)
+        {
+            fixture.Service.SetBetaChannel(false);
+            Check(await fixture.Service.TakeReadyInstallerAsync() is null,
+                "migrated beta cache is blocked after beta opt out");
+        }
+    });
+}
 
 var publisher = new SignatureCheck(true, true, "CN=DYNEX Publisher");
 foreach (var (name, candidate, current, accepted) in new[]
@@ -201,35 +363,110 @@ await Scenario("disable ready update", async () =>
     using var fixture = new Fixture();
     fixture.Service.SetEnabled(true);
     await fixture.Service.CheckNowAsync();
+    var path = await fixture.Service.TakeReadyInstallerAsync();
     fixture.Service.SetEnabled(false);
+    Check(!fixture.Service.CanStartInstaller(path!), "unchecking also invalidates an installer path already returned to the application");
     Check(await fixture.Service.TakeReadyInstallerAsync() is null, "unchecking blocks an already downloaded update");
     Check(!fixture.Service.Status.IsBusy && !fixture.Service.Status.UpdateReady, "unchecked status does not claim an installation is pending");
 });
 
-await Scenario("defer gaming and resume", async () =>
+await Scenario("defer measurement and resume", async () =>
 {
     using var fixture = new Fixture(deferInterval: TimeSpan.FromMilliseconds(20));
-    fixture.Gaming = true;
+    fixture.Measuring = true;
     fixture.Service.SetEnabled(true);
     // Wait for the background loop's own check. An extra manual CheckNowAsync could race it
     // and legitimately issue a second API request.
-    for (var i = 0; i < 250 && !fixture.Service.Status.Message.Contains("Spiel"); i++) await Task.Delay(20);
-    Check(fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("Spiel"), "gaming defers installer network traffic");
+    for (var i = 0; i < 250 && !fixture.Service.Status.Message.Contains("Speedtest"); i++) await Task.Delay(20);
+    Check(fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("Speedtest"), "measurement defers installer network traffic");
     await Task.Delay(100);
-    Check(fixture.Handler.ApiCalls == 1, "gaming polls local state without repeated GitHub requests");
-    fixture.Gaming = false;
+    Check(fixture.Handler.ApiCalls == 1, "measurement polls local state without repeated GitHub requests");
+    fixture.Measuring = false;
     await fixture.Ready.Task;
-    Check(fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 1, "background retry downloads after gaming stops");
+    Check(fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 1, "background retry downloads after measurement stops");
 });
 
-await Scenario("mid transfer game start", async () =>
+await Scenario("mid transfer speed-test start", async () =>
 {
     using var fixture = new Fixture();
-    fixture.Handler.OnPayloadRead = () => fixture.Gaming = true;
+    fixture.Handler.OnPayloadRead = () => fixture.Measuring = true;
     fixture.Service.SetEnabled(true);
     await fixture.Service.CheckNowAsync();
-    Check(!fixture.Service.Status.UpdateReady && fixture.Service.Status.Message.Contains("Spiel"), "starting a game interrupts an update download");
+    Check(!fixture.Service.Status.UpdateReady && fixture.Service.Status.Message.Contains("Speedtest"), "starting a speed test interrupts an update download");
     Check(!Directory.GetFiles(fixture.Directory, "*.part").Any(), "deferred partial download is removed");
+});
+
+await Scenario("byte progress before verification", async () =>
+{
+    using var fixture = new Fixture(bytesPerSecond: 512 * 1024);
+    var updates = new List<UpdateStatus>();
+    fixture.Service.Changed += () => updates.Add(fixture.Service.Status);
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    var progress = updates.Where(update => update.DownloadedBytes is not null).ToArray();
+    Check(progress.Length >= 3 && progress[0].DownloadedBytes == 0, "download publishes initial zero and real transfer progress");
+    Check(progress.All(update => update.IsBusy && !update.UpdateReady && update.TotalBytes == fixture.Handler.Payload.Length),
+        "download progress stays busy until checksum and publisher verification complete");
+    Check(progress.Zip(progress.Skip(1)).All(pair => pair.First.DownloadedBytes <= pair.Second.DownloadedBytes),
+        "reported byte counts never go backwards within one transfer");
+    Check(progress.Any(update => update.DownloadedBytes is > 0 and < 100000 && update.Message.Contains('%')) &&
+        progress.Any(update => update.DownloadedBytes == 100000 && update.Message.Contains("100 %")),
+        "status includes intermediate and complete byte percentages");
+    Check(updates.Any(update => update.Message.Contains("wird geprüft")) && fixture.Service.Status.UpdateReady,
+        "completed download reports verification before becoming installable");
+});
+
+foreach (var ignoreCancellation in new[] { false, true })
+{
+    await Scenario("stalled body " + ignoreCancellation, async () =>
+    {
+        using var fixture = new Fixture(stallTimeout: TimeSpan.FromMilliseconds(100));
+        fixture.Handler.BlockPayload = true;
+        fixture.Handler.IgnoreReadCancellation = ignoreCancellation;
+        fixture.Handler.BlockAfterBytes = 32768;
+        fixture.Service.SetEnabled(true, startBackground: false);
+        var check = fixture.Service.CheckNowAsync();
+        await fixture.Handler.PayloadReadBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await check.WaitAsync(TimeSpan.FromSeconds(2));
+        Check(!fixture.Service.Status.IsBusy && !fixture.Service.Status.UpdateReady && fixture.Service.Status.Message.Contains("keine weiteren Daten"),
+            "a stalled body exits busy state with a retry explanation, including ignored stream cancellation: " + ignoreCancellation);
+        Check(!Directory.GetFiles(fixture.Directory, "*.part").Any() && await fixture.Service.TakeReadyInstallerAsync() is null,
+            "stalled partial bytes cannot be installed and are removed: " + ignoreCancellation);
+        Check(fixture.Handler.DownloadCalls == 1, "a stalled body is not retried in a loop: " + ignoreCancellation);
+        fixture.Handler.BlockPayload = false;
+        await fixture.Service.CheckNowAsync();
+        Check(fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 2,
+            "manual retry can finish a fresh verified download after a stall: " + ignoreCancellation);
+    });
+}
+
+await Scenario("speed-test starts while body is blocked", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Handler.BlockPayload = true;
+    fixture.Service.SetEnabled(true, startBackground: false);
+    var check = fixture.Service.CheckNowAsync();
+    await fixture.Handler.PayloadReadBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    fixture.Measuring = true;
+    await check.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!fixture.Service.Status.IsBusy && fixture.Service.Status.Message.Contains("Speedtest"),
+        "speed-test detection interrupts an in-flight read without waiting for incoming bytes");
+    Check(!Directory.GetFiles(fixture.Directory, "*.part").Any(), "measurement cancellation removes stalled body partial file");
+});
+
+await Scenario("speed-test starts while bandwidth limiter waits", async () =>
+{
+    using var fixture = new Fixture(bytesPerSecond: 1);
+    var firstBytes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    fixture.Service.Changed += () => { if (fixture.Service.Status.DownloadedBytes > 0) firstBytes.TrySetResult(); };
+    fixture.Service.SetEnabled(true, startBackground: false);
+    var check = fixture.Service.CheckNowAsync();
+    await firstBytes.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    fixture.Measuring = true;
+    await check.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!fixture.Service.Status.IsBusy && fixture.Service.Status.Message.Contains("Speedtest"),
+        "speed-test detection cancels bandwidth-limiter waits as well as socket reads");
+    Check(!Directory.GetFiles(fixture.Directory, "*.part").Any(), "measurement cancellation during throttle removes partial file");
 });
 
 await Scenario("cached deferred update returns to normal cadence", async () =>
@@ -241,10 +478,10 @@ await Scenario("cached deferred update returns to normal cadence", async () =>
     {
         Version = "0.5.0", FileName = "DYNEX-Setup-0.5.0.exe", Hash = fixture.Handler.Hash, Size = fixture.Handler.Payload.Length
     }));
-    fixture.Gaming = true;
+    fixture.Measuring = true;
     fixture.Service.SetEnabled(true);
     await fixture.Service.CheckNowAsync();
-    fixture.Gaming = false;
+    fixture.Measuring = false;
     await fixture.Ready.Task;
     var calls = fixture.Handler.ApiCalls;
     await Task.Delay(100);
@@ -270,6 +507,21 @@ await Scenario("turn off during download and concurrency", async () =>
     fixture.Service.SetEnabled(true);
     await fixture.Service.CheckNowAsync();
     Check(fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 2, "re-enabling starts a fresh generation after cancellation");
+});
+
+await Scenario("disable while a stream ignores cancellation", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Handler.BlockPayload = true;
+    fixture.Handler.IgnoreReadCancellation = true;
+    fixture.Service.SetEnabled(true, startBackground: false);
+    var check = fixture.Service.CheckNowAsync();
+    await fixture.Handler.PayloadReadBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    fixture.Service.SetEnabled(false);
+    await check.WaitAsync(TimeSpan.FromSeconds(2));
+    Check(!fixture.Service.Status.IsBusy && !fixture.Service.Status.UpdateReady && fixture.Service.Status.Message.Contains("ausgeschaltet"),
+        "disabling remains final even when the previous read ignores cancellation");
+    Check(!Directory.GetFiles(fixture.Directory, "*.part").Any(), "uncancellable stream cannot leave a disabled partial installer");
 });
 
 foreach (var redirect in new[] { "http://github.com/RoveHD/Dynex/evil", "https://example.com/evil", "https://github.com.evil.test/evil", "https://127.0.0.1/evil", "https://github.com:444/evil", "https://user@github.com/evil" })
@@ -308,22 +560,39 @@ await Scenario("subscriber fault isolation and disposal", async () =>
 Console.WriteLine($"{checks} checks, {failures.Count} failures");
 foreach (var failure in failures) Console.Error.WriteLine(failure);
 return failures.Count == 0 ? 0 : 1;
+}
+catch (Exception error)
+{
+    Console.Error.WriteLine(error);
+    return 1;
+}
+
+internal static class TestErrorMode
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetErrorMode();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint SetErrorMode(uint mode);
+    internal static void SuppressDialogs() => SetErrorMode(GetErrorMode() | 0x8003);
+}
 
 sealed class Fixture : IDisposable
 {
-    public string Directory { get; } = Path.Combine(Path.GetTempPath(), "dynex-updates-" + Guid.NewGuid().ToString("N"));
+    public string Directory { get; } = Path.Combine(Environment.GetEnvironmentVariable("DYNEX_UPDATE_TEST_ROOT") ?? Path.GetTempPath(), "dynex-updates-" + Guid.NewGuid().ToString("N"));
     public FakeGitHub Handler { get; } = new();
     public GitHubUpdateService Service { get; }
-    public bool Gaming;
+    public bool Measuring;
     public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly HttpClient client;
     public SignatureCheck Candidate = SignatureCheck.Unsigned;
-    public Fixture(TimeSpan? deferInterval = null, SignatureCheck? current = null)
+    public Action? Inspecting;
+    public Fixture(TimeSpan? deferInterval = null, SignatureCheck? current = null,
+        TimeSpan? stallTimeout = null, int bytesPerSecond = 1024 * 1024 * 1024)
     {
         client = new(Handler);
-        Service = new(Directory, new Version(0, 4, 1), () => Gaming, client,
-            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), 1024 * 1024 * 1024,
-            _ => Candidate, current ?? SignatureCheck.Unsigned);
+        Service = new(Directory, new Version(0, 4, 1), () => Measuring, client,
+            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), bytesPerSecond,
+            _ => { Inspecting?.Invoke(); return Candidate; }, current ?? SignatureCheck.Unsigned, stallTimeout);
         Service.Changed += () => { if (Service.Status.UpdateReady) Ready.TrySetResult(); };
     }
     public void Dispose()
@@ -341,10 +610,13 @@ sealed class FakeGitHub : HttpMessageHandler
     public string Variant = "";
     public bool UseDigest = true;
     public bool BlockPayload;
+    public bool IgnoreReadCancellation;
+    public long BlockAfterBytes;
     public string? Redirect;
     public Action? OnPayloadRead;
     public int ApiCalls, DownloadCalls, ChecksumCalls, ForeignCalls;
     public TaskCompletionSource PayloadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource PayloadReadBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
     {
         var uri = request.RequestUri!;
@@ -396,19 +668,32 @@ sealed class FakeGitHub : HttpMessageHandler
         Interlocked.Increment(ref DownloadCalls);
         PayloadStarted.TrySetResult();
         var bytes = Variant == "stream-short" ? Payload[..^1] : Variant == "stream-long" ? [.. Payload, (byte)1] : Payload;
-        var content = new StreamContent(new PayloadStream(bytes, OnPayloadRead, BlockPayload));
+        var content = new StreamContent(new PayloadStream(bytes, OnPayloadRead, BlockPayload, BlockAfterBytes,
+            IgnoreReadCancellation, () => PayloadReadBlocked.TrySetResult()));
         content.Headers.ContentLength = Payload.Length;
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
     }
 }
 
-sealed class PayloadStream(byte[] data, Action? onRead, bool block) : MemoryStream(data, false)
+sealed class PayloadStream(byte[] data, Action? onRead, bool block, long blockAfterBytes,
+    bool ignoreCancellation, Action onBlocked) : MemoryStream(data, false)
 {
+    private readonly TaskCompletionSource released = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        if (block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        if (block && Position >= blockAfterBytes)
+        {
+            onBlocked();
+            if (ignoreCancellation) await released.Task;
+            else await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
         var read = await base.ReadAsync(buffer, cancellationToken);
         onRead?.Invoke();
         return read;
+    }
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        released.TrySetResult();
     }
 }

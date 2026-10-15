@@ -30,6 +30,9 @@ public partial class MainWindow : Window
     private bool _refreshingProcesses;
     private bool _savingAutoUpdate;
     private bool _checkingNetwork;
+    private int _pendingUiActions;
+    private bool _updateRestartInProgress;
+    public event Action? UpdateRestartSafetyChanged;
     private IReadOnlyList<HistoryPoint> _lastHistory = Array.Empty<HistoryPoint>();
     private IReadOnlyList<DeviceView> _deviceSnapshot = Array.Empty<DeviceView>();
     private int _devicePage;
@@ -83,6 +86,10 @@ public partial class MainWindow : Window
         StateChanged += (_, _) => RenderPendingSnapshot();
         if (_updates is not null) _updates.Changed += UpdateStatus_Changed;
         LoadSettings(_runtime.Settings);
+        SettingsPage.AddHandler(System.Windows.Controls.TextBox.TextChangedEvent, new TextChangedEventHandler((_, _) => NotifyUpdateRestartSafety()));
+        SettingsPage.AddHandler(System.Windows.Controls.Primitives.ToggleButton.CheckedEvent, new RoutedEventHandler((_, _) => NotifyUpdateRestartSafety()));
+        SettingsPage.AddHandler(System.Windows.Controls.Primitives.ToggleButton.UncheckedEvent, new RoutedEventHandler((_, _) => NotifyUpdateRestartSafety()));
+        SettingsPage.AddHandler(System.Windows.Controls.Primitives.Selector.SelectionChangedEvent, new SelectionChangedEventHandler((_, _) => NotifyUpdateRestartSafety()));
         CheckUpdatesButton.IsEnabled = _updates is not null;
         RenderUpdateStatus();
         if (_runtime.Snapshot is { } current) RenderSnapshot(current);
@@ -166,6 +173,7 @@ public partial class MainWindow : Window
     {
         if (IsVisible && WindowState != WindowState.Minimized) { _pendingSnapshot = null; RenderSnapshot(snapshot); }
         else { _pendingSnapshot = snapshot; UpdateTray(snapshot); }
+        if (_updates?.Status.UpdateReady == true) NotifyUpdateRestartSafety();
     }));
     private void RenderPendingSnapshot()
     {
@@ -235,6 +243,11 @@ public partial class MainWindow : Window
             _updates?.SetBetaChannel(requested);
             ErrorText.Text = requested ? "Vorabversionen werden beim nächsten Prüfen berücksichtigt." : "Nur stabile Versionen.";
         });
+        // If saving fails, keep the displayed opt-in aligned with the persisted channel.
+        _loading = true;
+        BetaUpdatesCheck.IsChecked = _runtime.Settings.BetaUpdates;
+        _loading = false;
+        NotifyUpdateRestartSafety();
     }
     private async void ExportSettings_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -276,7 +289,7 @@ public partial class MainWindow : Window
         {
             _savingAutoUpdate = false;
             AutoUpdateCheck.IsEnabled = true;
-            RenderUpdateStatus();
+            NotifyUpdateRestartSafety();
         }
     }
 
@@ -286,7 +299,11 @@ public partial class MainWindow : Window
         CheckUpdatesButton.IsEnabled = false;
         try { await _updates.CheckNowAsync(); }
         catch (Exception ex) { UpdateStatusText.Text = "Updateprüfung fehlgeschlagen: " + ex.Message; }
-        finally { CheckUpdatesButton.IsEnabled = _updates is not null; RenderUpdateStatus(); }
+        finally
+        {
+            RenderUpdateStatus();
+            (System.Windows.Application.Current as App)?.RetryReadyUpdateInstall();
+        }
     }
 
     private void UpdateStatus_Changed() => Dispatcher.BeginInvoke(new Action(RenderUpdateStatus));
@@ -302,8 +319,55 @@ public partial class MainWindow : Window
             CheckUpdatesButton.IsEnabled = false;
             return;
         }
-        UpdateStatusText.Text = _updates.Status.Message;
-        CheckUpdatesButton.IsEnabled = !_updates.Status.IsBusy;
+        var status = _updates.Status;
+        UpdateStatusText.Text = status.UpdateReady && HasUnsavedSettings
+            ? $"Version {status.AvailableVersion} ist bereit. Bitte deine geänderten Einstellungen zuerst speichern; danach startet DYNEX das Update automatisch."
+            : status.UpdateReady && _runtime.IsSpeedTestRunning
+                ? $"Version {status.AvailableVersion} ist bereit. Die Installation startet nach dem laufenden Speedtest."
+                : status.Message;
+        UpdateDownloadProgress.Visibility = status.IsBusy && status.DownloadedBytes.HasValue ? Visibility.Visible : Visibility.Collapsed;
+        UpdateDownloadProgress.Value = status.TotalBytes is > 0
+            ? Math.Clamp(100d * (status.DownloadedBytes ?? 0) / status.TotalBytes.Value, 0, 100) : 0;
+        CheckUpdatesButton.IsEnabled = !status.IsBusy && !_updateRestartInProgress;
+    }
+
+    public bool IsUpdateRestartSafe => !_allowClose && !_loading && !_savingAutoUpdate && !_settingUp &&
+        !_checkingNetwork && !_updateRestartInProgress && _pendingUiActions == 0 &&
+        !_runtime.IsSpeedTestRunning && _runtime.Settings.AutoUpdate && AutoUpdateCheck.IsChecked == true && !HasUnsavedSettings;
+
+    private bool HasUnsavedSettings
+    {
+        get
+        {
+            var saved = _runtime.Settings;
+            return AutoConnectCheck.IsChecked != saved.AutoConnectLan || AutoStartCheck.IsChecked != saved.AutoStart ||
+                DriverCheck.IsChecked != saved.DriverEnabled || NotificationsCheck.IsChecked != saved.Notifications ||
+                PingAlarmCheck.IsChecked != saved.PingAlarm || UploadLimitCheck.IsChecked != saved.UploadLimitEnabled ||
+                NightFreeCheck.IsChecked != saved.NightFree || AutoUpdateCheck.IsChecked != saved.AutoUpdate ||
+                BetaUpdatesCheck.IsChecked != saved.BetaUpdates ||
+                EarlyGamesBox.Text.Trim() != saved.EarlyLimitGames || NightFromBox.Text.Trim() != saved.NightFrom ||
+                NightToBox.Text.Trim() != saved.NightTo || ProcessesBox.Text.Trim() != saved.GameProcesses ||
+                PeersBox.Text.Trim() != saved.DirectPeers || RouterBox.Text.Trim() != saved.RouterTarget ||
+                ExternalBox.Text.Trim() != saved.ExternalTarget ||
+                ((WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != saved.WeekendProfile ||
+                !MatchesLimit(ManualLimitBox.Text, saved.ManualLimitMbps) ||
+                !MatchesLimit(ManualUploadBox.Text, saved.ManualUploadLimitMbps);
+        }
+    }
+
+    private static bool MatchesLimit(string text, double? saved)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return saved is null;
+        var parsed = double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out var value) ||
+            double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        return parsed && double.IsFinite(value) && value == saved;
+    }
+
+    private void NotifyUpdateRestartSafety()
+    {
+        if (_loading) return;
+        RenderUpdateStatus();
+        UpdateRestartSafetyChanged?.Invoke();
     }
 
     private async void RunningProcesses_DropDownOpened(object sender, EventArgs e) => await RefreshRunningProcessesAsync();
@@ -483,6 +547,7 @@ public partial class MainWindow : Window
             _settingUp = false; SetupButton.IsEnabled = true;
             try { await _runtime.StartAsync(); }
             catch (Exception error) { ErrorText.Text += " DYNEX konnte nicht neu starten: " + error.Message; }
+            NotifyUpdateRestartSafety();
         }
     }
     private async void RevealCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
@@ -527,8 +592,11 @@ public partial class MainWindow : Window
 
     private async Task RunUiAction(Func<Task> action)
     {
+        if (_updateRestartInProgress || _allowClose) return;
+        _pendingUiActions++;
         try { ErrorText.Text = ""; ErrorText.ToolTip = null; await action(); }
         catch (Exception ex) { ErrorText.Text = $"Aktion fehlgeschlagen: {ex.Message}"; }
+        finally { _pendingUiActions--; NotifyUpdateRestartSafety(); }
     }
 
     private async void NetworkHelp_Click(object sender, RoutedEventArgs e)
@@ -545,7 +613,7 @@ public partial class MainWindow : Window
                 ErrorText.ToolTip = result.FirewallMessage;
             });
         }
-        finally { _checkingNetwork = false; }
+        finally { _checkingNetwork = false; NotifyUpdateRestartSafety(); }
     }
     private async void WindowsNetwork_Click(object sender, RoutedEventArgs e) => await RunUiAction(() =>
     {
@@ -945,6 +1013,39 @@ public partial class MainWindow : Window
     }
     private async void ExitApplication() => await RequestExitAsync();
     public async Task RequestExitAsync()
+    {
+        if (_updateRestartInProgress) return;
+        await ExitCoreAsync();
+    }
+
+    public async Task<bool> RequestUpdateRestartAsync(Func<bool> launchInstaller)
+    {
+        if (!IsUpdateRestartSafe) return false;
+        _updateRestartInProgress = true;
+        IsEnabled = false;
+        try
+        {
+            // The setup must never copy files while our packet helper is still attached.
+            await _runtime.StopAsync(requireHelperExit: true);
+            if (!_runtime.Settings.AutoUpdate || !launchInstaller())
+                throw new InvalidOperationException("Die Update-Installation wurde nicht gestartet. Mit „Jetzt prüfen“ erneut versuchen.");
+        }
+        catch (Exception error)
+        {
+            _updates?.ReportInstallerLaunchFailure(error.Message);
+            ErrorText.Text = "Update nicht gestartet: " + error.Message;
+            try { await _runtime.StartAsync(); }
+            catch (Exception restartError) { ErrorText.Text += " DYNEX konnte nicht weiterlaufen: " + restartError.Message; }
+            _updateRestartInProgress = false;
+            IsEnabled = true;
+            NotifyUpdateRestartSafety();
+            return false;
+        }
+        await ExitCoreAsync();
+        return true;
+    }
+
+    private async Task ExitCoreAsync()
     {
         if (_allowClose) return;
         _allowClose = true;

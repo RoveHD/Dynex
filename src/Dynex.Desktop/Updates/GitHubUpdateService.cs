@@ -10,7 +10,8 @@ using System.Text.RegularExpressions;
 namespace Dynex.Desktop.Updates;
 
 public sealed record UpdateStatus(string Message, bool IsBusy = false,
-    bool UpdateReady = false, string? AvailableVersion = null);
+    bool UpdateReady = false, string? AvailableVersion = null,
+    long? DownloadedBytes = null, long? TotalBytes = null);
 
 /// <summary>Downloads releases only. The application owns the clean startup/install handoff.</summary>
 public sealed class GitHubUpdateService : IDisposable
@@ -22,12 +23,13 @@ public sealed class GitHubUpdateService : IDisposable
     private readonly object sync = new();
     private readonly string directory;
     private readonly Version currentVersion;
-    private readonly Func<bool> gameActive;
+    private readonly Func<bool> speedTestPendingOrActive;
     private readonly HttpClient client;
     private readonly bool ownsClient;
     private readonly TimeSpan checkInterval;
     private readonly TimeSpan deferredInterval;
     private readonly int bytesPerSecond;
+    private readonly TimeSpan downloadStallTimeout;
     private readonly CancellationTokenSource lifetime = new();
     private CancellationTokenSource? enabledLifetime;
     private Task operation = Task.CompletedTask;
@@ -40,31 +42,38 @@ public sealed class GitHubUpdateService : IDisposable
     private bool disposed;
     private bool deferred;
     private long generation;
+    private ReadyUpdate? verifiedInstaller;
+    private long verifiedInstallerEpoch = -1;
     private UpdateStatus status = new("Automatische Updates sind ausgeschaltet.");
     private readonly Func<string, SignatureCheck> inspectSignature;
     private readonly Lazy<SignatureCheck> currentSignature;
     /// <summary>Written by the installer after it restored the previous version.</summary>
     internal const string RolledBackFile = "rolled-back.txt";
 
-    public GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> gameActive)
-        : this(cacheDirectory, currentVersion, gameActive, null, TimeSpan.FromHours(6), TimeSpan.FromSeconds(30), 512 * 1024) { }
+    public GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> speedTestPendingOrActive)
+        : this(cacheDirectory, currentVersion, speedTestPendingOrActive, null, TimeSpan.FromHours(6), TimeSpan.FromSeconds(30), 512 * 1024) { }
 
-    internal GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> gameActive,
+    internal GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> speedTestPendingOrActive,
         HttpClient? httpClient, TimeSpan checkInterval, TimeSpan deferredInterval, int bytesPerSecond,
-        Func<string, SignatureCheck>? inspectSignature = null, SignatureCheck? currentSignature = null)
+        Func<string, SignatureCheck>? inspectSignature = null, SignatureCheck? currentSignature = null,
+        TimeSpan? downloadStallTimeout = null)
     {
         this.inspectSignature = inspectSignature ?? AuthenticodeVerifier.Inspect;
         this.currentSignature = new(() => currentSignature ??
             (Environment.ProcessPath is { } self ? this.inspectSignature(self) : SignatureCheck.Unsigned));
         directory = Path.GetFullPath(cacheDirectory);
         this.currentVersion = Normalize(currentVersion);
-        this.gameActive = gameActive;
+        this.speedTestPendingOrActive = speedTestPendingOrActive;
         this.checkInterval = checkInterval;
         this.deferredInterval = deferredInterval;
         this.bytesPerSecond = bytesPerSecond > 0 ? bytesPerSecond : throw new ArgumentOutOfRangeException(nameof(bytesPerSecond));
+        this.downloadStallTimeout = downloadStallTimeout ?? TimeSpan.FromSeconds(30);
+        if (this.downloadStallTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(downloadStallTimeout));
         ownsClient = httpClient is null;
         // Inspect every redirect ourselves before sending the next request.
         client = httpClient ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
+        enabledLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
     }
 
     public event Action? Changed;
@@ -96,12 +105,10 @@ public sealed class GitHubUpdateService : IDisposable
             {
                 changed = true;
                 enabled = value;
-                generation++;
-                var previousLifetime = enabledLifetime;
-                previousLifetime?.Cancel();
-                if (previousLifetime is not null)
-                    _ = Task.WhenAll(tasks.ToArray()).ContinueWith(_ => previousLifetime.Dispose(), TaskScheduler.Default);
-                enabledLifetime = value ? CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token) : null;
+                RenewGenerationLocked();
+                // Store this before starting a worker; an asynchronous "checking" or progress
+                // update must not be overwritten by the caller's later enabled notification.
+                status = new(value ? "Automatische Updates sind eingeschaltet." : "Automatische Updates sind ausgeschaltet.");
             }
             if (value && startBackground && backgroundEpoch != generation)
             {
@@ -112,13 +119,39 @@ public sealed class GitHubUpdateService : IDisposable
                 tasks.Add(loop);
             }
         }
-        if (changed) Publish(new(value ? "Automatische Updates sind eingeschaltet." : "Automatische Updates sind ausgeschaltet."));
+        if (changed) Notify();
     }
 
     /// <summary>Opt-in: also consider GitHub releases marked as pre-release (same vX.Y.Z tags).</summary>
     public void SetBetaChannel(bool value)
     {
-        lock (sync) beta = value;
+        lock (sync)
+        {
+            if (disposed || beta == value) return;
+            var restartBackground = enabled && backgroundEpoch == generation;
+            beta = value;
+            RenewGenerationLocked();
+            status = new(enabled ? "Update-Kanal geändert. GitHub wird erneut geprüft." : "Automatische Updates sind ausgeschaltet.");
+            if (restartBackground)
+            {
+                var token = enabledLifetime!.Token;
+                var epoch = generation;
+                backgroundEpoch = epoch;
+                loop = Task.Run(() => BackgroundAsync(epoch, token));
+                tasks.Add(loop);
+            }
+        }
+        Notify();
+    }
+
+    private void RenewGenerationLocked()
+    {
+        generation++;
+        deferred = false;
+        var previousLifetime = enabledLifetime!;
+        previousLifetime.Cancel();
+        _ = Task.WhenAll(tasks.ToArray()).ContinueWith(_ => previousLifetime.Dispose(), TaskScheduler.Default);
+        enabledLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
     }
 
     public Task CheckNowAsync() => CheckCoreAsync(background: false);
@@ -138,7 +171,7 @@ public sealed class GitHubUpdateService : IDisposable
             operationStartedTick = Stopwatch.GetTimestamp();
             var epoch = generation;
             var download = enabled;
-            var token = download ? enabledLifetime!.Token : lifetime.Token;
+            var token = enabledLifetime!.Token;
             operationEpoch = epoch;
             operation = Task.Run(() => CheckAsync(epoch, download, token));
             tasks.RemoveAll(task => task.IsCompleted);
@@ -161,9 +194,9 @@ public sealed class GitHubUpdateService : IDisposable
                 TimeSpan delay;
                 lock (sync) delay = deferred ? deferredInterval : checkInterval;
                 await Task.Delay(delay, token).ConfigureAwait(false);
-                // Poll only local game state while deferred. Repeated API checks would exhaust
-                // GitHub's anonymous per-IP quota when several LAN peers are playing.
-                while (IsDeferred() && gameActive())
+                // Poll only local speed-test state while deferred. Repeated API checks would exhaust
+                // GitHub's anonymous per-IP quota while a speed test is pending.
+                while (IsDeferred() && speedTestPendingOrActive())
                     await Task.Delay(deferredInterval, token).ConfigureAwait(false);
                 lock (sync) if (generation != epoch) return;
             }
@@ -179,7 +212,11 @@ public sealed class GitHubUpdateService : IDisposable
         var cancellation = timeout.Token;
         try
         {
-            lock (sync) { if (generation == epoch) deferred = false; }
+            lock (sync)
+            {
+                if (generation != epoch || disposed) return;
+                deferred = false;
+            }
             PublishFor(epoch, new("GitHub wird auf Updates geprüft …", true));
             bool useBeta;
             lock (sync) useBeta = beta;
@@ -211,11 +248,20 @@ public sealed class GitHubUpdateService : IDisposable
                     AvailableVersion: release.Version.ToString(3)));
                 return;
             }
-            if (gameActive()) { Defer(epoch, release.Version); return; }
+            if (speedTestPendingOrActive()) { Defer(epoch, release.Version); return; }
             Directory.CreateDirectory(directory);
             var cached = await ReadVerifiedReadyAsync(cancellation).ConfigureAwait(false);
-            if (cached is not null && cached.Version == release.Version.ToString(3))
+            if (cached is not null && cached.Version == release.Version.ToString(3) && cached.Size == release.Size &&
+                (release.Hash is null || string.Equals(cached.Hash, release.Hash, StringComparison.OrdinalIgnoreCase)))
             {
+                // Older versions did not persist the release channel. An authenticated GitHub
+                // response must establish it before the cached installer can be handed off.
+                lock (sync)
+                {
+                    if (disposed || !enabled || generation != epoch) return;
+                    if (cached.Prerelease != release.Prerelease)
+                        WriteAtomic(Path.Combine(directory, "ready.json"), JsonSerializer.Serialize(cached with { Prerelease = release.Prerelease }));
+                }
                 PublishFor(epoch, Ready(release.Version));
                 return;
             }
@@ -231,15 +277,37 @@ public sealed class GitHubUpdateService : IDisposable
                     throw new InvalidDataException("Ungültige SHA-256-Prüfsumme.");
                 hash = fields[0].ToUpperInvariant();
             }
-            if (gameActive()) { Defer(epoch, release.Version); return; }
-            PublishFor(epoch, new($"Version {release.Version} wird im Hintergrund heruntergeladen …", true, AvailableVersion: release.Version.ToString(3)));
+            if (speedTestPendingOrActive()) { Defer(epoch, release.Version); return; }
+            PublishFor(epoch, new($"Download von Version {release.Version} wird verbunden …", true,
+                AvailableVersion: release.Version.ToString(3), DownloadedBytes: 0, TotalBytes: release.Size));
             partial = Path.Combine(directory, release.FileName + "." + Guid.NewGuid().ToString("N") + ".part");
-            using var installer = await GetAsync(release.InstallerUri, false, cancellation).ConfigureAwait(false);
-            installer.EnsureSuccessStatusCode();
-            if (installer.Content.Headers.ContentLength is long contentLength && contentLength != release.Size)
-                throw new InvalidDataException("Die Downloadgröße stimmt nicht mit GitHub überein.");
-            await DownloadAsync(installer.Content, partial, release.Size, hash, cancellation).ConfigureAwait(false);
+            using (var transfer = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
+            {
+                // A speed test can start while HTTP headers, body bytes or the bandwidth limiter are
+                // waiting. Cancel all three instead of checking only between completed reads.
+                var measurement = MonitorSpeedTestAsync(transfer);
+                try
+                {
+                    using var installer = await GetAsync(release.InstallerUri, false, transfer.Token).ConfigureAwait(false);
+                    installer.EnsureSuccessStatusCode();
+                    if (installer.Content.Headers.ContentLength is long contentLength && contentLength != release.Size)
+                        throw new InvalidDataException("Die Downloadgröße stimmt nicht mit GitHub überein.");
+                    await DownloadAsync(installer.Content, partial, release.Size, hash, transfer.Token,
+                        total => PublishProgress(epoch, release.Version, total, release.Size)).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellation.IsCancellationRequested && transfer.IsCancellationRequested)
+                {
+                    throw new DownloadDeferredException();
+                }
+                finally
+                {
+                    transfer.Cancel();
+                    await measurement.ConfigureAwait(false);
+                }
+            }
             cancellation.ThrowIfCancellationRequested();
+            PublishFor(epoch, new($"Version {release.Version} vollständig heruntergeladen. Update wird geprüft …", true,
+                AvailableVersion: release.Version.ToString(3), DownloadedBytes: release.Size, TotalBytes: release.Size));
             if (SignaturePolicy.Reject(currentSignature.Value, inspectSignature(partial)) is { } rejected)
                 throw new UpdateRejectedException(rejected);
             lock (sync)
@@ -248,18 +316,26 @@ public sealed class GitHubUpdateService : IDisposable
                 var finalPath = Path.Combine(directory, release.FileName);
                 File.Move(partial, finalPath, true);
                 partial = null;
-                var ready = new ReadyUpdate(release.Version.ToString(3), release.FileName, hash, release.Size);
+                var ready = new ReadyUpdate(release.Version.ToString(3), release.FileName, hash, release.Size, release.Prerelease);
                 WriteAtomic(Path.Combine(directory, "ready.json"), JsonSerializer.Serialize(ready));
                 deferred = false;
             }
             PublishFor(epoch, Ready(release.Version));
         }
         catch (DownloadDeferredException) { Defer(epoch, null); }
+        catch (DownloadStalledException)
+        {
+            PublishFor(epoch, new("Update-Download unterbrochen: GitHub hat keine weiteren Daten geliefert. Mit „Jetzt prüfen“ erneut starten."));
+        }
         catch (UpdateRejectedException error) { PublishFor(epoch, new($"Update verworfen: {error.Message} Es wird nichts installiert.")); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException)
+        {
+            PublishFor(epoch, new("Update-Anfrage hat zu lange gedauert. Mit „Jetzt prüfen“ erneut starten."));
+        }
         catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or FormatException or InvalidOperationException or OperationCanceledException or OverflowException or UnauthorizedAccessException)
         {
-            PublishFor(epoch, new("Update konnte gerade nicht geladen werden. Später erneut versuchen."));
+            PublishFor(epoch, new("Update konnte gerade nicht geladen werden. Mit „Jetzt prüfen“ erneut versuchen."));
         }
         finally
         {
@@ -267,21 +343,24 @@ public sealed class GitHubUpdateService : IDisposable
         }
     }
 
-    /// <summary>Call only before starting network monitoring. The caller owns installer execution.</summary>
+    /// <summary>Validates a ready installer without consuming it. The caller owns the clean shutdown and execution.</summary>
     public async Task<string?> TakeReadyInstallerAsync()
     {
         long epoch;
+        bool useBeta;
         CancellationToken token;
         lock (sync)
         {
             if (!enabled || disposed) return null;
             epoch = generation;
+            useBeta = beta;
             token = enabledLifetime!.Token;
         }
         try
         {
             var ready = await ReadVerifiedReadyAsync(token).ConfigureAwait(false);
-            if (ready is null) return null;
+            if (ready is null || ready.Version == RolledBackVersion || ready.Prerelease is null ||
+                ready.Prerelease == true && !useBeta) return null;
             // Check the publisher again immediately before execution, not only after download.
             if (SignaturePolicy.Reject(currentSignature.Value, inspectSignature(Path.Combine(directory, ready.FileName))) is { } rejected)
             {
@@ -298,12 +377,70 @@ public sealed class GitHubUpdateService : IDisposable
                 if (!enabled || disposed || epoch != generation) return null;
                 var current = JsonSerializer.Deserialize<ReadyUpdate>(File.ReadAllText(Path.Combine(directory, "ready.json")));
                 if (current != ready) return null;
-                // Consuming the marker prevents an unsuccessful handoff being repeated every launch.
-                File.Delete(Path.Combine(directory, "ready.json"));
+                verifiedInstaller = ready;
+                verifiedInstallerEpoch = epoch;
                 return Path.Combine(directory, ready.FileName);
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or OperationCanceledException or JsonException) { return null; }
+    }
+
+    /// <summary>Recheck immediately before Process.Start; a preference change invalidates an earlier verified handoff.</summary>
+    public bool CanStartInstaller(string installerPath)
+    {
+        try
+        {
+            lock (sync)
+            {
+                if (!enabled || disposed || verifiedInstallerEpoch != generation || verifiedInstaller is not { } ready ||
+                    ready.Prerelease is null || ready.Prerelease == true && !beta || ready.Version == RolledBackVersion ||
+                    !string.Equals(Path.GetFullPath(installerPath), Path.Combine(directory, ready.FileName), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                var metadata = Path.Combine(directory, "ready.json");
+                if (!File.Exists(metadata) || new FileInfo(metadata).Length > 4096) return false;
+                return JsonSerializer.Deserialize<ReadyUpdate>(File.ReadAllText(metadata)) == ready;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Consume only after Process.Start succeeded. A failed launch must leave the verified cache retryable.</summary>
+    public bool ConfirmInstallerStarted(string installerPath)
+    {
+        try
+        {
+            lock (sync)
+            {
+                var metadata = Path.Combine(directory, "ready.json");
+                if (!File.Exists(metadata) || new FileInfo(metadata).Length > 4096) return false;
+                var ready = JsonSerializer.Deserialize<ReadyUpdate>(File.ReadAllText(metadata));
+                if (ready is null || !TryVersion("v" + ready.Version, out var version) || version <= currentVersion ||
+                    ready.FileName != $"DYNEX-Setup-{version.ToString(3)}.exe" ||
+                    !string.Equals(Path.GetFullPath(installerPath), Path.Combine(directory, ready.FileName), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                File.Delete(metadata);
+                return true;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
+        {
+            // The child installer is already running: bookkeeping failure must never launch it twice.
+            return false;
+        }
+    }
+
+    public void ReportInstallerLaunchFailure(string message)
+    {
+        lock (sync)
+        {
+            if (disposed) return;
+            status = new($"Update konnte nicht gestartet werden: {message} Mit „Jetzt prüfen“ erneut versuchen.",
+                AvailableVersion: status.AvailableVersion);
+        }
+        Notify();
     }
 
     private async Task<ReadyUpdate?> ReadVerifiedReadyAsync(CancellationToken token)
@@ -325,7 +462,8 @@ public sealed class GitHubUpdateService : IDisposable
         catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException or FormatException or ArgumentException) { return null; }
     }
 
-    private async Task DownloadAsync(HttpContent content, string path, long size, string hash, CancellationToken token)
+    private async Task DownloadAsync(HttpContent content, string path, long size, string hash, CancellationToken token,
+        Action<long> reportProgress)
     {
         await using var input = await content.ReadAsStreamAsync(token).ConfigureAwait(false);
         await using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
@@ -333,16 +471,48 @@ public sealed class GitHubUpdateService : IDisposable
         var buffer = new byte[32 * 1024];
         long total = 0;
         var elapsed = Stopwatch.StartNew();
+        var lastProgress = TimeSpan.MinValue;
         while (true)
         {
             token.ThrowIfCancellationRequested();
-            if (gameActive()) throw new DownloadDeferredException();
-            var read = await input.ReadAsync(buffer, token).ConfigureAwait(false);
+            if (speedTestPendingOrActive()) throw new DownloadDeferredException();
+            int read;
+            using (var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                readTimeout.CancelAfter(downloadStallTimeout);
+                var pendingRead = input.ReadAsync(buffer, readTimeout.Token).AsTask();
+                try
+                {
+                    // WaitAsync also bounds streams that fail to honour their read token.
+                    read = await pendingRead.WaitAsync(readTimeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    throw new DownloadStalledException();
+                }
+                finally
+                {
+                    if (!pendingRead.IsCompleted)
+                    {
+                        readTimeout.Cancel();
+                        _ = pendingRead.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                    }
+                }
+            }
+            token.ThrowIfCancellationRequested();
+            if (speedTestPendingOrActive()) throw new DownloadDeferredException();
             if (read == 0) break;
             total += read;
             if (total > size || total > MaximumInstallerBytes) throw new InvalidDataException("Download zu groß.");
             await output.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
             digest.AppendData(buffer, 0, read);
+            if (total == size || lastProgress == TimeSpan.MinValue || elapsed.Elapsed - lastProgress >= TimeSpan.FromMilliseconds(250))
+            {
+                reportProgress(total);
+                lastProgress = elapsed.Elapsed;
+            }
             var wait = TimeSpan.FromSeconds((double)total / bytesPerSecond) - elapsed.Elapsed;
             if (wait > TimeSpan.Zero) await Task.Delay(wait, token).ConfigureAwait(false);
         }
@@ -350,6 +520,28 @@ public sealed class GitHubUpdateService : IDisposable
             throw new InvalidDataException("Download ist unvollständig oder beschädigt.");
         await output.FlushAsync(token).ConfigureAwait(false);
         output.Flush(true);
+    }
+
+    private async Task MonitorSpeedTestAsync(CancellationTokenSource transfer)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), transfer.Token).ConfigureAwait(false);
+                if (!speedTestPendingOrActive()) continue;
+                transfer.Cancel();
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (transfer.IsCancellationRequested) { }
+    }
+
+    private void PublishProgress(long epoch, Version version, long downloaded, long total)
+    {
+        var percentage = (int)(100 * downloaded / total);
+        PublishFor(epoch, new($"Version {version}: {downloaded / 1_000_000d:N1} / {total / 1_000_000d:N1} MB ({percentage} %) heruntergeladen.",
+            true, AvailableVersion: version.ToString(3), DownloadedBytes: downloaded, TotalBytes: total));
     }
 
     private static Release? ReadNewest(JsonElement list)
@@ -399,7 +591,7 @@ public sealed class GitHubUpdateService : IDisposable
         }
         Uri? hashUri = checksum is JsonElement sum ? ExactAssetUri(sum, baseUrl + name + ".sha256") : null;
         if (hash is null && hashUri is null) throw new InvalidDataException("Keine SHA-256-Prüfsumme vorhanden.");
-        return new(version, name, installerUri, hashUri, hash, size);
+        return new(version, name, installerUri, hashUri, hash, size, pre.ValueKind == JsonValueKind.True);
     }
 
     private static Uri ExactAssetUri(JsonElement asset, string expected)
@@ -456,17 +648,12 @@ public sealed class GitHubUpdateService : IDisposable
     private void Defer(long epoch, Version? version)
     {
         lock (sync) { if (epoch != generation) return; deferred = true; }
-        PublishFor(epoch, new("Update wartet, bis dein Spiel beendet ist.", AvailableVersion: version?.ToString(3)));
+        PublishFor(epoch, new("Update wird nach dem Speedtest fortgesetzt.", AvailableVersion: version?.ToString(3)));
     }
     private bool IsDeferred() { lock (sync) return deferred; }
     private void PublishFor(long epoch, UpdateStatus value)
     {
         lock (sync) { if (disposed || epoch != generation) return; status = value; }
-        Notify();
-    }
-    private void Publish(UpdateStatus value)
-    {
-        lock (sync) { if (disposed) return; status = value; }
         Notify();
     }
     private void Notify()
@@ -475,7 +662,7 @@ public sealed class GitHubUpdateService : IDisposable
         foreach (Action handler in handlers.GetInvocationList())
             try { handler(); } catch (Exception) { /* A UI subscriber cannot break download cleanup. */ }
     }
-    private static UpdateStatus Ready(Version version) => new($"Version {version} bereit. Wird beim nächsten Start installiert.", UpdateReady: true, AvailableVersion: version.ToString(3));
+    private static UpdateStatus Ready(Version version) => new($"Version {version} geprüft. DYNEX wird geschlossen, aktualisiert und neu gestartet.", UpdateReady: true, AvailableVersion: version.ToString(3));
     private static Version Normalize(Version version) => new(version.Major, version.Minor, Math.Max(0, version.Build));
     private static bool TryVersion(string? tag, out Version version)
     {
@@ -519,8 +706,9 @@ public sealed class GitHubUpdateService : IDisposable
         }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    private sealed record Release(Version Version, string FileName, Uri InstallerUri, Uri? HashUri, string? Hash, long Size);
-    private sealed record ReadyUpdate(string Version, string FileName, string Hash, long Size);
+    private sealed record Release(Version Version, string FileName, Uri InstallerUri, Uri? HashUri, string? Hash, long Size, bool Prerelease);
+    private sealed record ReadyUpdate(string Version, string FileName, string Hash, long Size, bool? Prerelease = null);
     private sealed class DownloadDeferredException : Exception;
+    private sealed class DownloadStalledException : Exception;
     private sealed class UpdateRejectedException(string message) : Exception(message);
 }
