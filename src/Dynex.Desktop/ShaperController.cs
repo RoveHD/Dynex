@@ -140,6 +140,10 @@ internal sealed class ShaperController : IAsyncDisposable
                 var uploadLimit = uploadActive && root.TryGetProperty("uploadMbps", out var uploadRate) && uploadRate.ValueKind == JsonValueKind.Number
                     ? uploadRate.GetDouble() : (double?)null;
                 var error = root.TryGetProperty("error", out var message) && message.ValueKind == JsonValueKind.String ? message.GetString() : null;
+                var next = new ShaperStatus(active, active ? limit : null, error ?? (active
+                    ? qosActive ? "Große Downloads begrenzt · Spiele und Sprachchat priorisiert." : "Große Downloads begrenzt · Spiele und Sprachchat frei."
+                    : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt." : "Bereit. Downloads sind momentan nicht begrenzt."),
+                    qosActive, gamePackets, voicePackets, uploadLimit);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
@@ -155,11 +159,11 @@ internal sealed class ShaperController : IAsyncDisposable
                     if (!active && !qosActive && !uploadActive && limit is null && root.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True &&
                         root.TryGetProperty("releaseError", out var released) && released.ValueKind == JsonValueKind.Null)
                         shutdownConfirmed = true;
+                    // Publish the new status together with the release flags. Otherwise a snapshot taken
+                    // in between sees "capture released" next to the previous "QoS active" status.
+                    status = releaseFailure is null ? next : new(false, null, releaseFailure);
+                    lastStatus = Stopwatch.GetTimestamp();
                 }
-                Set(new(active, active ? limit : null, error ?? (active
-                    ? qosActive ? "Große Downloads begrenzt · Spiele und Sprachchat priorisiert." : "Große Downloads begrenzt · Spiele und Sprachchat frei."
-                    : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt." : "Bereit. Downloads sind momentan nicht begrenzt."),
-                    qosActive, gamePackets, voicePackets, uploadLimit));
             }
             lock (sync)
                 if (captureRequested && !shutdownConfirmed)

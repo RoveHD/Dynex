@@ -412,6 +412,9 @@ public sealed class DynexRuntime : IAsyncDisposable
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
                                 settings.Mode != GamingMode.Off && ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null,
                             uploadMbps: plannedUpload);
+                    // Read the release flag before the status: a release completing in between then shows
+                    // up as "not yet idle" for one cycle instead of "idle but QoS still active".
+                    var captureReleased = shaper.CaptureReleased;
                     var driver = shaper.Status;
                     // Each PC's confirmed limit must stay within its (priority-weighted) part of the pool.
                     double? ShareFor(double weight) => decision.SharedDownloadBudgetMbps is { } pool
@@ -427,7 +430,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         ? "Große Downloads werden auf diesem und verbundenen DYNEX-PCs begrenzt. Spiele und Sprachchat bleiben frei."
                         : decision.AdaptiveReduced ? "Der Ping ist gestiegen. DYNEX bremst die Downloads stärker."
                         : decision.GamingActive ? "Ein anderer PC spielt. Deine Downloads sollen langsamer weiterlaufen."
-                        : shaper.CaptureReleased ? "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv."
+                        : captureReleased ? "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv."
                         : "Kein Spiel im Fokus. DYNEX gibt den Netzwerkfilter frei: " + driver.Message;
                     if (settings.CapacityMeasuredAtUtc is null)
                         detail = decision.GamingActive
@@ -465,7 +468,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         (ConfirmedShare(driver.Active, driver.Mbps, decision.LocalShareWeight) ? 1 : 0) +
                         remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps, p.ShareWeight ?? 1)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
-                        ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
+                        ProtectionIdle: !decision.GamingActive && captureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
                         Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic, UploadLimitMbps: driver.UploadMbps);
                     Snapshot = snapshot;
