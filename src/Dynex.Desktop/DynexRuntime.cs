@@ -407,7 +407,6 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var plannedUpload = IsSpeedTestRunning || settings.CapacityMeasuredAtUtc is null ? null
                         : UploadLimit.Compute(decision, settings.UploadCapacityMbps, settings.BackgroundPercent,
                             settings.ManualUploadLimitMbps, settings.UploadLimitEnabled, pausedUntil is not null);
-                    shaper.MarkGamePackets = settings.MarkGamePackets;
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||

@@ -79,8 +79,6 @@ internal sealed class ShaperController : IAsyncDisposable
             Set(new(false, null, "Windows konnte die Downloadbegrenzung nicht starten: " + ex.Message));
         }
     }
-    /// <summary>Opt-in DSCP marking of outbound game packets (router QoS). Off keeps game packets unmodified.</summary>
-    public bool MarkGamePackets { get; set; }
     public async Task ApplyAsync(double? mbps, CancellationToken token, IReadOnlyList<GameDetectionResult>? games = null, bool qosEnabled = false,
         Func<bool>? protectionStillNeeded = null, double? uploadMbps = null)
     {
@@ -114,7 +112,7 @@ internal sealed class ShaperController : IAsyncDisposable
                         else commandId = pendingReleaseId;
                     }
                 }
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled, markGamePackets = MarkGamePackets, commandId }).AsMemory(), timeout.Token);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled, commandId }).AsMemory(), timeout.Token);
             }
             finally { writeGate.Release(); }
         }

@@ -9,7 +9,7 @@ DYNEX ist so gebaut, dass Spiele und ihre Anti-Cheat-Systeme (z. B. Riot Vanguar
 - **Keine Eingabe- oder Fenster-Hooks:** kein `SetWindowsHookEx`, `SetWinEventHook`, `SendInput`; DYNEX liest nur, welches Fenster im Vordergrund ist.
 - **Kein Overlay:** DYNEX zeichnet nicht über Spiele. Status gibt es im Infobereich und in Windows-Benachrichtigungen.
 - **Keine verzögerten oder verworfenen Spielpakete:** Pakete erkannter Spiele umgehen Download- und Upload-Warteschlange immer (`PacketPump`, `BulkDownloadPolicy.ShouldLimitUpload`). Ein „Lag-Switch“-Muster entsteht dadurch nicht. Begrenzt werden nur große Downloads anderer Programme.
-- **Spielpakete bleiben unverändert (ab 1.0.6 Standard):** Die QoS-Markierung (DSCP) ausgehender Spielpakete ist nur noch eine Option (Einstellungen → „Spielpakete für Router-QoS markieren“) und standardmäßig aus. Sprachchat-Pakete werden weiter markiert.
+- **Spielpakete werden nie verändert, nur priorisiert:** Sie überspringen jede Warteschlange und verlassen den PC Byte für Byte so, wie das Spiel sie gesendet hat. Eine Option zum Markieren oder Umschreiben von Spielpaketen gibt es ab 1.0.6 nicht mehr (Tests prüfen das für IPv4/IPv6 und im Paketpfad). Nur Sprachchat-Pakete bekommen eine QoS-Markierung.
 
 ## Wie DYNEX Spiele erkennt
 
@@ -27,6 +27,8 @@ Restrisiko: Kernel-Anti-Cheats führen eigene Listen unerwünschter Treiber. Uns
 
 `scripts/anticheat-guard.ps1` läuft in jeder CI und vor jedem Release. Es schlägt fehl, sobald der Quellcode Speicherzugriffe, Injektion, Eingabe-Hooks, Fensteranzeige-Tricks, ein Topmost-Overlay, `MainModule` außerhalb der Setup-Prüfung eigener DYNEX-Prozesse oder `OpenProcess` mit mehr als `QueryLimitedInformation` verwendet.
 
-## Praxisprüfung (offen)
+## Kein Praxistest mit echten Konten
 
-Mit echten Konten je 30 Minuten spielen, DYNEX aktiv, Download auf dem zweiten PC: Valorant (Vanguard), Fortnite oder Apex (EAC), Rainbow Six Siege (BattlEye), Counter-Strike 2 (VAC) und optional FACEIT. Erwartung: kein Start-Block, keine Warnung, kein Kick. Ergebnis in `docs/TESTING.md` festhalten.
+DYNEX wird bewusst nicht durch Spielen mit eigenen Konten „gegen Anti-Cheat getestet“: Ein Bann wäre das Risiko nicht wert, und ein ausbleibender Bann bewiese ohnehin nichts für andere Spiele oder spätere Versionen. Stattdessen verlässt sich DYNEX auf die oben genannten Regeln, die automatisch geprüft werden.
+
+Wer jedes Restrisiko durch den Treiber vermeiden will, nutzt DYNEX ohne Netzwerkfilter („Beim Spielen priorisieren und große Downloads begrenzen“ aus bzw. Filter nicht einrichten). Der Treiber bleibt installiert und an die Netzwerkkarte gebunden, auch wenn DYNEX gerade nichts filtert; vollständig weg ist er nur nach der Deinstallation über DYNEX.

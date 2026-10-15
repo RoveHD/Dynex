@@ -119,20 +119,17 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
 /// <summary>RFC2474 DS field, RFC3168 ECN preservation, RFC1071 IPv4 header checksum.</summary>
 public static class QosPacketMarker
 {
-    private static volatile bool _markGamePackets;
     /// <summary>
-    /// Off by default: game packets then leave this PC byte-for-byte unchanged, so no anti-cheat or game
-    /// server ever sees a modified header. Voice packets are still marked; game packets are never delayed.
+    /// Only voice packets are ever marked. Game packets are prioritized (they skip every queue) but are
+    /// never modified: they leave this PC byte-for-byte as the game sent them. There is no option to change that.
     /// </summary>
-    public static bool MarkGamePackets { get => _markGamePackets; set => _markGamePackets = value; }
-
     public static bool TryMark(CapturedPacket packet, PacketPriority priority)
     {
-        if (priority == PacketPriority.Game && !_markGamePackets) return false;
-        if (packet.Direction != PacketDirection.Outbound || priority is not (PacketPriority.Game or PacketPriority.Voice) ||
+        if (priority != PacketPriority.Voice) return false;
+        if (packet.Direction != PacketDirection.Outbound ||
             packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);
-        var dscp = priority == PacketPriority.Voice ? 46 : 32;
+        const int dscp = 46; // Expedited Forwarding for voice.
         if (ip[0] >> 4 == 4)
         {
             if (ip.Length < 20) return false;

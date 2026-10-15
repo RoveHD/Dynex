@@ -213,7 +213,6 @@ internal static class Program
                 // Upload pacing and QoS marking both need outbound capture; download-only does not.
                 var wantsOutbound = requestedQos || requestedUpload.HasValue;
                 var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue;
-                QosPacketMarker.MarkGamePackets = command.MarkGamePackets;
                 bulkPolicy.Protect(command.ProtectedProcesses);
                 qosPolicy.Protect(command.ProtectedProcesses);
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());

@@ -193,9 +193,19 @@ owners = [new(flow, 601, started, "OneDrive"), new(game, 700, started, "game")];
 var pumpPolicy = new BulkDownloadPolicy(Snapshot, []);
 pumpPolicy.Protect([new(700, started.UtcTicks)]);
 var sentOut = new ConcurrentDictionary<ushort, int>();
-using (var device = new PacketTestDevice(packet => sentOut.AddOrUpdate(BinaryPrimitives.ReadUInt16BigEndian(packet.Buffer.AsSpan(packet.IpOffset + 20)), 1, (_, n) => n + 1)))
+byte[] gameTemplate;
+using (var template = Out(game, 200)) gameTemplate = template.Buffer.AsSpan(0, template.Length).ToArray();
+var modifiedGamePackets = 0;
+using (var device = new PacketTestDevice(packet =>
 {
-    await using var pump = new PacketPump(device, null, pumpPolicy.ShouldLimit, null, uploadMbps: 1, shouldLimitUpload: pumpPolicy.ShouldLimitUpload);
+    var port = BinaryPrimitives.ReadUInt16BigEndian(packet.Buffer.AsSpan(packet.IpOffset + 20));
+    if (port == 52010 && !packet.Buffer.AsSpan(0, packet.Length).SequenceEqual(gameTemplate)) Interlocked.Increment(ref modifiedGamePackets);
+    sentOut.AddOrUpdate(port, 1, (_, n) => n + 1);
+}))
+{
+    var qos = new RealtimeQosPolicy(Snapshot);
+    qos.Protect([new(700, started.UtcTicks)]);
+    await using var pump = new PacketPump(device, null, pumpPolicy.ShouldLimit, qos.Classify, uploadMbps: 1, shouldLimitUpload: pumpPolicy.ShouldLimitUpload);
     Check(pump.HasUploadLimit && !pump.HasDownloadLimit, "upload-only limit is active without a download limit");
     for (var i = 0; i < 600; i++) device.Enqueue(Out(flow));
     for (var i = 0; i < 40; i++) device.Enqueue(Out(game, 200));
@@ -204,6 +214,7 @@ using (var device = new PacketTestDevice(packet => sentOut.AddOrUpdate(BinaryPri
     while (sentOut.GetValueOrDefault((ushort)52010) < 40 && DateTime.UtcNow < deadline) await Task.Delay(5);
     await Task.Delay(300);
     Check(sentOut.GetValueOrDefault((ushort)52010) == 40, "all game packets leave immediately while an upload is saturated");
+    Check(modifiedGamePackets == 0, "prioritized game packets leave byte-for-byte unchanged");
     Check(sentOut.GetValueOrDefault((ushort)443) == 40, "inbound download packets are untouched by the upload limit");
     Check(pump.UploadSentBytes < 600 * 1440 / 2, "bulk upload is paced to the configured rate instead of leaving at once");
     pump.UpdateUploadLimit(null);

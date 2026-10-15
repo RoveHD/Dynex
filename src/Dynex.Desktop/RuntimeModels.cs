@@ -24,7 +24,6 @@ public sealed record UserSettings
     public double SharePriority { get; init; } = 1;
     public string Profile { get; init; } = "Standard";
     public bool SetupGuideDone { get; init; }
-    public bool MarkGamePackets { get; init; }
     public double? UploadCapacityMbps { get; init; }
     public bool UploadLimitEnabled { get; init; } = true;
     public double? ManualUploadLimitMbps { get; init; }
