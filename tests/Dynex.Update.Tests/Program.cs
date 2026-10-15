@@ -67,7 +67,9 @@ await Scenario("startup handoff without network", async () =>
     fixture.Service.Dispose();
     using var nextClient = new HttpClient(new FakeGitHub());
     using var nextStart = new GitHubUpdateService(fixture.Directory, new Version(0, 4, 1), () => false,
-        nextClient, TimeSpan.FromHours(6), TimeSpan.FromHours(1), 1024 * 1024);
+        nextClient, TimeSpan.FromHours(6), TimeSpan.FromHours(1), 1024 * 1024,
+        // Explicit: on Windows the signed test host would otherwise be the "installed" publisher.
+        _ => SignatureCheck.Unsigned, SignatureCheck.Unsigned);
     nextStart.SetEnabled(true, startBackground: false);
     Check(await nextStart.TakeReadyInstallerAsync() is not null, "next startup can hand off the previously verified download offline");
 });
@@ -80,7 +82,9 @@ await Scenario("installed version rejects stale cache", async () =>
     fixture.Service.Dispose();
     using var client = new HttpClient(new FakeGitHub());
     using var updated = new GitHubUpdateService(fixture.Directory, new Version(0, 5, 0), () => false,
-        client, TimeSpan.FromHours(6), TimeSpan.FromHours(1), 1024 * 1024);
+        client, TimeSpan.FromHours(6), TimeSpan.FromHours(1), 1024 * 1024,
+        // Explicit: on Windows the signed test host would otherwise be the "installed" publisher.
+        _ => SignatureCheck.Unsigned, SignatureCheck.Unsigned);
     updated.SetEnabled(true, startBackground: false);
     Check(await updated.TakeReadyInstallerAsync() is null, "current installed version cannot reinstall cached same version");
 });
