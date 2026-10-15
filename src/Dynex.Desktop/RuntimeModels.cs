@@ -47,4 +47,4 @@ public sealed record RuntimeSnapshot(
     string? NetworkProblem = null, bool ProtectionIdle = false,
     Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null,
     string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null,
-    Dynex.Core.SessionSummary? LastSession = null);
+    Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null);

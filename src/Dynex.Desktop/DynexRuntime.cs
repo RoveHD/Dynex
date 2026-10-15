@@ -40,6 +40,9 @@ public sealed class DynexRuntime : IAsyncDisposable
     private string? peerStartError;
     private bool? firewallConfigured;
     private readonly SessionTracker sessions = new();
+    private readonly RouterTrafficMonitor? routerTraffic;
+    private Task<RouterTrafficSample?>? routerSample;
+    private RouterTrafficSample? lastRouterSample;
     private SessionSummary? lastSession;
     internal static readonly IReadOnlyDictionary<string, double> ProfileBackgroundPercent =
         new Dictionary<string, double> { ["Turnier"] = 40, ["Standard"] = 65, ["Entspannt"] = 85 };
@@ -136,6 +139,8 @@ public sealed class DynexRuntime : IAsyncDisposable
         this.readForeground = readForeground ?? ForegroundGame.Read;
         automaticSpeedTestEnabled = !isolated || speedTest is not null;
         store = new(profilePath);
+        // Isolated test profiles never contact the real router.
+        routerTraffic = isolated ? null : new RouterTrafficMonitor();
         Settings = store.Load();
         identity = store.LoadIdentity();
     }
@@ -425,6 +430,13 @@ public sealed class DynexRuntime : IAsyncDisposable
                     else if (IsSpeedTestWaiting) detail = SpeedTestMessage;
                     if (decision.DownloadLimitMbps.HasValue && !driver.Active && !IsSpeedTestRunning)
                         detail = "Gaming erkannt. Die Downloadbegrenzung ist noch nicht aktiv: " + driver.Message;
+                    // Router discovery can take seconds; never let it delay game detection or limits.
+                    if (routerTraffic is not null && routerSample is not { IsCompleted: false })
+                    {
+                        if (routerSample is { IsCompletedSuccessfully: true }) lastRouterSample = routerSample.Result;
+                        routerSample = routerTraffic.SampleAsync(token);
+                    }
+                    var homeTraffic = lastRouterSample;
                     if (sessions.Observe(gaming, game, measurement.External.Current, driver.Active, now) is { } ended) RecordSession(ended);
                     var point = new HistoryPoint(now, measurement.Router.Current, measurement.External.Current, measurement.Down, driver.Active || remote.Any(p => p.ShaperActive));
                     lock (history) { history.Add(point); if (history.Count > 300) history.RemoveAt(0); }
@@ -445,7 +457,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
-                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession);
+                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession, HomeTraffic: homeTraffic);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -674,5 +686,5 @@ public sealed class DynexRuntime : IAsyncDisposable
         var pending = speedTestTask;
         if (pending is { IsCompleted: false }) await pending;
     }
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync() { await StopAsync(); routerTraffic?.Dispose(); }
 }

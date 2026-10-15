@@ -495,6 +495,15 @@ public partial class MainWindow : Window
             : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
+        if (s.HomeTraffic is { } home)
+        {
+            // NIC counters include LAN traffic, so the remainder is only an estimate.
+            var dynex = s.Devices.Sum(d => d.DownloadMbps ?? 0);
+            var others = Math.Max(0, home.DownloadMbps - dynex);
+            DownCaption.Text = $"Ganzes Heimnetz: {home.DownloadMbps:0.0} Mbps";
+            DownCaption.ToolTip = $"Router {home.RouterName}: ↓ {home.DownloadMbps:0.0} / ↑ {home.UploadMbps:0.0} Mbit/s\nGeräte ohne DYNEX (Konsole, Handy, TV …) ca. {others:0.0} Mbit/s\nGelesen über UPnP; DYNEX steuert diese Geräte nicht.";
+        }
+        else { DownCaption.Text = "Gesamter Empfang"; DownCaption.ToolTip = "Router-Werte erscheinen, wenn der Router UPnP-Statusinformationen anbietet."; }
         LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
         LimitReasonText.Text = string.IsNullOrEmpty(s.LimitReason) ? "Für große Downloads" : s.LimitReason;
         LimitReasonText.ToolTip = $"Aktuell: {(s.DownloadMbps is { } now ? $"{now:0.0} Mbit/s" : "—")} · Aktives Limit: {(s.LimitMbps is { } active ? $"{active:0.0} Mbit/s" : "keins")}\nGrund: {LimitReasonText.Text}";
