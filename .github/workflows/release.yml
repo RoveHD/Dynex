@@ -1,10 +1,17 @@
 name: Release
 
-# Push a tag vX.Y.Z to build, sign and attach the setup to a *draft* GitHub release.
-# Publish the draft manually after the two-PC acceptance in docs/TESTING.md.
+# Either push a tag vX.Y.Z (creates a *draft* release to publish manually), or start this
+# workflow from GitHub → Actions → Release → "Run workflow": it tags the current master with
+# the project version and publishes the release directly (or as draft when unticked).
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Release sofort veröffentlichen (sonst Entwurf)'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -29,14 +36,25 @@ jobs:
           if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
           if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { throw 'NSIS-Installation fehlgeschlagen.' }
           "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
-      - name: Version from tag
+      - name: Version
         id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $version = '${{ github.ref_name }}'.TrimStart('v')
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Ungültiger Tag: ${{ github.ref_name }}" }
           $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
-          if ($project.Project.PropertyGroup.Version -ne $version) { throw "Tag $version passt nicht zur Projektversion $($project.Project.PropertyGroup.Version)." }
+          $projectVersion = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            if ('${{ github.ref_name }}' -ne 'master') { throw 'Manuelle Releases nur von master.' }
+            $version = $projectVersion
+            gh release view "v$version" *> $null
+            if ($LASTEXITCODE -eq 0) { throw "Release v$version existiert bereits. Erst die Version erhöhen." }
+            $global:LASTEXITCODE = 0
+          } else {
+            $version = '${{ github.ref_name }}'.TrimStart('v')
+            if ($projectVersion -ne $version) { throw "Tag $version passt nicht zur Projektversion $projectVersion." }
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Ungültige Version: $version" }
           "value=$version" >> $env:GITHUB_OUTPUT
       - name: Tests
         shell: pwsh
@@ -72,12 +90,17 @@ jobs:
         if: always()
         shell: pwsh
         run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'dynex-sign.pfx') -ErrorAction SilentlyContinue
-      - name: Draft release
+      - name: Create release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
         run: |
           $v = '${{ steps.version.outputs.value }}'
           $signed = if ($env:HAS_PFX -eq 'true') { 'Setup und Programme sind signiert.' } else { 'Diese Version ist noch nicht code-signiert; Windows SmartScreen kann beim Start des Setups warnen („Weitere Informationen“ → „Trotzdem ausführen“). Die SHA-256-Prüfsummen liegen bei.' }
-          gh release create "v$v" --draft --title "DYNEX $v" --notes "Entwurf aus CI. $signed Vor dem Veröffentlichen die Zwei-PC-Abnahme (docs/TESTING.md) durchführen." `
-            "artifacts/DYNEX-Setup-$v.exe" "artifacts/DYNEX-Setup-$v.exe.sha256" "artifacts/DYNEX-Cleanup-$v.exe" "artifacts/DYNEX-Cleanup-$v.exe.sha256"
+          $notes = "Änderungen: siehe README („Neu in $v“). $signed"
+          $assets = @("artifacts/DYNEX-Setup-$v.exe", "artifacts/DYNEX-Setup-$v.exe.sha256", "artifacts/DYNEX-Cleanup-$v.exe", "artifacts/DYNEX-Cleanup-$v.exe.sha256")
+          # --target creates the tag on the tested commit when it does not exist yet (manual start).
+          $mode = if ($env:PUBLISH -eq 'true') { @('--latest') } else { @('--draft') }
+          gh release create "v$v" --target $env:GITHUB_SHA --title "DYNEX $v" --notes $notes @mode @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Release konnte nicht erstellt werden.' }
