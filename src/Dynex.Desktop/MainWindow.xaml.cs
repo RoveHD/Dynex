@@ -117,6 +117,7 @@ public partial class MainWindow : Window
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
         NotificationsCheck.IsChecked = s.Notifications;
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
+        BetaUpdatesCheck.IsChecked = s.BetaUpdates;
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
@@ -144,6 +145,34 @@ public partial class MainWindow : Window
             ErrorText.Text = "Einstellungen gespeichert.";
         });
     }
+
+    private async void BetaUpdatesCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var requested = BetaUpdatesCheck.IsChecked == true;
+        await RunUiAction(async () =>
+        {
+            await _runtime.SaveBetaUpdatePreferenceAsync(requested);
+            _updates?.SetBetaChannel(requested);
+            ErrorText.Text = requested ? "Vorabversionen werden beim nächsten Prüfen berücksichtigt." : "Nur stabile Versionen.";
+        });
+    }
+    private async void ExportSettings_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "dynex-einstellungen.json", Filter = "JSON-Datei (*.json)|*.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        await File.WriteAllTextAsync(dialog.FileName, _runtime.ExportSettings());
+        ErrorText.Text = "Einstellungen gesichert. Kopplungsschlüssel und Speedtest-Ergebnis sind nicht enthalten.";
+    });
+    private async void ImportSettings_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "JSON-Datei (*.json)|*.json" };
+        if (dialog.ShowDialog(this) != true) return;
+        if (new FileInfo(dialog.FileName).Length > 256 * 1024) throw new ArgumentException("Die Sicherungsdatei ist zu groß.");
+        await _runtime.ImportSettingsAsync(await File.ReadAllTextAsync(dialog.FileName));
+        LoadSettings(_runtime.Settings);
+        ErrorText.Text = "Einstellungen wiederhergestellt. Speedtest-Wert und PC-Name dieses PCs bleiben erhalten.";
+    });
 
     private async void AutoUpdateCheck_Changed(object sender, RoutedEventArgs e)
     {

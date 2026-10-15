@@ -436,6 +436,38 @@ public sealed class DynexRuntime : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
+    public async Task SaveBetaUpdatePreferenceAsync(bool enabled)
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            var next = Settings with { BetaUpdates = enabled };
+            store.Save(next);
+            Settings = next;
+        }
+        finally { lifecycle.Release(); }
+    }
+    /// <summary>Portable settings backup. Contains no keys; measured capacity stays specific to this PC.</summary>
+    public string ExportSettings() => JsonSerializer.Serialize(new SettingsBackup(1, AppVersion, Settings with
+    {
+        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false
+    }), new JsonSerializerOptions { WriteIndented = true });
+    public async Task ImportSettingsAsync(string json)
+    {
+        if (json.Length > 256 * 1024) throw new ArgumentException("Die Sicherungsdatei ist zu groß.");
+        SettingsBackup? backup;
+        try { backup = JsonSerializer.Deserialize<SettingsBackup>(json); }
+        catch (JsonException) { throw new ArgumentException("Die Datei ist keine DYNEX-Einstellungssicherung."); }
+        if (backup is not { Format: 1, Settings: { } imported }) throw new ArgumentException("Die Datei ist keine DYNEX-Einstellungssicherung.");
+        var current = Settings;
+        // Keep this PC's own identity-like values: name, measured line and the once-only speed test marker.
+        await SaveSettingsAsync(imported with
+        {
+            DeviceName = current.DeviceName, CapacityMbps = current.CapacityMbps,
+            CapacityMeasuredAtUtc = current.CapacityMeasuredAtUtc, AutomaticSpeedTestAttempted = current.AutomaticSpeedTestAttempted
+        });
+    }
+    private sealed record SettingsBackup(int Format, string Version, UserSettings Settings);
     public async Task SaveAutoUpdatePreferenceAsync(bool enabled)
     {
         await lifecycle.WaitAsync();
@@ -571,6 +603,7 @@ public sealed class DynexRuntime : IAsyncDisposable
             NetworkTransport = GetNetworkDiagnostics(), NetworkEnvironment = networkEnvironment,
             ConnectionAdvice = GetNetworkDiagnostics()?.Assess(networkEnvironment.FirewallConfigured),
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
+            LatestCrash = CrashLog.Reports().FirstOrDefault() is { } crash ? File.ReadAllText(crash) : null,
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));
         return path;

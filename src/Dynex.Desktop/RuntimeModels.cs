@@ -16,6 +16,7 @@ public sealed record UserSettings
     public bool DriverEnabled { get; init; } = true;
     public bool AutoStart { get; init; } = true;
     public bool AutoUpdate { get; init; }
+    public bool BetaUpdates { get; init; }
     public bool AutoConnectLan { get; init; } = true;
     public bool Notifications { get; init; } = true;
     public GamingMode Mode { get; init; } = GamingMode.Auto;

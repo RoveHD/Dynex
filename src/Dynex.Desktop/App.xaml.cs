@@ -12,6 +12,9 @@ public partial class App : System.Windows.Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) CrashLog.Write(error, "AppDomain"); };
+        DispatcherUnhandledException += (_, args) => CrashLog.Write(args.Exception, "UI");
+        TaskScheduler.UnobservedTaskException += (_, args) => CrashLog.Write(args.Exception, "Task");
         try
         {
             if (e.Args.Length > 0 && e.Args[0] == "--self-test")
@@ -36,7 +39,8 @@ public partial class App : System.Windows.Application
                 return;
             }
             _runtime = new DynexRuntime(DesktopLifecycle.ProfilePath);
-            string? startupWarning = null;
+            string? startupWarning = DesktopLifecycle.ProfilePath is null && CrashLog.TakeUnseen() is not null
+                ? "DYNEX wurde zuletzt unerwartet beendet. Ein lokaler Bericht liegt bei; „Diagnose exportieren“ enthält ihn." : null;
             if (CanUseInstalledUpdates())
             {
                 try { _runtime.ApplyAutostartPreference(); }
@@ -48,6 +52,7 @@ public partial class App : System.Windows.Application
                     () => _runtime.IsSpeedTestRunning || _runtime.IsSpeedTestWaiting || _runtime.Snapshot is not { } snapshot ||
                           snapshot.IsGaming || snapshot.GamingCount > 0 || !string.IsNullOrEmpty(snapshot.Game) ||
                           snapshot.Devices.Any(device => !string.IsNullOrEmpty(device.Game)));
+                _updates.SetBetaChannel(_runtime.Settings.BetaUpdates);
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
                 if (_updates.RolledBackVersion is { } failed)
                     startupWarning = $"Das Update auf Version {failed} ist fehlgeschlagen. DYNEX hat die vorherige Version {DynexRuntime.AppVersion} wiederhergestellt; Einstellungen bleiben erhalten.";

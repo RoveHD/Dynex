@@ -36,6 +36,7 @@ public sealed class GitHubUpdateService : IDisposable
     private long operationEpoch = -1;
     private long backgroundEpoch = -1;
     private bool enabled;
+    private bool beta;
     private bool disposed;
     private bool deferred;
     private long generation;
@@ -114,6 +115,12 @@ public sealed class GitHubUpdateService : IDisposable
         if (changed) Publish(new(value ? "Automatische Updates sind eingeschaltet." : "Automatische Updates sind ausgeschaltet."));
     }
 
+    /// <summary>Opt-in: also consider GitHub releases marked as pre-release (same vX.Y.Z tags).</summary>
+    public void SetBetaChannel(bool value)
+    {
+        lock (sync) beta = value;
+    }
+
     public Task CheckNowAsync()
     {
         lock (sync)
@@ -162,16 +169,20 @@ public sealed class GitHubUpdateService : IDisposable
         {
             lock (sync) { if (generation == epoch) deferred = false; }
             PublishFor(epoch, new("GitHub wird auf Updates geprüft …", true));
-            using var response = await GetAsync(new($"https://api.github.com/repos/{Repository}/releases/latest"), true, cancellation).ConfigureAwait(false);
+            bool useBeta;
+            lock (sync) useBeta = beta;
+            using var response = await GetAsync(new(useBeta
+                ? $"https://api.github.com/repos/{Repository}/releases?per_page=10"
+                : $"https://api.github.com/repos/{Repository}/releases/latest"), true, cancellation).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
                 PublishFor(epoch, new("Noch kein Update auf GitHub verfügbar."));
                 return;
             }
             response.EnsureSuccessStatusCode();
-            var json = await ReadBoundedAsync(response.Content, 1024 * 1024, cancellation).ConfigureAwait(false);
+            var json = await ReadBoundedAsync(response.Content, 4 * 1024 * 1024, cancellation).ConfigureAwait(false);
             using var document = JsonDocument.Parse(json);
-            var release = ReadRelease(document.RootElement);
+            var release = useBeta ? ReadNewest(document.RootElement) : ReadRelease(document.RootElement);
             if (release is null || release.Version <= currentVersion)
             {
                 PublishFor(epoch, new("DYNEX ist auf dem neuesten Stand."));
@@ -329,12 +340,27 @@ public sealed class GitHubUpdateService : IDisposable
         output.Flush(true);
     }
 
-    private static Release? ReadRelease(JsonElement root)
+    private static Release? ReadNewest(JsonElement list)
+    {
+        if (list.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Ungültige GitHub-Release-Liste.");
+        Release? newest = null;
+        foreach (var item in list.EnumerateArray())
+        {
+            Release? candidate;
+            // One malformed or unrelated entry must not hide a valid newer release.
+            try { candidate = ReadRelease(item, allowPrerelease: true); }
+            catch (InvalidDataException) { continue; }
+            if (candidate is not null && (newest is null || candidate.Version > newest.Version)) newest = candidate;
+        }
+        return newest;
+    }
+
+    private static Release? ReadRelease(JsonElement root, bool allowPrerelease = false)
     {
         if (!root.TryGetProperty("draft", out var draft) || draft.ValueKind is not (JsonValueKind.False or JsonValueKind.True) ||
             !root.TryGetProperty("prerelease", out var pre) || pre.ValueKind is not (JsonValueKind.False or JsonValueKind.True))
             throw new InvalidDataException("Ungültige GitHub-Veröffentlichung.");
-        if (draft.ValueKind == JsonValueKind.True || pre.ValueKind == JsonValueKind.True) return null;
+        if (draft.ValueKind == JsonValueKind.True || pre.ValueKind == JsonValueKind.True && !allowPrerelease) return null;
         if (!root.TryGetProperty("tag_name", out var tag) || !TryVersion(tag.GetString(), out var version) ||
             !root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Ungültige GitHub-Veröffentlichung.");

@@ -85,6 +85,27 @@ await Scenario("installed version rejects stale cache", async () =>
     Check(await updated.TakeReadyInstallerAsync() is null, "current installed version cannot reinstall cached same version");
 });
 
+await Scenario("beta channel", async () =>
+{
+    using var stable = new Fixture();
+    stable.Handler.Variant = "prerelease";
+    stable.Service.SetEnabled(true);
+    await stable.Service.CheckNowAsync();
+    Check(!stable.Service.Status.UpdateReady, "stable channel ignores pre-releases");
+    using var fixture = new Fixture();
+    fixture.Service.SetBetaChannel(true);
+    fixture.Service.SetEnabled(true);
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady && fixture.Service.Status.AvailableVersion == "0.5.0",
+        "beta channel installs the newest verified pre-release and skips malformed entries");
+    using var drafts = new Fixture();
+    drafts.Handler.Variant = "draft";
+    drafts.Service.SetBetaChannel(true);
+    drafts.Service.SetEnabled(true);
+    await drafts.Service.CheckNowAsync();
+    Check(!drafts.Service.Status.UpdateReady, "beta channel never installs drafts");
+});
+
 var publisher = new SignatureCheck(true, true, "CN=DYNEX Publisher");
 foreach (var (name, candidate, current, accepted) in new[]
 {
@@ -337,6 +358,17 @@ sealed class FakeGitHub : HttpMessageHandler
             if (Variant == "duplicate") assets.Add(installer);
             if (Variant != "missing-hash") assets.Add(new { name = name + ".sha256", browser_download_url = url + name + ".sha256", size = 100 });
             var json = Variant == "bad-json" ? "{bad" : JsonSerializer.Serialize(new { tag_name = tag, draft = Variant == "draft", prerelease = Variant == "prerelease", assets });
+            if (uri.AbsolutePath.EndsWith("/releases"))
+            {
+                // Beta list: a malformed entry, an older stable release and the requested entry as pre-release.
+                var list = new object[]
+                {
+                    new { tag_name = "nightly", draft = false, prerelease = true, assets = Array.Empty<object>() },
+                    new { tag_name = "v0.4.0", draft = false, prerelease = false, assets = Array.Empty<object>() },
+                    new { tag_name = tag, draft = Variant == "draft", prerelease = true, assets }
+                };
+                json = JsonSerializer.Serialize(list);
+            }
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         }
         if (uri.Host != "github.com" && uri.Host != "release-assets.githubusercontent.com")
