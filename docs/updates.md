@@ -98,8 +98,8 @@ Der Packet-Filter-Treiber stammt weiterhin vom Hersteller und wird separat gepr�
 **Automatisch (empfohlen):** Version in `src/Dynex.Desktop/Dynex.Desktop.csproj` erhöhen, committen und das Tag
 `vX.Y.Z` pushen. `.github/workflows/release.yml` führt alle Tests aus, baut und signiert und legt einen
 **Release-Entwurf** mit Setup, Bereinigung und `.sha256`-Dateien an. Dafür als Repository-Secrets hinterlegen:
-`DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD`. Ohne Zertifikat bricht der Release ab,
-außer die Repository-Variable `ALLOW_UNSIGNED_RELEASE` ist `true`. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
+`DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD`. Solange diese Secrets fehlen, baut der
+Workflow unsigniert (mit Hinweis in den Release-Notizen); sobald sie hinterlegt sind, ist Signieren Pflicht. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
 
 **Manuell:**
 
