@@ -72,7 +72,7 @@ await Scenario("installer launch failure preserves verified cache", async () =>
         "manual retry reuses the verified installer without a second download");
 });
 
-await Scenario("failed marker commit and installer rollback", async () =>
+await Scenario("marker commit honours platform delete semantics", async () =>
 {
     using var fixture = new Fixture();
     fixture.Service.SetEnabled(true, startBackground: false);
@@ -80,11 +80,29 @@ await Scenario("failed marker commit and installer rollback", async () =>
     var metadata = Path.Combine(fixture.Directory, "ready.json");
     var path = await fixture.Service.TakeReadyInstallerAsync();
     using (var locked = new FileStream(metadata, FileMode.Open, FileAccess.Read, FileShare.Read))
-        Check(!fixture.Service.ConfirmInstallerStarted(path!) && File.Exists(metadata),
-            "locked cache marker after a successful process launch is a nonthrowing bookkeeping failure");
+    {
+        var committed = fixture.Service.ConfirmInstallerStarted(path!);
+        if (OperatingSystem.IsWindows())
+            Check(!committed && File.Exists(metadata),
+                "Windows denies deleting the open marker and reports a nonthrowing bookkeeping failure");
+        else
+            Check(committed && !File.Exists(metadata),
+                "Unix permits unlinking the open marker and commits the successful installer launch");
+    }
+});
+
+await Scenario("retained marker cannot repeat a rolled back installer", async () =>
+{
+    using var fixture = new Fixture();
+    fixture.Service.SetEnabled(true, startBackground: false);
+    await fixture.Service.CheckNowAsync();
+    var path = await fixture.Service.TakeReadyInstallerAsync();
+    Check(path is not null && File.Exists(Path.Combine(fixture.Directory, "ready.json")),
+        "rollback guard starts with a real retained ready marker and verified handoff");
     await File.WriteAllTextAsync(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.5.0");
     Check(await fixture.Service.TakeReadyInstallerAsync() is null,
         "a retained marker cannot reinstall a version that the installer already rolled back");
+    Check(!fixture.Service.CanStartInstaller(path!), "rollback also invalidates a previously returned installer path");
 });
 
 await Scenario("checksum asset fallback", async () =>
