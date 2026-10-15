@@ -21,6 +21,8 @@ public sealed record DynexSettings
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(2);
     /// <summary>Announced in signed AutoLAN handshakes so a version mismatch can be explained.</summary>
     public string? AppVersion { get; init; }
+    /// <summary>Relative priority for the shared download budget: 0.5 low, 1 normal, 2 high.</summary>
+    public double ShareWeight { get; init; } = 1;
 
     internal void Validate(bool requireKey)
     {
@@ -36,6 +38,8 @@ public sealed record DynexSettings
         if (PeerTtl < TimeSpan.FromSeconds(1) || PeerTtl > TimeSpan.FromSeconds(30) ||
             HeartbeatInterval < TimeSpan.FromMilliseconds(100) || HeartbeatInterval >= PeerTtl)
             throw new ArgumentException("Heartbeat muss kürzer als die Peer-Ablaufzeit sein.");
+        if (!WireAdvertisement.ValidWeight(ShareWeight))
+            throw new ArgumentException("Priorität muss zwischen 0,25 und 4 liegen.");
         if (AppVersion is not null && !AutoLanCrypto.IsVersion(AppVersion))
             throw new ArgumentException("App-Version ist ungültig.");
         foreach (var endpoint in DirectPeers)
@@ -62,7 +66,7 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
     string? Address = null, double? AppliedLimitMbps = null, string? Game = null, bool ShaperActive = false,
     double? IdleBaselineMs = null, string? LatencyTargetId = null, long? LatencySampleSequence = null,
     DateTimeOffset? IdleBaselineAtUtc = null, Guid? SessionId = null, double? UploadMbps = null,
-    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null);
+    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null, double? ShareWeight = null);
 
 /// <summary>
 /// A participant's currently configured/measured capacity and reserve policy, not its measured traffic.
@@ -95,7 +99,7 @@ public sealed record ProbeStats(DateTimeOffset TimestampUtc, double? ExternalLat
 public sealed record LimitDecision(double? DownloadLimitMbps, string Reason, bool GamingActive,
     double? IdleBaselineMs, bool AdaptiveReduced, DateTimeOffset? IdleBaselineAtUtc = null,
     double? SharedDownloadBudgetMbps = null, int ParticipantCount = 1, int GamingCount = 0,
-    double? SharedCapacityMbps = null, bool SharedBudgetComplete = false);
+    double? SharedCapacityMbps = null, bool SharedBudgetComplete = false, double? ShareWeightTotal = null, double LocalShareWeight = 1);
 
 internal static class LanAddress
 {

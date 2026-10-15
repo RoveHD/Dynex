@@ -47,7 +47,12 @@ public sealed class LimitPlanner
         var complete = proposals.Length == participants && (pool is null || pool / participants >= 0.1);
         // Gaming exempts game packets in the packet policy, not every download on that PC.
         // Every live PC can download in the background, so every PC shares this budget.
-        double? automatic = pool is { } shared ? Math.Max(0.1, shared / participants) : null;
+        // Priorities apply only when every live peer announces one; a peer without it (older
+        // release) assumes equal shares, so weighting then could overcommit the pool.
+        var weighted = live.All(p => p.ShareWeight is { } w && WireAdvertisement.ValidWeight(w));
+        var localWeight = weighted ? _settings.ShareWeight : 1;
+        var totalWeight = weighted ? localWeight + live.Sum(p => p.ShareWeight!.Value) : participants;
+        double? automatic = pool is { } shared ? Math.Max(0.1, weighted ? shared * localWeight / totalWeight : shared / participants) : null;
 
         if (!active || !_settings.AdaptiveEnabled)
         {
@@ -78,7 +83,7 @@ public sealed class LimitPlanner
             ? " · gemeinsames Budget unter technischem Mindestlimit"
             : " · gemeinsames Budget noch nicht mit allen PCs abgestimmt";
         return new(limit is { } value ? Math.Round(value, 2) : null, reason, active, _baseline, _factor < 0.999,
-            _baseline is null ? null : _baselineAt, pool, participants, gamers, capacity, complete);
+            _baseline is null ? null : _baselineAt, pool, participants, gamers, capacity, complete, totalWeight, localWeight);
     }
 
     private void Observe(ProbeStats? probe, DateTimeOffset now, bool gaming, double? budget, bool adjust, bool allowRecovery)

@@ -184,7 +184,7 @@ public sealed class AutoLanPeerService : IPeerService
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
                                 UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal,
-                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null), tick);
+                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight), tick);
                             _names[id] = wire.DeviceName;
                             if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
                             Interlocked.Decrement(ref _rejected);
@@ -279,7 +279,7 @@ public sealed class AutoLanPeerService : IPeerService
                         _settings.DeviceName, local.Gaming, throughputIsFresh ? local.Download : null, local.Latency, local.Limit, local.Game, local.Shaper,
                         local.Baseline, local.Target, local.SampleSequence > 0 ? local.SampleSequence : null, local.BaselineAt,
                         throughputIsFresh ? local.Upload : null,
-                        throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null);
+                        throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight);
                     foreach (var session in _channels.Values)
                         if (EndpointAllowed(session.Endpoint.Address)) statuses.Add((_crypto.Encrypt(session.Crypto, wire), session.Endpoint));
                 }

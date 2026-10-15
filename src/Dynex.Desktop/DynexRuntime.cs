@@ -116,7 +116,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         CapacityMeasured = Settings.CapacityMeasuredAtUtc is not null,
         LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - Settings.BackgroundPercent,
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
-        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion,
+        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion, ShareWeight = Settings.SharePriority,
         DirectPeers = SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
     };
     private static int GetIsolatedPeerPort()
@@ -327,7 +327,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
-        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
+        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
         if (activePlanner == null || plannerPolicy != policy)
         { activePlanner = new LimitPlanner(CoreSettings()); plannerPolicy = policy; }
         var planner = activePlanner;
@@ -371,10 +371,11 @@ public sealed class DynexRuntime : IAsyncDisposable
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
                                 settings.Mode != GamingMode.Off && ForegroundGame.Find(scanGames(settings.GameProcesses), readForeground()) is not null);
                     var driver = shaper.Status;
-                    var sharedShare = decision.SharedDownloadBudgetMbps is { } pool
-                        ? Math.Floor(pool / decision.ParticipantCount * 100) / 100 : (double?)null;
-                    bool ConfirmedShare(bool active, double? applied) => active && applied is { } rate &&
-                        double.IsFinite(rate) && rate > 0 && (sharedShare is null || rate <= sharedShare + .000001);
+                    // Each PC's confirmed limit must stay within its (priority-weighted) part of the pool.
+                    double? ShareFor(double weight) => decision.SharedDownloadBudgetMbps is { } pool
+                        ? Math.Floor(pool * weight / (decision.ShareWeightTotal ?? decision.ParticipantCount) * 100) / 100 : null;
+                    bool ConfirmedShare(bool active, double? applied, double weight) => active && applied is { } rate &&
+                        double.IsFinite(rate) && rate > 0 && (ShareFor(weight) is not { } share || rate <= share + .000001);
                     service.Publish(gaming, measurement.Down, measurement.External.Current, driver.Mbps, game[..Math.Min(80, game.Length)], driver.Active,
                         decision.IdleBaselineMs, latencyTarget, decision.IdleBaselineAtUtc, uploadMbps: measurement.Up);
                     var devices = new List<DeviceView> { new(settings.DeviceName + " · dieser PC", measurement.Adapter, gaming, game, driver.Mbps, driver.Active ? "Begrenzt" : gaming ? "Gaming" : "Unbegrenzt", measurement.Down, measurement.Up) };
@@ -408,8 +409,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
                         decision.SharedDownloadBudgetMbps, decision.ParticipantCount, decision.GamingCount,
                         decision.SharedCapacityMbps, decision.SharedBudgetComplete,
-                        (ConfirmedShare(driver.Active, driver.Mbps) ? 1 : 0) +
-                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps)),
+                        (ConfirmedShare(driver.Active, driver.Mbps, decision.LocalShareWeight) ? 1 : 0) +
+                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps, p.ShareWeight ?? 1)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,

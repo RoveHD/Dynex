@@ -186,7 +186,7 @@ public sealed class PeerService : IPeerService
                         wire.DownloadMbps, wire.LatencyMs, now, endpoint.Address.ToString(), wire.AppliedLimitMbps,
                         wire.Game, wire.ShaperActive, wire.IdleBaselineMs, wire.LatencyTargetId,
                         wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId, UploadMbps: wire.UploadMbps,
-                        BudgetProposal: wire.BudgetProposal), wire.SessionId, tick, endpoint);
+                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight), wire.SessionId, tick, endpoint);
                     Interlocked.Increment(ref _accepted);
                     changed = true;
                 }
@@ -226,7 +226,7 @@ public sealed class PeerService : IPeerService
                     throughputIsFresh ? state.Download : null, state.Latency, state.Limit, state.Game, state.Shaper,
                     state.Baseline, state.Target, state.SampleSequence > 0 ? state.SampleSequence : null, state.BaselineAt,
                     throughputIsFresh ? state.Upload : null,
-                    throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null));
+                    throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight));
                 IPEndPoint[] targets;
                 bool expired;
                 lock (_gate)

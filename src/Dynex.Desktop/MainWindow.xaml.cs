@@ -122,6 +122,7 @@ public partial class MainWindow : Window
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
+        PriorityCombo.SelectedIndex = s.SharePriority switch { 0.5 => 0, 2 => 2, _ => 1 };
         _loading = false;
         _updates?.SetEnabled(s.AutoUpdate);
     }
@@ -332,6 +333,16 @@ public partial class MainWindow : Window
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = null });
         ErrorText.Text = "Manuelles Limit aufgehoben.";
     });
+    private async void PriorityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || PriorityCombo.SelectedItem is not ComboBoxItem item ||
+            !double.TryParse(item.Tag?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var priority)) return;
+        await RunUiAction(async () =>
+        {
+            await _runtime.SaveSettingsAsync(_runtime.Settings with { SharePriority = priority });
+            ErrorText.Text = $"Priorität gespeichert: {item.Content}.";
+        });
+    }
     private async void ModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || ModeCombo.SelectedItem is not ComboBoxItem item || Enum.TryParse<GamingMode>(item.Tag?.ToString(), out var mode) is false) return;

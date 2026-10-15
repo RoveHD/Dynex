@@ -21,6 +21,7 @@ public sealed record UserSettings
     public bool BetaUpdates { get; init; }
     public bool AutoConnectLan { get; init; } = true;
     public bool Notifications { get; init; } = true;
+    public double SharePriority { get; init; } = 1;
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";

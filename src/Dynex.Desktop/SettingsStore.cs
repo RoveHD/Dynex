@@ -62,6 +62,7 @@ internal sealed class SettingsStore
         Range(value.BackgroundPercent, 10, 95, "Downloadbudget (%)");
         Range(value.ReservePerGamerMbps, 0, value.CapacityMbps, "Reserve je Gaming-PC");
         if (value.ManualLimitMbps is double limit) Range(limit, 0.1, 10000, "Manuelles Limit");
+        if (value.SharePriority is not (0.5 or 1 or 2)) throw new ArgumentException("Priorität muss Niedrig, Normal oder Hoch sein.");
         foreach (var latency in new[] { value.IdleLatencyMs, value.LoadedLatencyMs })
             if (latency is double ms) Range(ms, 0, 10000, "Gemessener Ping");
         if (!Enum.IsDefined(value.Mode)) throw new ArgumentException("Ungültiger Gaming-Modus.");

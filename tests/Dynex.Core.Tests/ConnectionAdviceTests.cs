@@ -156,3 +156,22 @@ internal static class BufferbloatTests
         check(Bufferbloat.Median([10, null, 30, 20]) == 20 && Bufferbloat.Median([5, null]) is null, "median ignores lost pings and needs two answers");
     }
 }
+
+internal static class ShareWeightTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var settings = new DynexSettings { LineMbps = 100, HeadroomPercent = 40, GamingReserveMbps = 0, AdaptiveEnabled = false, ShareWeight = 2 };
+        var proposal = new DownloadBudgetProposal(100, 40, 0);
+        PeerAdvertisement Peer(double? weight) => new(Guid.NewGuid(), "PC 2", true, null, null, now, BudgetProposal: proposal, ShareWeight: weight);
+        var high = new LimitPlanner(settings).Plan(false, [Peer(1)], now: now);
+        check(high.DownloadLimitMbps == 40 && high.ShareWeightTotal == 3, "high-priority PC receives two thirds of a 60 Mbit/s pool");
+        var low = new LimitPlanner(settings with { ShareWeight = 1 }).Plan(false, [Peer(2)], now: now);
+        check(low.DownloadLimitMbps == 20, "the other PC receives the matching one third, so shares never exceed the pool");
+        var legacy = new LimitPlanner(settings).Plan(false, [Peer(null)], now: now);
+        check(legacy.DownloadLimitMbps == 30, "priorities fall back to equal shares while an older peer announces none");
+        try { new LimitPlanner(settings with { ShareWeight = 10 }); check(false, "out-of-range priority accepted"); }
+        catch (ArgumentException) { check(true, "out-of-range priorities are rejected"); }
+    }
+}

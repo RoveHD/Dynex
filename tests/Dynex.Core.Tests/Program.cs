@@ -281,6 +281,7 @@ await ConnectionAdviceTests.Run(Check);
 LimitExplanationTests.Run(Check);
 StatusNotificationTests.Run(Check);
 BufferbloatTests.Run(Check);
+ShareWeightTests.Run(Check);
 await PeerConnectionTests.Run(Check);
 await SharedBudgetTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");
