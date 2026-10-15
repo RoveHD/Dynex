@@ -177,6 +177,11 @@ if (-not $nsis) {
     $cache = Join-Path $env:LOCALAPPDATA 'electron-builder/Cache'
     $nsis = Get-ChildItem -LiteralPath $cache -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
 }
+if (-not $nsis) {
+    # Standard NSIS installation (also used by the CI runner).
+    $nsis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | ForEach-Object { Get-Item -LiteralPath $_ } | Select-Object -First 1
+}
 if (-not $nsis) { throw 'NSIS makensis.exe nicht gefunden. Es wurde nichts global installiert.' }
 $nsisPath = if ($nsis -is [System.IO.FileInfo]) { $nsis.FullName } else { $nsis.Source }
 

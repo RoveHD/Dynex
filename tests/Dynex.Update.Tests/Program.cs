@@ -207,7 +207,9 @@ await Scenario("defer gaming and resume", async () =>
     using var fixture = new Fixture(deferInterval: TimeSpan.FromMilliseconds(20));
     fixture.Gaming = true;
     fixture.Service.SetEnabled(true);
-    await fixture.Service.CheckNowAsync();
+    // Wait for the background loop's own check. An extra manual CheckNowAsync could race it
+    // and legitimately issue a second API request.
+    for (var i = 0; i < 250 && !fixture.Service.Status.Message.Contains("Spiel"); i++) await Task.Delay(20);
     Check(fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("Spiel"), "gaming defers installer network traffic");
     await Task.Delay(100);
     Check(fixture.Handler.ApiCalls == 1, "gaming polls local state without repeated GitHub requests");

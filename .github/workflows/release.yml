@@ -24,8 +24,10 @@ jobs:
         with:
           dotnet-version: 9.0.x
       - name: Install NSIS
+        shell: pwsh
         run: |
-          choco install nsis -y --no-progress
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { throw 'NSIS-Installation fehlgeschlagen.' }
           "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Version from tag
         id: version
