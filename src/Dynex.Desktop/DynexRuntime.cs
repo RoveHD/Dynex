@@ -43,6 +43,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     private readonly RouterTrafficMonitor? routerTraffic;
     private Task<RouterTrafficSample?>? routerSample;
     private RouterTrafficSample? lastRouterSample;
+    private long routerSampleStarted;
     private SessionSummary? lastSession;
     internal static readonly IReadOnlyDictionary<string, double> ProfileBackgroundPercent =
         new Dictionary<string, double> { ["Turnier"] = 40, ["Standard"] = 65, ["Entspannt"] = 85 };
@@ -432,8 +433,11 @@ public sealed class DynexRuntime : IAsyncDisposable
                     if (decision.DownloadLimitMbps.HasValue && !driver.Active && !IsSpeedTestRunning)
                         detail = "Gaming erkannt. Die Downloadbegrenzung ist noch nicht aktiv: " + driver.Message;
                     // Router discovery can take seconds; never let it delay game detection or limits.
-                    if (routerTraffic is not null && routerSample is not { IsCompleted: false })
+                    // Every six seconds is enough for a home overview and spares the router's CPU.
+                    if (routerTraffic is not null && routerSample is not { IsCompleted: false } &&
+                        (routerSampleStarted == 0 || Stopwatch.GetElapsedTime(routerSampleStarted) >= TimeSpan.FromSeconds(6)))
                     {
+                        routerSampleStarted = Stopwatch.GetTimestamp();
                         if (routerSample is { IsCompletedSuccessfully: true }) lastRouterSample = routerSample.Result;
                         routerSample = routerTraffic.SampleAsync(token);
                     }

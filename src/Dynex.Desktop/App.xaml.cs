@@ -38,6 +38,7 @@ public partial class App : System.Windows.Application
                 Shutdown(DesktopLifecycle.ExitCode);
                 return;
             }
+            if (DesktopLifecycle.ProfilePath is null) Dynex.Native.ProcessEfficiency.UseBackgroundMode();
             _runtime = new DynexRuntime(DesktopLifecycle.ProfilePath);
             string? startupWarning = DesktopLifecycle.ProfilePath is null && CrashLog.TakeUnseen() is not null
                 ? "DYNEX wurde zuletzt unerwartet beendet. Ein lokaler Bericht liegt bei; „Diagnose exportieren“ enthält ihn." : null;

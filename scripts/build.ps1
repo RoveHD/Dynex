@@ -87,11 +87,11 @@ foreach ($path in $cleanPaths) {
 New-Item -ItemType Directory -Force -Path $desktopOut, $shaperOut, $docsOut | Out-Null
 
 Write-Host 'Veröffentliche DYNEX Desktop (self-contained win-x64)...'
-& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=$Version -o $desktopOut
+& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:Version=$Version -o $desktopOut
 if ($LASTEXITCODE -ne 0) { throw "Desktop-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 
 Write-Host 'Veröffentliche DYNEX Shaper (self-contained win-x64)...'
-& dotnet publish $shaperProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $shaperOut
+& dotnet publish $shaperProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:Version=$Version -o $shaperOut
 if ($LASTEXITCODE -ne 0) { throw "Shaper-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 
 $desktopExe = Join-Path $desktopOut 'DYNEX.exe'

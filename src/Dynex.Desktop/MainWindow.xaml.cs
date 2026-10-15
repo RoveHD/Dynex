@@ -79,6 +79,8 @@ public partial class MainWindow : Window
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
         _runtime.Updated += Runtime_Updated;
+        IsVisibleChanged += (_, _) => RenderPendingSnapshot();
+        StateChanged += (_, _) => RenderPendingSnapshot();
         if (_updates is not null) _updates.Changed += UpdateStatus_Changed;
         LoadSettings(_runtime.Settings);
         CheckUpdatesButton.IsEnabled = _updates is not null;
@@ -119,7 +121,20 @@ public partial class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(note.Text)) _tray.ShowBalloonTip(5000, note.Title, note.Text, Forms.ToolTipIcon.Info);
     }
 
-    private void Runtime_Updated(RuntimeSnapshot snapshot) => Dispatcher.BeginInvoke(new Action(() => RenderSnapshot(snapshot)));
+    private RuntimeSnapshot? _pendingSnapshot;
+    // While DYNEX sits in the notification area (typically during games) only the tray state is updated.
+    // Charts, device lists and texts are rendered once when the window becomes visible again.
+    private void Runtime_Updated(RuntimeSnapshot snapshot) => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
+    {
+        if (IsVisible && WindowState != WindowState.Minimized) { _pendingSnapshot = null; RenderSnapshot(snapshot); }
+        else { _pendingSnapshot = snapshot; UpdateTray(snapshot); }
+    }));
+    private void RenderPendingSnapshot()
+    {
+        if (_pendingSnapshot is not { } pending || !IsVisible || WindowState == WindowState.Minimized) return;
+        _pendingSnapshot = null;
+        RenderSnapshot(pending);
+    }
     private void LoadSettings(UserSettings s)
     {
         _loading = true;

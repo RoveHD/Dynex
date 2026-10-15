@@ -216,6 +216,8 @@ public sealed class TrafficOwnership : IDisposable
     private OwnershipSnapshot _snapshot = new([], DateTimeOffset.UtcNow, Stopwatch.GetTimestamp(), false);
     private string? _lastError;
     private bool _disposed;
+    private IReadOnlyDictionary<int, Dynex.Native.ProcessTable.Identity> _processTable = new Dictionary<int, Dynex.Native.ProcessTable.Identity>();
+    private long _processTableTick;
     public OwnershipSnapshot Snapshot => Volatile.Read(ref _snapshot);
     public string? LastError => Volatile.Read(ref _lastError);
 
@@ -232,9 +234,16 @@ public sealed class TrafficOwnership : IDisposable
                 ReadTable(rows, true, 2); ReadTable(rows, false, 2);
                 ReadTable(rows, true, 23); ReadTable(rows, false, 23);
                 var identities = new Dictionary<int, (DateTimeOffset? Started, string? Name)>();
-                // One handle-free system query per refresh instead of opening every socket owner (including
-                // anti-cheat protected games) several times per second.
-                var table = Dynex.Native.ProcessTable.Snapshot();
+                // Handle-free process identities (never opening the game). The table is re-read only when a
+                // socket belongs to a PID it does not know yet, and otherwise at most every two seconds;
+                // the 250 ms refresh then costs only the IP Helper table reads.
+                var table = _processTable;
+                if (Stopwatch.GetElapsedTime(_processTableTick, tick) >= TimeSpan.FromSeconds(2) ||
+                    rows.Any(row => row.ProcessId > 0 && !table.ContainsKey(row.ProcessId)))
+                {
+                    table = _processTable = Dynex.Native.ProcessTable.Snapshot();
+                    _processTableTick = tick;
+                }
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i];

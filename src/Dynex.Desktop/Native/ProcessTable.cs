@@ -17,12 +17,32 @@ internal static class ProcessTable
     [DllImport("ntdll.dll")]
     private static extern uint NtQuerySystemInformation(int informationClass, nint buffer, int length, out int returnLength);
 
-    /// <summary>Empty on non-Windows or on failure; callers then treat identities as unknown.</summary>
+    private static readonly object Gate = new();
+    private static int _bufferSize = 256 * 1024;
+    private static (long Tick, IReadOnlyDictionary<int, Identity> Table)? _recent;
+
+    /// <summary>
+    /// Empty on non-Windows or on failure; callers then treat identities as unknown. Several callers in
+    /// one monitoring cycle (game scan, foreground check, protection check) share one system query.
+    /// </summary>
     internal static IReadOnlyDictionary<int, Identity> Snapshot()
+    {
+        lock (Gate)
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (_recent is { } recent && System.Diagnostics.Stopwatch.GetElapsedTime(recent.Tick, now) < TimeSpan.FromMilliseconds(200))
+                return recent.Table;
+            var table = Query();
+            _recent = (now, table);
+            return table;
+        }
+    }
+
+    private static Dictionary<int, Identity> Query()
     {
         var result = new Dictionary<int, Identity>();
         if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess) return result;
-        var size = 512 * 1024;
+        var size = _bufferSize;
         for (var attempt = 0; attempt < 6; attempt++)
         {
             var buffer = Marshal.AllocHGlobal(size);
@@ -31,6 +51,7 @@ internal static class ProcessTable
                 var status = NtQuerySystemInformation(SystemProcessInformation, buffer, size, out var needed);
                 if (status == StatusInfoLengthMismatch) { size = Math.Max(size * 2, needed + 64 * 1024); continue; }
                 if (status != 0) return result;
+                _bufferSize = size; // Start with the size that worked; avoids repeated retries.
                 Parse(buffer, size, result);
                 return result;
             }

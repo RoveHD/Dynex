@@ -22,6 +22,7 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        Dynex.Native.ProcessEfficiency.UseLatencyCriticalMode();
         try { return await RunAsync(args); }
         catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
     }

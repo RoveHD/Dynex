@@ -14,6 +14,10 @@ internal static class SteamAppInfoReader
     private const int MaxTableBytes = 16 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
 
+    private static readonly object CacheGate = new();
+    private static readonly Dictionary<string, (DateTime Modified, long Length, IReadOnlyDictionary<uint, string> Types)> Cache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     internal static IReadOnlyDictionary<uint, string> ReadTypes(string path)
     {
         try
@@ -21,13 +25,20 @@ internal static class SteamAppInfoReader
             // Do not prevent Steam updating/replacing its own cache. Publish a
             // snapshot only when its bounded read completed without a file change.
             var modified = File.GetLastWriteTimeUtc(path);
+            // appinfo.vdf is often 50-150 MB. Re-parse only when Steam actually rewrote it,
+            // instead of allocating and parsing the whole file on every catalog refresh.
+            var length = new FileInfo(path).Length;
+            lock (CacheGate)
+                if (Cache.TryGetValue(path, out var cached) && cached.Modified == modified && cached.Length == length) return cached.Types;
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (file.Length is < 12 or > MaxFileBytes) return new Dictionary<uint, string>();
             var bytes = new byte[checked((int)file.Length)];
             file.ReadExactly(bytes);
             if (file.Length != bytes.Length || File.GetLastWriteTimeUtc(path) != modified)
                 return new Dictionary<uint, string>();
-            return Parse(bytes);
+            var types = Parse(bytes);
+            lock (CacheGate) Cache[path] = (modified, bytes.Length, types);
+            return types;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or
             NotSupportedException or System.Security.SecurityException or OverflowException)

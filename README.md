@@ -24,6 +24,7 @@ DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanage
 - **Erster Start:** Ein Assistent prüft live privates Netzwerk, zweiten PC und Speedtest. Bestehende Installationen mit Messung sehen ihn nicht.
 - **Beta-Kanal, Sicherung, Absturzbericht:** Vorabversionen optional unter Updates; Einstellungen sichern/wiederherstellen (ohne Schlüssel und Speedtest-Wert); unerwartete Abstürze werden lokal protokolliert und in „Diagnose exportieren“ aufgenommen – es wird nichts hochgeladen.
 - **Anti-Cheat-sicher:** Prozesserkennung ohne Prozess-Handles, Spielpakete standardmäßig unverändert und nie verzögert, automatische API-Prüfung in der CI. [Details und Restrisiko](docs/anticheat.md)
+- **Schonend:** Die App läuft mit niedriger CPU-Priorität im Windows-Effizienzmodus und zeichnet nichts, solange sie im Infobereich liegt. Steams Spielekatalog wird nur nach Änderungen neu gelesen, und Router-Werte werden alle 6 s abgefragt. Der Paket-Helper läuft dagegen bewusst mit erhöhter Priorität, damit er keine Pakete aufhält.
 - **CI:** GitHub Actions führt bei jedem Push alle portablen und Windows-Tests aus und baut den Installer; ein Tag `vX.Y.Z` erzeugt einen signierten Release-Entwurf (`.github/workflows`).
 
 ## Schnellstart

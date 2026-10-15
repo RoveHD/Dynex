@@ -10,6 +10,8 @@
     <Version>1.0.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/dynex.ico</ApplicationIcon>
+    <!-- Background tray app: no extra background GC thread, smaller heap. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Dynex.Core/Dynex.Core.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets/dynex.ico" /></ItemGroup>
