@@ -40,13 +40,21 @@ public sealed class GitHubUpdateService : IDisposable
     private bool deferred;
     private long generation;
     private UpdateStatus status = new("Automatische Updates sind ausgeschaltet.");
+    private readonly Func<string, SignatureCheck> inspectSignature;
+    private readonly Lazy<SignatureCheck> currentSignature;
+    /// <summary>Written by the installer after it restored the previous version.</summary>
+    internal const string RolledBackFile = "rolled-back.txt";
 
     public GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> gameActive)
         : this(cacheDirectory, currentVersion, gameActive, null, TimeSpan.FromHours(6), TimeSpan.FromSeconds(30), 512 * 1024) { }
 
     internal GitHubUpdateService(string cacheDirectory, Version currentVersion, Func<bool> gameActive,
-        HttpClient? httpClient, TimeSpan checkInterval, TimeSpan deferredInterval, int bytesPerSecond)
+        HttpClient? httpClient, TimeSpan checkInterval, TimeSpan deferredInterval, int bytesPerSecond,
+        Func<string, SignatureCheck>? inspectSignature = null, SignatureCheck? currentSignature = null)
     {
+        this.inspectSignature = inspectSignature ?? AuthenticodeVerifier.Inspect;
+        this.currentSignature = new(() => currentSignature ??
+            (Environment.ProcessPath is { } self ? this.inspectSignature(self) : SignatureCheck.Unsigned));
         directory = Path.GetFullPath(cacheDirectory);
         this.currentVersion = Normalize(currentVersion);
         this.gameActive = gameActive;
@@ -60,6 +68,22 @@ public sealed class GitHubUpdateService : IDisposable
 
     public event Action? Changed;
     public UpdateStatus Status { get { lock (sync) return status; } }
+
+    /// <summary>A newer version whose installation failed and was rolled back; it is not downloaded again automatically.</summary>
+    public string? RolledBackVersion
+    {
+        get
+        {
+            try
+            {
+                var path = Path.Combine(directory, RolledBackFile);
+                if (!File.Exists(path) || new FileInfo(path).Length > 64) return null;
+                var text = File.ReadAllText(path).Trim();
+                return TryVersion("v" + text, out var version) && version > currentVersion ? version.ToString(3) : null;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+        }
+    }
 
     public void SetEnabled(bool value, bool startBackground = true)
     {
@@ -158,6 +182,12 @@ public sealed class GitHubUpdateService : IDisposable
                 PublishFor(epoch, new($"Version {release.Version} verfügbar. Automatische Updates zum Herunterladen einschalten.", AvailableVersion: release.Version.ToString(3)));
                 return;
             }
+            if (RolledBackVersion == release.Version.ToString(3))
+            {
+                PublishFor(epoch, new($"Version {release.Version} ließ sich nicht installieren; DYNEX hat die vorherige Version wiederhergestellt. Eine manuelle Installation über GitHub ist möglich.",
+                    AvailableVersion: release.Version.ToString(3)));
+                return;
+            }
             if (gameActive()) { Defer(epoch, release.Version); return; }
             Directory.CreateDirectory(directory);
             var cached = await ReadVerifiedReadyAsync(cancellation).ConfigureAwait(false);
@@ -187,6 +217,8 @@ public sealed class GitHubUpdateService : IDisposable
                 throw new InvalidDataException("Die Downloadgröße stimmt nicht mit GitHub überein.");
             await DownloadAsync(installer.Content, partial, release.Size, hash, cancellation).ConfigureAwait(false);
             cancellation.ThrowIfCancellationRequested();
+            if (SignaturePolicy.Reject(currentSignature.Value, inspectSignature(partial)) is { } rejected)
+                throw new UpdateRejectedException(rejected);
             lock (sync)
             {
                 if (disposed || !enabled || generation != epoch) return;
@@ -200,6 +232,7 @@ public sealed class GitHubUpdateService : IDisposable
             PublishFor(epoch, Ready(release.Version));
         }
         catch (DownloadDeferredException) { Defer(epoch, null); }
+        catch (UpdateRejectedException error) { PublishFor(epoch, new($"Update verworfen: {error.Message} Es wird nichts installiert.")); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or FormatException or InvalidOperationException or OperationCanceledException or OverflowException or UnauthorizedAccessException)
         {
@@ -226,6 +259,17 @@ public sealed class GitHubUpdateService : IDisposable
         {
             var ready = await ReadVerifiedReadyAsync(token).ConfigureAwait(false);
             if (ready is null) return null;
+            // Check the publisher again immediately before execution, not only after download.
+            if (SignaturePolicy.Reject(currentSignature.Value, inspectSignature(Path.Combine(directory, ready.FileName))) is { } rejected)
+            {
+                lock (sync)
+                {
+                    TryDelete(Path.Combine(directory, "ready.json"));
+                    TryDelete(Path.Combine(directory, ready.FileName));
+                }
+                PublishFor(epoch, new($"Update verworfen: {rejected} Es wird nichts installiert."));
+                return null;
+            }
             lock (sync)
             {
                 if (!enabled || disposed || epoch != generation) return null;
@@ -440,4 +484,5 @@ public sealed class GitHubUpdateService : IDisposable
     private sealed record Release(Version Version, string FileName, Uri InstallerUri, Uri? HashUri, string? Hash, long Size);
     private sealed record ReadyUpdate(string Version, string FileName, string Hash, long Size);
     private sealed class DownloadDeferredException : Exception;
+    private sealed class UpdateRejectedException(string message) : Exception(message);
 }

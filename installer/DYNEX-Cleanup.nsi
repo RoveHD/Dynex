@@ -4,7 +4,7 @@ ManifestDPIAware true
 !include "LogicLib.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.5"
+  !define APP_VERSION "1.0.6"
 !endif
 !ifndef PUBLISH_ROOT
   !error "PUBLISH_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -13,6 +13,11 @@ ManifestDPIAware true
   !error "OUTPUT_FILE fehlt."
 !endif
 
+; Optional Authenticode signing. scripts/build.ps1 passes SIGN_SCRIPT when a
+; code-signing certificate is configured; %1 is the file NSIS just produced.
+!ifdef SIGN_SCRIPT
+  !finalize '"${SIGN_SCRIPT}" "%1"' = 0
+!endif
 Name "DYNEX · Reste entfernen"
 OutFile "${OUTPUT_FILE}"
 VIProductVersion "${APP_VERSION}.0"

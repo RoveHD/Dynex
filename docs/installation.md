@@ -1,6 +1,6 @@
-# DYNEX 1.0.5 installieren und entfernen
+# DYNEX 1.0.6 installieren und entfernen
 
-Das Release-Setup `artifacts/DYNEX-Setup-1.0.5.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an; Programme und Setup sind nicht codesigniert. `artifacts/DYNEX-Cleanup-1.0.5.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
+Das Release-Setup `artifacts/DYNEX-Setup-1.0.6.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an. Ab 1.0.6 kann der Build App, Helper, Setup, Uninstaller und Bereinigungsprogramm mit einem Authenticode-Zertifikat signieren ([Signieren](updates.md#signieren)); ob ein Release signiert ist, zeigt **Eigenschaften → Digitale Signaturen** der Setup-Datei. `artifacts/DYNEX-Cleanup-1.0.6.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
 
 ## Start im privaten LAN
 
@@ -22,6 +22,21 @@ Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbare
 
 ## Wenn der zweite PC fehlt
 
+Ab 1.0.6 nennt DYNEX bei einem Verbindungsproblem eine beobachtete Ursache und genau einen nächsten Schritt, in der Übersicht und unter **Einstellungen → Netzwerk**:
+
+| Anzeige | Bedeutung | Nächster Schritt |
+| --- | --- | --- |
+| Netzwerk nicht privat | Keine Adresse in einem privaten Windows-Netzwerk | Windows-Netzwerk öffnen und das Profil auf beiden PCs auf **Privat** stellen |
+| Firewallfreigabe fehlt | Die eigene DYNEX-Regel ist nicht vorhanden | DYNEX-Setup auf diesem PC erneut ausführen |
+| Andere DYNEX-Version | Der andere PC meldet eine abweichende Version (ab 1.0.6 signiert im Handshake; ältere als „vor 1.0.6“) oder ein neueres Protokoll | Den älteren PC über **Updates → Jetzt prüfen** aktualisieren |
+| Anderer Verbindungsmodus | Ein PC verbindet automatisch, der andere über eine private Gruppe | Auf beiden PCs denselben Modus wählen bzw. Code neu importieren |
+| Zeitabweichung | Uhrzeiten weichen mehr als 30 s ab | Windows-Uhrzeit auf beiden PCs synchronisieren |
+| Anderes Netz | Pakete kommen über eine nicht freigegebene Schnittstelle | Beide PCs in dasselbe Heimnetz (kein Gast-WLAN) |
+| PC antwortet nicht mehr | Ein verbundener PC ist verschwunden (Standby, Netzwechsel, DYNEX beendet) | Den genannten PC aufwecken und DYNEX dort prüfen |
+| Anderer PC antwortet nicht | Noch nie Pakete eines anderen PCs empfangen | DYNEX dort starten, sonst Gruppencode verwenden und Router-Client-Isolation abschalten |
+
+Nach Standby baut DYNEX die LAN-Verbindung neu auf (frische signierte Sitzung). Kurzzeitige Empfangsfehler beim WLAN-Wechsel beenden die Verbindung nicht mehr dauerhaft; DYNEX versucht es mit wachsender Pause bis 5 s erneut. Ein anderer PC erscheint nach Rückkehr in dasselbe private Netz in der Regel innerhalb weniger Sekunden wieder.
+
 Ab 1.0.5 zeigt **Netzwerk prüfen** unter Einstellungen → Netzwerk die beobachtete Verbindungslage. Der Mauszeiger über dem Hinweis zeigt Modus, lokale Adressen und gesendete/empfangene Pakete. Die Prüfung liest zusätzlich die DYNEX-Firewallfreigabe; sie verändert keine Netzwerkprofile oder Sperrregeln. Der Diagnoseexport enthält diese Werte und die geprüften privaten LAN-Adressen, jedoch keine Kopplungsschlüssel. Fehlende UDP-Nachrichten beweisen allein keine bestimmte Firewall- oder Routerursache.
 
 Für die direkte Kopplung beide PCs aktualisieren. Auf dem ersten PC **Kopieren** wählen und den neu erzeugten Code auf dem zweiten PC **importieren**. Beide verwenden damit dieselbe private Gruppe. Der Code enthält neben dem Gruppenschlüssel nur geprüfte private lokale IPv4-Adressen des ersten PCs. Der zweite PC sendet direkt dorthin; der erste antwortet nur an erfolgreich authentifizierte, aktuelle Teilnehmer. Damit benötigt diese Verbindung kein Multicast. Der Code ist geheim zu halten.
@@ -40,13 +55,15 @@ Der Filter ist adapter- und systemweit. Andere VPN-, Sicherheits-, Virtualisieru
 
 ## Aktualisieren und entfernen
 
+**Rückkehr bei fehlgeschlagenem Update (ab 1.0.6):** Vor dem Überschreiben sichert das Setup `DYNEX.exe` und den Helper nach `%LOCALAPPDATA%\Programs\DYNEX\rollback`. Danach startet es die neue Version einmal mit `--self-test <Version>`; sie prüft Version, vollständigen Helper und das Lesen der vorhandenen Einstellungen, ohne Netzwerk oder Filter zu starten. Schlägt dieser Test, das Kopieren oder die Netzwerkeinrichtung fehl, stellt das Setup die gesicherte Version samt angezeigter Versionsnummer wieder her und startet sie. Die fehlgeschlagene Version wird in `%LOCALAPPDATA%\DYNEX\updates\rolled-back.txt` vermerkt und nicht automatisch erneut geladen; DYNEX zeigt beim Start einen Hinweis. Einstellungen, Kopplungen und Identität liegen außerhalb des Programmordners und bleiben unberührt. Nach erfolgreichem Update wird die Sicherung gelöscht. Kann die Sicherung nicht angelegt werden, bricht das Setup ab, ohne Dateien zu überschreiben (Code 14).
+
 Vor Installation, Aktualisierung oder Deinstallation sendet das Setup `DYNEX.exe --shutdown` über die benutzerspezifische Shutdown-Steuerung. DYNEX meldet Erfolg erst nach geordnetem Beenden und Freigabe des Singletons. Das Setup wartet bis zu 20 Sekunden auf den bestätigten Abschluss und bricht bei Fehler oder Timeout ab. Es beendet keine fremden Prozesse zwangsweise.
 
 Die Deinstallation gibt zunächst die laufende Paketverarbeitung frei und bereinigt dann die Systemkomponenten. Das Setup speichert ab 1.0.4 einen administrativ geschützten Herkunftsnachweis unter `HKLM\SOFTWARE\DYNEX\Setup`, der Updates überdauert. Einen von DYNEX neu installierten Filter entfernt die letzte registrierte DYNEX-Installation über den offiziellen Windows-Installer. Ein nachweislich schon vorher vorhandener Filter bleibt erhalten. Auch ein noch von einer weiteren registrierten DYNEX-Installation benötigter Filter bleibt bestehen; das Ergebnis nennt diesen Grund.
 
 **Ältere Installationen:** Bis einschließlich 1.0.3 wurde die Herkunft nicht aufgezeichnet. Bei dem bekannten Windows-Packet-Filter-Paket ohne eindeutigen Nachweis fragt die Deinstallation einmal ausdrücklich nach der Entfernung. Bei Nein oder im unbeaufsichtigten Modus wird die Bereinigung angehalten. Das vermeidet eine unbemerkte Entfernung gemeinsam genutzter Komponenten. Andere unbekannte Filterpakete werden nicht per Name oder Registry-Löschung entfernt.
 
-**Bereits deinstalliert:** Starte `DYNEX-Cleanup-1.0.5.exe` auf dem betroffenen PC unter dem Windows-Benutzer, der DYNEX installiert hatte. Das Programm bereinigt zurückgebliebene Komponenten für den festen damaligen Installationspfad. Es installiert keine Voraussetzungen und startet keine Messung oder Paketverarbeitung. Ist die DYNEX-App noch installiert, fordert es die normale Deinstallation an. Die gleiche Herkunftsprüfung und gegebenenfalls ausdrückliche Bestätigung gelten auch hier. Alternativ kann das bekannte Paket über **Windows-Einstellungen → Apps → Installierte Apps → Windows Packet Filter x64** mit dessen offiziellem Uninstaller entfernt werden; dies entfernt allein noch keine übrigen DYNEX-Daten.
+**Bereits deinstalliert:** Starte `DYNEX-Cleanup-1.0.6.exe` auf dem betroffenen PC unter dem Windows-Benutzer, der DYNEX installiert hatte. Das Programm bereinigt zurückgebliebene Komponenten für den festen damaligen Installationspfad. Es installiert keine Voraussetzungen und startet keine Messung oder Paketverarbeitung. Ist die DYNEX-App noch installiert, fordert es die normale Deinstallation an. Die gleiche Herkunftsprüfung und gegebenenfalls ausdrückliche Bestätigung gelten auch hier. Alternativ kann das bekannte Paket über **Windows-Einstellungen → Apps → Installierte Apps → Windows Packet Filter x64** mit dessen offiziellem Uninstaller entfernt werden; dies entfernt allein noch keine übrigen DYNEX-Daten.
 
 Die Bereinigung entfernt die eigene unveränderte Firewallregel, eigene Autostart- und Verknüpfungseinträge sowie das lokale `%LOCALAPPDATA%\DYNEX`-Profil einschließlich Einstellungen, Kopplungsschlüsseln, Setup-Cache und heruntergeladenen Updates. Fremde gleichnamige Einträge werden erhalten. Zusätzliche Dateien im Programmordner werden nicht pauschal gelöscht. Verzeichnisverknüpfungen werden nicht in andere Ordner verfolgt.
 

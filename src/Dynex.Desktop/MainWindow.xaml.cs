@@ -377,6 +377,8 @@ public partial class MainWindow : Window
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
         LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
+        LimitReasonText.Text = string.IsNullOrEmpty(s.LimitReason) ? "Für große Downloads" : s.LimitReason;
+        LimitReasonText.ToolTip = $"Aktuell: {(s.DownloadMbps is { } now ? $"{now:0.0} Mbit/s" : "—")} · Aktives Limit: {(s.LimitMbps is { } active ? $"{active:0.0} Mbit/s" : "keins")}\nGrund: {LimitReasonText.Text}";
         var installed = PacketFilterSetup.IsInstalled;
         DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
         DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
@@ -421,8 +423,9 @@ public partial class MainWindow : Window
         RenderDevicePage();
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
         NetworkStatus.ToolTip = s.NetworkStatus;
-        NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 ? Visibility.Visible : Visibility.Collapsed;
-        NetworkHelpText.Text = s.NetworkProblem ?? s.NetworkDiagnostics?.Hint ?? (s.Devices.Count < 2
+        NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 || s.Connection is { IsProblem: true } ? Visibility.Visible : Visibility.Collapsed;
+        NetworkHelpText.Text = (s.NetworkProblem is { } problem && s.Connection is { IsProblem: true } step ? $"{problem} Nächster Schritt: {step.NextStep}" : s.NetworkProblem)
+            ?? s.Connection?.ToString() ?? s.NetworkDiagnostics?.Hint ?? (s.Devices.Count < 2
             ? "Noch kein anderer PC verbunden. DYNEX muss auf beiden PCs laufen und das Windows-Netzwerk auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
             : $"{s.Devices.Count} PCs verbunden. Die Verbindung wird automatisch überwacht.");
         NetworkHelpText.ToolTip = s.NetworkDiagnostics is { } network
@@ -442,6 +445,9 @@ public partial class MainWindow : Window
             SharedBudgetText.Text = "PC-Verbindung nicht bereit · Netzwerk prüfen";
             CoordinationText.Text = s.NetworkProblem;
         }
+        // A lone PC without any observed partner is normal; surface only causes DYNEX actually observed.
+        else if (s.Connection is { IsProblem: true, Kind: not Dynex.Core.ConnectionProblemKind.NoResponse } advice)
+            CoordinationText.Text = advice.ToString();
         DrawHistory(s.History);
         HistoryCompare.Text = $"Ohne Begrenzung: {CompareHistory(s.History, false)}\nMit Begrenzung: {CompareHistory(s.History, true)}";
         HistoryCompare.ToolTip = "Vergleich gemessener Internet-Pings. Unterschiedliche Werte allein beweisen noch keine Verbesserung durch DYNEX.";

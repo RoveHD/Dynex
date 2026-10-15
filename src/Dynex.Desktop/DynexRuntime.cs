@@ -38,6 +38,8 @@ public sealed class DynexRuntime : IAsyncDisposable
     private volatile bool speedTestLoadStarted;
     private volatile bool pendingGamingSettings;
     private string? peerStartError;
+    private bool? firewallConfigured;
+    internal static string AppVersion { get; } = (typeof(DynexRuntime).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
     private TaskCompletionSource monitoringPulse = NewPulse();
     public bool IsSpeedTestWaiting { get; private set; }
     public SpeedTestWaitReason SpeedTestWaitingFor { get; private set; }
@@ -49,7 +51,34 @@ public sealed class DynexRuntime : IAsyncDisposable
     internal int PeerPort { get; }
     public RuntimeSnapshot? Snapshot { get; private set; }
     public PeerNetworkDiagnostics? GetNetworkDiagnostics() => peers?.GetNetworkDiagnostics();
-    internal Task<NetworkConnectionCheck> CheckNetworkAsync() => NetworkConnectionCheck.ReadAsync(isolated);
+    internal async Task<NetworkConnectionCheck> CheckNetworkAsync()
+    {
+        var result = await NetworkConnectionCheck.ReadAsync(isolated);
+        firewallConfigured = result.FirewallConfigured;
+        return result;
+    }
+    private async Task RefreshFirewallAsync()
+    {
+        // Read-only; feeds the connection advice so "firewall missing" is not guessed from silence.
+        try { if (!isolated) await CheckNetworkAsync(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { firewallConfigured = null; }
+    }
+    /// <summary>
+    /// After standby Windows may hand back a socket whose multicast memberships, interface binding and
+    /// peer sessions are stale. Rebuilding the worker starts a fresh signed session; peers reconnect within
+    /// one or two heartbeats once both PCs are back on the same private network.
+    /// </summary>
+    public async Task ReconnectNetworkAsync()
+    {
+        await lifecycle.WaitAsync();
+        try
+        {
+            if (!started || stopping || IsSpeedTestRunning || IsSpeedTestWaiting) return;
+            await StopWorkerAsync();
+            await StartWorkerAsync();
+        }
+        finally { lifecycle.Release(); }
+    }
     public event Action<RuntimeSnapshot>? Updated;
     public DynexRuntime(string? profilePath = null) : this(profilePath, null) { }
     internal DynexRuntime(string? profilePath, ISpeedTestService? speedTest,
@@ -75,7 +104,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         CapacityMeasured = Settings.CapacityMeasuredAtUtc is not null,
         LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - Settings.BackgroundPercent,
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
-        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort,
+        AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion,
         DirectPeers = SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
     };
     private static int GetIsolatedPeerPort()
@@ -280,6 +309,7 @@ public sealed class DynexRuntime : IAsyncDisposable
         peerStartError = networkError;
         peers.PeersChanged += PeerStatusChanged;
         peerStartedAt = Stopwatch.GetTimestamp();
+        _ = RefreshFirewallAsync();
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
@@ -352,6 +382,10 @@ public sealed class DynexRuntime : IAsyncDisposable
                     HistoryPoint[] points;
                     lock (history) points = history.ToArray();
                     var networkState = initialNetworkError ?? service.NetworkStatus;
+                    var diagnostics = service.GetNetworkDiagnostics();
+                    var limitReason = LimitExplanation.Describe(decision, gaming, focusedGame?.GameName, remote,
+                        settings.CapacityMeasuredAtUtc is not null, IsSpeedTestRunning, settings.DriverEnabled && shapingAllowed,
+                        driver.Active, settings.ManualLimitMbps, driver.Mbps);
                     var snapshot = new RuntimeSnapshot(state, detail, gaming, game, driver.Active,
                         driver.Message, driver.Mbps, measurement.Down, measurement.Up, measurement.Router, measurement.External, devices, points,
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
@@ -361,7 +395,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                         remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
-                        NetworkDiagnostics: service.GetNetworkDiagnostics());
+                        NetworkDiagnostics: diagnostics, LimitReason: limitReason,
+                        Connection: diagnostics.Assess(firewallConfigured));
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -378,7 +413,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var prior = Snapshot ?? new RuntimeSnapshot("", "", false, "", false, "", null, 0, 0, emptyPing, emptyPing, [], [], initialNetworkError ?? service.NetworkStatus ?? "", Fingerprint());
                     Snapshot = prior with { State = "Messung unterbrochen", Detail = ex.Message, IsGaming = false, DriverActive = false, LimitMbps = null, DownloadMbps = null, UploadMbps = null, Devices = [], Router = emptyPing, External = emptyPing, DriverState = shaper.Status.Message,
                         SharedDownloadBudgetMbps = null, ParticipantCount = 1, GamingCount = 0, SharedCapacityMbps = null, SharedBudgetComplete = false, ConfirmedParticipantCount = 0,
-                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null };
+                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null,
+                        LimitReason = "Messung unterbrochen · kein Limit aktiv", Connection = null };
                     Updated?.Invoke(Snapshot);
                 }
             } while (await timer.WaitForNextTickAsync(token));
@@ -516,8 +552,9 @@ public sealed class DynexRuntime : IAsyncDisposable
         Directory.CreateDirectory(store.DirectoryPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new
         {
-            Version = "1.0.5", CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
+            Version = AppVersion, CapturedAtUtc = DateTimeOffset.UtcNow, Settings, Snapshot = snapshot,
             NetworkTransport = GetNetworkDiagnostics(), NetworkEnvironment = networkEnvironment,
+            ConnectionAdvice = GetNetworkDiagnostics()?.Assess(networkEnvironment.FirewallConfigured),
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));

@@ -18,6 +18,9 @@ public sealed class AutoLanPeerService : IPeerService
     private readonly Dictionary<Guid, (PeerAdvertisement Peer, long Tick)> _peers = new();
     private readonly Dictionary<(Guid Id, Guid Session), (long Tick, bool Retired)> _sessions = new();
     private readonly Dictionary<IPAddress, (long Tick, int Count)> _rates = new();
+    private readonly Dictionary<Guid, (string Version, long Tick)> _versions = new();
+    private readonly Dictionary<Guid, string> _names = new();
+    private (string Name, DateTimeOffset At)? _lost;
     private AutoLanBinding[] _bindings = [];
     private AutoLanCrypto? _crypto;
     private Socket? _socket;
@@ -29,7 +32,7 @@ public sealed class AutoLanPeerService : IPeerService
     private volatile bool _disposed;
     private string? _networkStatus;
     private string? _receiveError;
-    private long _sent, _received, _accepted, _handshakes, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _self;
+    private long _sent, _received, _accepted, _handshakes, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _self, _unsupported;
     private State _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
 
     public event Action? PeersChanged;
@@ -66,7 +69,7 @@ public sealed class AutoLanPeerService : IPeerService
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, false);
                 socket.ReceiveBufferSize = 128 * 1024;
                 socket.Bind(new IPEndPoint(_settings.LoopbackOnly ? IPAddress.Loopback : IPAddress.Any, _settings.Port));
-                lock (_gate) { _crypto = new(_privateKey); _sequence = 0; }
+                lock (_gate) { _crypto = new(_privateKey, _settings.AppVersion); _sequence = 0; }
                 Volatile.Write(ref _networkStatus, null);
                 Volatile.Write(ref _receiveError, null);
                 RefreshScope(socket, true);
@@ -116,19 +119,25 @@ public sealed class AutoLanPeerService : IPeerService
         {
             ExpireLocked(Stopwatch.GetTimestamp());
             var last = Interlocked.Read(ref _lastReceiveUnixMs);
+            var versions = _versions.Select(v => new RemoteVersion(v.Key, _names.GetValueOrDefault(v.Key), v.Value.Version))
+                .OrderBy(v => v.DeviceName, StringComparer.OrdinalIgnoreCase).ToArray();
             return new("Automatisch", _settings.LoopbackOnly ? [IPAddress.Loopback.ToString()] :
                 Volatile.Read(ref _bindings).Select(b => $"{b.Address}/{b.Mask} (Schnittstelle {b.InterfaceIndex})").ToArray(),
                 _settings.DirectPeers.Select(p => p.ToString()).ToArray(),
                 Interlocked.Read(ref _sent), Interlocked.Read(ref _received), Interlocked.Read(ref _accepted),
                 Interlocked.Read(ref _handshakes), Interlocked.Read(ref _rejected), Interlocked.Read(ref _scopeRejected),
                 Interlocked.Read(ref _otherMode), last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last), _peers.Count,
-                _channels.Values.Select(c => c.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self));
+                _channels.Values.Select(c => c.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self),
+                LocalVersion: _settings.AppVersion, RemoteVersions: versions, UnsupportedProtocolDatagrams: Interlocked.Read(ref _unsupported),
+                LostPeerName: _peers.Count == 0 ? _lost?.Name : null, LostPeerAtUtc: _peers.Count == 0 ? _lost?.At : null,
+                ReceiveError: Volatile.Read(ref _receiveError)?.Replace("AutoLAN-Empfang: ", ""));
         }
     }
 
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken token)
     {
         var bytes = new byte[AutoLanCrypto.MaxDatagram + 1];
+        var failures = 0;
         try
         {
             while (!token.IsCancellationRequested)
@@ -138,12 +147,16 @@ public sealed class AutoLanPeerService : IPeerService
                     var received = await socket.ReceiveMessageFromAsync(bytes.AsMemory(), SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), token).ConfigureAwait(false);
                     var source = (IPEndPoint)received.RemoteEndPoint;
                     var length = received.ReceivedBytes;
+                    if (failures > 0) { failures = 0; ClearReceiveError(); }
                     Interlocked.Increment(ref _received);
                     Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     if (!SourceAllowed(source.Address, received.PacketInformation.Interface))
                     { Interlocked.Increment(ref _scopeRejected); continue; }
                     if (length >= 4 && bytes.AsSpan(0, 4).SequenceEqual("DYNX"u8))
                     { Interlocked.Increment(ref _otherMode); continue; }
+                    // A future wire protocol uses a new version byte; explain it instead of only rejecting it.
+                    if (length >= 6 && bytes.AsSpan(0, 4).SequenceEqual("DYNA"u8) && bytes[4] != 1)
+                    { Interlocked.Increment(ref _unsupported); continue; }
                     // Count all failed validation/replay/challenge paths, then undo this count
                     // only after the corresponding packet has actually passed those checks.
                     Interlocked.Increment(ref _rejected);
@@ -170,7 +183,10 @@ public sealed class AutoLanPeerService : IPeerService
                             _peers[id] = (new(id, wire.DeviceName, wire.IsGaming, wire.DownloadMbps, wire.LatencyMs,
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
-                                UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal), tick);
+                                UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal,
+                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null), tick);
+                            _names[id] = wire.DeviceName;
+                            if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
                             Interlocked.Decrement(ref _rejected);
                             Interlocked.Increment(ref _accepted);
                             changed = true;
@@ -183,6 +199,9 @@ public sealed class AutoLanPeerService : IPeerService
                             { Interlocked.Decrement(ref _rejected); Interlocked.Increment(ref _self); continue; }
                             var key = (hello.DeviceId, hello.SessionId);
                             if (_sessions.TryGetValue(key, out var history) && history.Retired) continue;
+                            // Signed, so the announced version is attributable even before a session exists.
+                            if (_versions.ContainsKey(hello.DeviceId) || _versions.Count < 128)
+                                _versions[hello.DeviceId] = (hello.AppVersion ?? RemoteVersion.BeforeVersionAnnouncement, tick);
                             if (bytes[5] == 1)
                             {
                                 // Stateless signed challenge response: unproven announcements do not
@@ -221,9 +240,14 @@ public sealed class AutoLanPeerService : IPeerService
                 {
                     if (token.IsCancellationRequested) break;
                     if (e.SocketErrorCode is SocketError.MessageSize or SocketError.ConnectionReset or SocketError.ConnectionRefused) continue;
+                    // Standby, adapter resets and WLAN changes surface as NetworkDown/NetworkReset and
+                    // similar errors. The socket stays bound to Any, so retry with backoff instead of
+                    // ending discovery until the next app start.
                     var error = "AutoLAN-Empfang: " + e.Message;
                     Volatile.Write(ref _receiveError, error);
-                    SetError(error); break;
+                    SetError(error);
+                    failures++;
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 250 << Math.Min(failures, 5))), token).ConfigureAwait(false);
                 }
             }
         }
@@ -325,7 +349,9 @@ public sealed class AutoLanPeerService : IPeerService
     private bool ExpireLocked(long tick)
     {
         var ids = _peers.Where(p => Stopwatch.GetElapsedTime(p.Value.Tick, tick) >= _settings.PeerTtl).Select(p => p.Key).ToArray();
-        foreach (var id in ids) _peers.Remove(id);
+        foreach (var id in ids) { _lost = (_peers[id].Peer.DeviceName, DateTimeOffset.UtcNow); _peers.Remove(id); }
+        foreach (var id in _versions.Where(p => Stopwatch.GetElapsedTime(p.Value.Tick, tick) > TimeSpan.FromMinutes(10)).Select(p => p.Key).ToArray())
+        { _versions.Remove(id); _names.Remove(id); }
         foreach (var id in _channels.Where(p => Stopwatch.GetElapsedTime(p.Value.LastActivity, tick) > TimeSpan.FromMinutes(10)).Select(p => p.Key).ToArray())
         { _channels[id].Crypto.Dispose(); _channels.Remove(id); }
         foreach (var key in _sessions.Where(p => Stopwatch.GetElapsedTime(p.Value.Tick, tick) > TimeSpan.FromMinutes(10)).Select(p => p.Key).ToArray())
@@ -344,6 +370,12 @@ public sealed class AutoLanPeerService : IPeerService
     }
     private void OnNetworkChanged(object? sender, EventArgs args) => Interlocked.Exchange(ref _networkChanged, 1);
     private static bool Valid(double? value, double max) => value is null || double.IsFinite(value.Value) && value >= 0 && value <= max;
+    private void ClearReceiveError()
+    {
+        // The next heartbeat's scope refresh clears NetworkStatus once no other error remains.
+        Volatile.Write(ref _receiveError, null);
+        Notify();
+    }
     private void SetError(string error) { if (NetworkStatus == error) return; Volatile.Write(ref _networkStatus, error); Notify(); }
     private void Notify()
     {
@@ -365,7 +397,7 @@ public sealed class AutoLanPeerService : IPeerService
             lock (_gate)
             {
                 foreach (var channel in _channels.Values) channel.Crypto.Dispose();
-                _channels.Clear(); _peers.Clear(); _sessions.Clear(); _rates.Clear();
+                _channels.Clear(); _peers.Clear(); _sessions.Clear(); _rates.Clear(); _versions.Clear(); _names.Clear(); _lost = null;
                 _crypto?.Dispose(); _crypto = null;
             }
             Volatile.Write(ref _bindings, []);

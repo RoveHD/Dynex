@@ -85,6 +85,56 @@ await Scenario("installed version rejects stale cache", async () =>
     Check(await updated.TakeReadyInstallerAsync() is null, "current installed version cannot reinstall cached same version");
 });
 
+var publisher = new SignatureCheck(true, true, "CN=DYNEX Publisher");
+foreach (var (name, candidate, current, accepted) in new[]
+{
+    ("signed install requires signed update", SignatureCheck.Unsigned, publisher, false),
+    ("same publisher is accepted", publisher, publisher, true),
+    ("other publisher is rejected", new SignatureCheck(true, true, "CN=Someone Else"), publisher, false),
+    ("broken signature is rejected even on unsigned install", new SignatureCheck(true, false, "CN=DYNEX Publisher"), SignatureCheck.Unsigned, false),
+    ("unsigned legacy install accepts hash-verified unsigned update", SignatureCheck.Unsigned, SignatureCheck.Unsigned, true),
+})
+{
+    await Scenario("signature: " + name, async () =>
+    {
+        using var fixture = new Fixture(current: current) { Candidate = candidate };
+        fixture.Service.SetEnabled(true);
+        await fixture.Service.CheckNowAsync();
+        Check(fixture.Service.Status.UpdateReady == accepted, name);
+        if (!accepted)
+        {
+            Check(fixture.Service.Status.Message.StartsWith("Update verworfen:"), name + " explains the rejection");
+            Check(!System.IO.Directory.EnumerateFiles(fixture.Directory).Any(f => f.EndsWith(".exe") || f.EndsWith(".part")), name + " keeps no installer");
+        }
+    });
+}
+
+await Scenario("signature re-checked before handoff", async () =>
+{
+    using var fixture = new Fixture(current: publisher) { Candidate = publisher };
+    fixture.Service.SetEnabled(true);
+    await fixture.Service.CheckNowAsync();
+    Check(fixture.Service.Status.UpdateReady, "signed update becomes ready");
+    fixture.Candidate = SignatureCheck.Unsigned; // File swapped on disk after download.
+    Check(await fixture.Service.TakeReadyInstallerAsync() is null, "installer whose signature changed after download is not executed");
+    Check(!File.Exists(Path.Combine(fixture.Directory, "ready.json")) && !File.Exists(Path.Combine(fixture.Directory, "DYNEX-Setup-0.5.0.exe")),
+        "rejected ready installer is removed");
+});
+
+await Scenario("rolled back version is not downloaded again", async () =>
+{
+    using var fixture = new Fixture();
+    System.IO.Directory.CreateDirectory(fixture.Directory);
+    File.WriteAllText(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.5.0\r\n");
+    Check(fixture.Service.RolledBackVersion == "0.5.0", "installer rollback marker is read");
+    fixture.Service.SetEnabled(true);
+    await fixture.Service.CheckNowAsync();
+    Check(!fixture.Service.Status.UpdateReady && fixture.Handler.DownloadCalls == 0 && fixture.Service.Status.Message.Contains("wiederhergestellt"),
+        "a version that failed to install is reported instead of re-downloaded");
+    File.WriteAllText(Path.Combine(fixture.Directory, "rolled-back.txt"), "0.4.0");
+    Check(fixture.Service.RolledBackVersion is null, "marker for an older version is ignored");
+});
+
 foreach (var variant in new[] { "current", "older", "prerelease", "draft", "version-suffix", "version-leading-zero", "foreign-url", "wrong-name", "missing-hash", "duplicate", "oversized", "bad-digest", "bad-hash", "bad-size", "bad-json", "stream-short", "stream-long" })
 {
     await Scenario("reject " + variant, async () =>
@@ -240,11 +290,13 @@ sealed class Fixture : IDisposable
     public bool Gaming;
     public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly HttpClient client;
-    public Fixture(TimeSpan? deferInterval = null)
+    public SignatureCheck Candidate = SignatureCheck.Unsigned;
+    public Fixture(TimeSpan? deferInterval = null, SignatureCheck? current = null)
     {
         client = new(Handler);
         Service = new(Directory, new Version(0, 4, 1), () => Gaming, client,
-            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), 1024 * 1024 * 1024);
+            TimeSpan.FromHours(6), deferInterval ?? TimeSpan.FromHours(1), 1024 * 1024 * 1024,
+            _ => Candidate, current ?? SignatureCheck.Unsigned);
         Service.Changed += () => { if (Service.Status.UpdateReady) Ready.TrySetResult(); };
     }
     public void Dispose()

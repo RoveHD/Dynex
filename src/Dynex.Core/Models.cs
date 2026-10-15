@@ -19,6 +19,8 @@ public sealed record DynexSettings
     public bool AdaptiveEnabled { get; init; } = true;
     public TimeSpan PeerTtl { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(2);
+    /// <summary>Announced in signed AutoLAN handshakes so a version mismatch can be explained.</summary>
+    public string? AppVersion { get; init; }
 
     internal void Validate(bool requireKey)
     {
@@ -34,6 +36,8 @@ public sealed record DynexSettings
         if (PeerTtl < TimeSpan.FromSeconds(1) || PeerTtl > TimeSpan.FromSeconds(30) ||
             HeartbeatInterval < TimeSpan.FromMilliseconds(100) || HeartbeatInterval >= PeerTtl)
             throw new ArgumentException("Heartbeat muss kürzer als die Peer-Ablaufzeit sein.");
+        if (AppVersion is not null && !AutoLanCrypto.IsVersion(AppVersion))
+            throw new ArgumentException("App-Version ist ungültig.");
         foreach (var endpoint in DirectPeers)
             if (endpoint is null || endpoint.Port is < 1 or > 65535 || !LanAddress.IsAllowed(endpoint.Address, LoopbackOnly))
                 throw new ArgumentException("Direkte Peers müssen IPv4-Adressen im privaten LAN verwenden.");
@@ -58,7 +62,7 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
     string? Address = null, double? AppliedLimitMbps = null, string? Game = null, bool ShaperActive = false,
     double? IdleBaselineMs = null, string? LatencyTargetId = null, long? LatencySampleSequence = null,
     DateTimeOffset? IdleBaselineAtUtc = null, Guid? SessionId = null, double? UploadMbps = null,
-    DownloadBudgetProposal? BudgetProposal = null);
+    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null);
 
 /// <summary>
 /// A participant's currently configured/measured capacity and reserve policy, not its measured traffic.

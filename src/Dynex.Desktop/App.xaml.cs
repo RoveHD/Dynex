@@ -14,6 +14,13 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         try
         {
+            if (e.Args.Length > 0 && e.Args[0] == "--self-test")
+            {
+                // Run by the updater right after copying files. A non-zero result makes
+                // the installer restore the previous version instead of leaving a broken app.
+                Shutdown(UpdateSelfTest.Run(e.Args.Skip(1).FirstOrDefault()));
+                return;
+            }
             if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall"
                 or "--uninstall-system" or "--uninstall-machine" or "--cleanup-removed-installation" or "--cleanup-machine" or "--remove-user-data")
             {
@@ -42,6 +49,8 @@ public partial class App : System.Windows.Application
                           snapshot.IsGaming || snapshot.GamingCount > 0 || !string.IsNullOrEmpty(snapshot.Game) ||
                           snapshot.Devices.Any(device => !string.IsNullOrEmpty(device.Game)));
                 _updates.SetEnabled(_runtime.Settings.AutoUpdate, startBackground: false);
+                if (_updates.RolledBackVersion is { } failed)
+                    startupWarning = $"Das Update auf Version {failed} ist fehlgeschlagen. DYNEX hat die vorherige Version {DynexRuntime.AppVersion} wiederhergestellt; Einstellungen bleiben erhalten.";
                 if (!e.Args.Contains("--skip-update-once") && !e.Args.Contains("--verify-live"))
                 {
                     var installer = await _updates.TakeReadyInstallerAsync();
@@ -56,6 +65,7 @@ public partial class App : System.Windows.Application
                 }
             }
             await _runtime.StartAsync();
+            Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
             var window = new MainWindow(_runtime, _updates);
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
@@ -74,8 +84,21 @@ public partial class App : System.Windows.Application
         }
     }
 
+    private async void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume || _runtime is null) return;
+        try
+        {
+            // Give Windows a moment to bring the adapter back and classify the network profile.
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            await _runtime.ReconnectNetworkAsync();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { /* The next heartbeat reports the network state. */ }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _updates?.Dispose();
         DesktopLifecycle.Cleanup();
         base.OnExit(e);

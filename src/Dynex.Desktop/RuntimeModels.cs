@@ -38,4 +38,5 @@ public sealed record RuntimeSnapshot(
     bool SharedBudgetComplete = false, int ConfirmedParticipantCount = 0,
     bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0,
     string? NetworkProblem = null, bool ProtectionIdle = false,
-    Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null);
+    Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null,
+    string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null);

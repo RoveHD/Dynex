@@ -138,6 +138,7 @@ public sealed class PeerService : IPeerService
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken cancellationToken)
     {
         var bytes = new byte[PacketCodec.MaxPacketBytes + 1];
+        var failures = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -145,6 +146,12 @@ public sealed class PeerService : IPeerService
                 var result = await socket.ReceiveFromAsync(bytes.AsMemory(), SocketFlags.None,
                     new IPEndPoint(IPAddress.Any, 0), cancellationToken).ConfigureAwait(false);
                 var endpoint = (IPEndPoint)result.RemoteEndPoint;
+                if (failures > 0)
+                {
+                    failures = 0;
+                    if (NetworkStatus?.StartsWith("LAN-Empfang: ", StringComparison.Ordinal) == true)
+                    { Volatile.Write(ref _networkStatus, null); Notify(); }
+                }
                 Interlocked.Increment(ref _received);
                 Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 if (!LanAddress.IsAllowed(endpoint.Address, _settings.LoopbackOnly))
@@ -195,8 +202,11 @@ public sealed class PeerService : IPeerService
                 // it must not permanently stop discovery of peers that start later.
                 if (e.SocketErrorCode is SocketError.MessageSize or SocketError.ConnectionReset or SocketError.ConnectionRefused) continue;
                 SetError("LAN-Empfang: " + e.Message);
-                // Do not spin on a broken UDP socket. TTL still expires through Snapshot/heartbeat.
-                break;
+                // Standby and WLAN changes report transient adapter errors. Back off instead of
+                // spinning, but keep receiving so peers reconnect without restarting DYNEX.
+                failures++;
+                try { await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(5000, 250 << Math.Min(failures, 5))), cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
             }
         }
     }
