@@ -1,0 +1,77 @@
+name: Release
+
+# Push a tag vX.Y.Z to build, sign and attach the setup to a *draft* GitHub release.
+# Publish the draft manually after the two-PC acceptance in docs/TESTING.md.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      HAS_PFX: ${{ secrets.DYNEX_SIGN_PFX_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Install NSIS
+        run: |
+          choco install nsis -y --no-progress
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Ungültiger Tag: ${{ github.ref_name }}" }
+          $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
+          if ($project.Project.PropertyGroup.Version -ne $version) { throw "Tag $version passt nicht zur Projektversion $($project.Project.PropertyGroup.Version)." }
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - name: Tests
+        shell: pwsh
+        run: |
+          foreach ($suite in 'Core','Update','Adaptive','SpeedTest','Runtime','Setup','UserCleanup','GameDetection','Bulk','Shaper') {
+            dotnet run --project "tests/Dynex.$suite.Tests" -c Release
+            if ($LASTEXITCODE -ne 0) { throw "$suite-Tests fehlgeschlagen." }
+          }
+      - name: Import signing certificate
+        if: env.HAS_PFX == 'true'
+        shell: pwsh
+        env:
+          PFX: ${{ secrets.DYNEX_SIGN_PFX_BASE64 }}
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'dynex-sign.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX))
+          "DYNEX_SIGN_PFX=$path" >> $env:GITHUB_ENV
+      - name: Build and sign
+        shell: pwsh
+        env:
+          DYNEX_SIGN_PFX_PASSWORD: ${{ secrets.DYNEX_SIGN_PFX_PASSWORD }}
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
+        run: |
+          if ($env:ALLOW_UNSIGNED -eq 'true' -and -not $env:DYNEX_SIGN_PFX) {
+            ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }}
+          } else {
+            ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }} -RequireSignature
+          }
+      - name: Remove certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'dynex-sign.pfx') -ErrorAction SilentlyContinue
+      - name: Draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.version.outputs.value }}'
+          gh release create "v$v" --draft --title "DYNEX $v" --notes "Entwurf aus CI. Vor dem Veröffentlichen die Zwei-PC-Abnahme (docs/TESTING.md) durchführen." `
+            "artifacts/DYNEX-Setup-$v.exe" "artifacts/DYNEX-Setup-$v.exe.sha256" "artifacts/DYNEX-Cleanup-$v.exe" "artifacts/DYNEX-Cleanup-$v.exe.sha256"

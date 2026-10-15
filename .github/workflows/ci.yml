@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+jobs:
+  portable:
+    name: Portable tests (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [Core, Update, Adaptive, SpeedTest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: dotnet run --project tests/Dynex.${{ matrix.suite }}.Tests -c Release
+
+  windows-tests:
+    name: Windows tests (${{ matrix.suite }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Traffic and Live need a real network filter/router and stay manual.
+        suite: [Runtime, Setup, UserCleanup, GameDetection, Bulk, Shaper]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: dotnet run --project tests/Dynex.${{ matrix.suite }}.Tests -c Release
+
+  installer:
+    name: Build installer (unsigned)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Install NSIS
+        run: |
+          choco install nsis -y --no-progress
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dynex-unsigned-${{ github.sha }}
+          path: |
+            artifacts/DYNEX-Setup-*.exe
+            artifacts/DYNEX-Cleanup-*.exe
+            artifacts/*.sha256
+          retention-days: 14
