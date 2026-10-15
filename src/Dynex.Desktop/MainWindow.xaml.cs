@@ -440,6 +440,9 @@ public partial class MainWindow : Window
         var waiting = _runtime.IsSpeedTestWaiting;
         CapacityBox.Text = settings.CapacityMeasuredAtUtc.HasValue
             ? settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture) : "—";
+        // Display the measured capacity as a placeholder without saving it as a manual limit.
+        ManualUploadBox.Tag = settings.CapacityMeasuredAtUtc.HasValue && settings.UploadCapacityMbps is { } measuredUpload
+            ? measuredUpload.ToString("0.##", CultureInfo.CurrentCulture) : "—";
         CapacityBox.Opacity = settings.CapacityMeasuredAtUtc.HasValue ? 1 : 0.6;
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
@@ -453,15 +456,18 @@ public partial class MainWindow : Window
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}" +
               (settings.UploadCapacityMbps is { } upload ? $" · Upload {upload:0.#} Mbit/s. " : ". ")
             : "Noch nicht gemessen. ";
-        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
+        var detail = running || waiting ? _runtime.SpeedTestMessage : measured +
             (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
                 ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits benötigen eine erfolgreiche Messung."
                 : _runtime.SpeedTestMessage);
+        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
+            (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Einmal automatisch, danach manuell." : _runtime.SpeedTestMessage);
         if (!running && !waiting && Dynex.Core.Bufferbloat.Rate(settings.IdleLatencyMs, settings.LoadedLatencyMs) is { } bloat)
         {
-            SpeedTestHint.Text += "\n" + bloat.Summary + (bloat.Recommendation is { } tip ? "\n" + tip : "");
-            SpeedTestHint.ToolTip = SpeedTestHint.Text;
+            SpeedTestHint.Text += "\n" + bloat.Summary;
+            detail += "\n" + bloat.Summary + (bloat.Recommendation is { } tip ? "\n" + tip : "");
         }
+        SpeedTestHint.ToolTip = detail;
     }
 
     private async void ManualLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>

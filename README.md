@@ -3,11 +3,11 @@
 
 DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanagement im privaten LAN. Die WPF-Oberfläche verwendet Schwarz, Dunkelrot `#C91F32` und Hellrot `#FF4655`.
 
-**Version 1.0.7.** DYNEX kann optionale Updates auch während des Gamings mit höchstens 512 KiB/s herunterladen. Nach erfolgreichem Download und den für die Installation geltenden Hash- und Signaturprüfungen wird das Update automatisch installiert und DYNEX neu gestartet, sobald ungespeicherte Einstellungen und laufende UI-Aktionen abgeschlossen sind. [Ablauf und Grenzen](docs/updates.md).
+**Version 1.0.8.** DYNEX kann optionale Updates auch während des Gamings mit höchstens 512 KiB/s herunterladen. Nach erfolgreichem Download und den für die Installation geltenden Hash- und Signaturprüfungen wird das Update automatisch installiert und DYNEX neu gestartet, sobald ungespeicherte Einstellungen und laufende UI-Aktionen abgeschlossen sind. [Ablauf und Grenzen](docs/updates.md).
 
 Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindung mit ein. Fehlt der Netzwerkfilter, lädt es das offizielle Windows Packet Filter MSI direkt vom Hersteller, prüft Größe, festgelegten SHA-256 und Windows-Authenticode-Vertrauen und installiert es nach der Windows-UAC-Bestätigung. Eine gezielte Firewallregel erlaubt DYNEX UDP 39274 ausschließlich im privaten lokalen Subnetz. Das Setup dokumentiert, ob es den Filter neu installiert oder einen vorhandenen weiterverwendet. Die Filtereinrichtung kann die Verbindung kurz unterbrechen; ein Neustart wird nicht erzwungen. Für die erstmalige Einrichtung ist Internet nötig.
 
-**Vollständig entfernen:** Die Deinstallation bereinigt eigene Firewallfreigaben, Autostart, Einstellungen, Kopplungen, Update-Dateien und Verknüpfungen. Einen nachweislich von DYNEX installierten Netzwerkfilter entfernt sie über dessen offiziellen MSI-Uninstaller, sobald keine weitere registrierte DYNEX-Installation ihn benötigt. Für bereits deinstallierte ältere Versionen gibt es zusätzlich `DYNEX-Cleanup-1.0.7.exe`; es installiert DYNEX nicht erneut. Bei alten Filtern ohne Herkunftsnachweis fragt die Bereinigung ausdrücklich vor der Entfernung. [Ablauf und Grenzen](docs/installation.md#aktualisieren-und-entfernen).
+**Vollständig entfernen:** Die Deinstallation bereinigt eigene Firewallfreigaben, Autostart, Einstellungen, Kopplungen, Update-Dateien und Verknüpfungen. Einen nachweislich von DYNEX installierten Netzwerkfilter entfernt sie über dessen offiziellen MSI-Uninstaller, sobald keine weitere registrierte DYNEX-Installation ihn benötigt. Für bereits deinstallierte ältere Versionen gibt es zusätzlich `DYNEX-Cleanup-1.0.8.exe`; es installiert DYNEX nicht erneut. Bei alten Filtern ohne Herkunftsnachweis fragt die Bereinigung ausdrücklich vor der Entfernung. [Ablauf und Grenzen](docs/installation.md#aktualisieren-und-entfernen).
 
 **Neu in 1.0.6:**
 
@@ -36,8 +36,10 @@ Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindun
 - **Schonend:** Die App läuft mit niedriger CPU-Priorität im Windows-Effizienzmodus und zeichnet nichts, solange sie im Infobereich liegt. Steams Spielekatalog wird nur nach Änderungen neu gelesen, und Router-Werte werden alle 6 s abgefragt. Der Paket-Helper läuft dagegen bewusst mit erhöhter Priorität, damit er keine Pakete aufhält.
 - **CI:** GitHub Actions führt bei jedem Push alle portablen und Windows-Tests aus und baut den Installer. Beim Release werden Setup und Programme signiert, wenn das Zertifikat konfiguriert ist; ohne Zertifikat warnt der Workflow und erstellt einen unsignierten Build (`.github/workflows`).
 
-**Neu in 1.0.7:**
+**Neu in 1.0.8:**
 
+- **Übersichtlichere Einstellungen:** Eckige Schalter und kompakte Gruppen für Anschluss, Gaming und Limits. Das Uploadfeld zeigt bei automatischer Regelung den gemessenen Speedtest-Wert; eigene Obergrenzen bleiben getrennt davon gespeichert.
+- **Installer abgesichert:** Manuelle Setups und automatische Updates verwenden dieselbe Installationssperre. Der Starttest protokolliert seinen konkreten Fehlercode, bevor ein fehlgeschlagenes Update zur vorherigen Version zurückkehrt.
 - **Updates während des Gamings:** Der optionale Update-Download läuft auch bei erkanntem Spiel mit maximal 512 KiB/s; nur aktive Speedtests pausieren ihn. Die Anzeige enthält Fortschritt in MB und Prozent. Bei 30 Sekunden Stillstand erscheint ein Fehler mit **Jetzt prüfen** zum erneuten Versuch.
 - **Automatische Installation:** Nach vollständigem Download und erfolgreicher Hash- und Signaturprüfung schließt DYNEX sich für die stille Installation und startet danach neu. Ungespeicherte Einstellungen und aktive UI-Aktionen verzögern den Neustart. Der Runtime-Filter wird vor dem Installer beendet. Den Opt-in-Haken kann man jederzeit deaktivieren; das bricht den Download ab und verhindert die Übergabe zur Installation.
 

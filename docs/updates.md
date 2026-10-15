@@ -62,7 +62,10 @@ Schlägt die Installation fehl, stellt das Setup die vorherige Version wieder he
 ([Ablauf](installation.md#aktualisieren-und-entfernen)). Diese Version wird nicht
 automatisch erneut geladen; eine spätere höhere Version schon.
 
-Ein separater Installations-Mutex verhindert App-Starts während des Kopierens. Der
+Ein gemeinsamer Installations-Mutex verhindert parallele manuelle Setups und automatische
+Updates sowie App-Starts während des Kopierens. Die Startprüfung schreibt Version,
+Startfehler und Prozess-Exitcode nach `%LOCALAPPDATA%\Programs\DYNEX\update-result.txt`.
+Der
 Updater wartet auf das tatsächliche Ende seines Startprozesses und bricht ab, wenn
 eine andere DYNEX-Instanz läuft; er beendet diese nicht. Ein verbrauchter
 Installationsauftrag wird nicht beim nächsten Start erneut ausgeführt. Bei Problemen
@@ -78,10 +81,10 @@ und prüft jede Signatur sofort mit `signtool verify /pa`. Benötigt werden das 
 
 ```powershell
 # Zertifikat im Windows-Zertifikatspeicher oder auf einem Token:
-./scripts/build.ps1 -Version 1.0.7 -SignCertificateThumbprint <SHA1-Fingerabdruck> -RequireSignature
+./scripts/build.ps1 -Version 1.0.8 -SignCertificateThumbprint <SHA1-Fingerabdruck> -RequireSignature
 # oder PFX-Datei; das Kennwort nur über die Umgebung, nie als Parameter:
 $env:DYNEX_SIGN_PFX_PASSWORD = '…'
-./scripts/build.ps1 -Version 1.0.7 -SignPfxPath C:\keys\dynex.pfx -RequireSignature
+./scripts/build.ps1 -Version 1.0.8 -SignPfxPath C:\keys\dynex.pfx -RequireSignature
 ```
 
 `-RequireSignature` bricht ab, wenn kein Zertifikat konfiguriert ist oder eine Datei nicht

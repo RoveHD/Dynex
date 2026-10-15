@@ -68,6 +68,12 @@ jobs:
       - name: Build
         shell: pwsh
         run: ./scripts/build.ps1
+      - name: Installer start and exclusion checks
+        shell: pwsh
+        run: |
+          $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          ./tests/installer-update-smoke.ps1 -PayloadRoot "artifacts/publish-$version" -ExpectedVersion $version -NsisPath "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: dynex-unsigned-${{ github.sha }}
