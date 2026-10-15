@@ -42,7 +42,8 @@ jobs:
       fail-fast: false
       matrix:
         # Traffic and Live need a real network filter/router and stay manual.
-        suite: [Runtime, Setup, UserCleanup, GameDetection, Bulk, Shaper]
+        # Update and SpeedTest also run here: Authenticode checks only exist on Windows.
+        suite: [Runtime, Setup, UserCleanup, GameDetection, Bulk, Shaper, Update, SpeedTest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
