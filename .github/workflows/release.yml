@@ -98,10 +98,13 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.value }}'
           $signed = if ($env:HAS_PFX -eq 'true') { 'Setup und Programme sind signiert.' } else { 'Diese Version ist noch nicht code-signiert; Windows SmartScreen kann beim Start des Setups warnen („Weitere Informationen“ → „Trotzdem ausführen“). Die SHA-256-Prüfsummen liegen bei.' }
+          # Notes go through a file: quotes inside a native argument get split on Windows.
           # Single quotes only: PowerShell treats typographic quotes („ “) as string delimiters.
-          $notes = 'Änderungen: siehe README, Abschnitt "Neu in ' + $v + '". ' + $signed
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notesFile -Encoding utf8 -Value ('Änderungen: siehe README, Abschnitt "Neu in ' + $v + '". ' + $signed)
           $assets = @("artifacts/DYNEX-Setup-$v.exe", "artifacts/DYNEX-Setup-$v.exe.sha256", "artifacts/DYNEX-Cleanup-$v.exe", "artifacts/DYNEX-Cleanup-$v.exe.sha256")
           # --target creates the tag on the tested commit when it does not exist yet (manual start).
-          $mode = if ($env:PUBLISH -eq 'true') { @('--latest') } else { @('--draft') }
-          gh release create "v$v" --target $env:GITHUB_SHA --title "DYNEX $v" --notes $notes @mode @assets
+          # @(...) keeps an array: splatting a plain string would pass it character by character.
+          $mode = @(if ($env:PUBLISH -eq 'true') { '--latest' } else { '--draft' })
+          gh release create "v$v" --target $env:GITHUB_SHA --title "DYNEX $v" --notes-file $notesFile @mode @assets
           if ($LASTEXITCODE -ne 0) { throw 'Release konnte nicht erstellt werden.' }
