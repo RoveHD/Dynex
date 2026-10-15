@@ -39,6 +39,36 @@ public sealed class DynexRuntime : IAsyncDisposable
     private volatile bool pendingGamingSettings;
     private string? peerStartError;
     private bool? firewallConfigured;
+    private readonly SessionTracker sessions = new();
+    private SessionSummary? lastSession;
+    internal static readonly IReadOnlyDictionary<string, double> ProfileBackgroundPercent =
+        new Dictionary<string, double> { ["Turnier"] = 40, ["Standard"] = 65, ["Entspannt"] = 85 };
+    public async Task ApplyProfileAsync(string profile)
+    {
+        if (!ProfileBackgroundPercent.TryGetValue(profile, out var percent)) throw new ArgumentException("Unbekanntes Profil.");
+        await SaveSettingsAsync(Settings with { Profile = profile, BackgroundPercent = percent });
+    }
+    public async Task CompleteSetupGuideAsync()
+    {
+        if (Settings.SetupGuideDone) return;
+        await lifecycle.WaitAsync();
+        try { var next = Settings with { SetupGuideDone = true }; store.Save(next); Settings = next; }
+        finally { lifecycle.Release(); }
+    }
+    private void RecordSession(SessionSummary summary)
+    {
+        lastSession = summary;
+        if (isolated) return;
+        try
+        {
+            var path = Path.Combine(store.DirectoryPath, "sessions.json");
+            var list = File.Exists(path) && new FileInfo(path).Length < 256 * 1024
+                ? JsonSerializer.Deserialize<List<SessionSummary>>(File.ReadAllText(path)) ?? [] : [];
+            list.Insert(0, summary);
+            File.WriteAllText(path, JsonSerializer.Serialize(list.Take(20)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { /* History is optional. */ }
+    }
     internal static string AppVersion { get; } = (typeof(DynexRuntime).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
     private TaskCompletionSource monitoringPulse = NewPulse();
     public bool IsSpeedTestWaiting { get; private set; }
@@ -395,6 +425,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     else if (IsSpeedTestWaiting) detail = SpeedTestMessage;
                     if (decision.DownloadLimitMbps.HasValue && !driver.Active && !IsSpeedTestRunning)
                         detail = "Gaming erkannt. Die Downloadbegrenzung ist noch nicht aktiv: " + driver.Message;
+                    if (sessions.Observe(gaming, game, measurement.External.Current, driver.Active, now) is { } ended) RecordSession(ended);
                     var point = new HistoryPoint(now, measurement.Router.Current, measurement.External.Current, measurement.Down, driver.Active || remote.Any(p => p.ShaperActive));
                     lock (history) { history.Add(point); if (history.Count > 300) history.RemoveAt(0); }
                     HistoryPoint[] points;
@@ -414,7 +445,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
-                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil);
+                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil, LastSession: lastSession);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }
@@ -608,6 +639,7 @@ public sealed class DynexRuntime : IAsyncDisposable
             NetworkTransport = GetNetworkDiagnostics(), NetworkEnvironment = networkEnvironment,
             ConnectionAdvice = GetNetworkDiagnostics()?.Assess(networkEnvironment.FirewallConfigured),
             WithoutConfirmedLimits = Summarize(false), WithConfirmedLimits = Summarize(true),
+            RecentSessions = File.Exists(Path.Combine(store.DirectoryPath, "sessions.json")) ? File.ReadAllText(Path.Combine(store.DirectoryPath, "sessions.json")) : null,
             LatestCrash = CrashLog.Reports().FirstOrDefault() is { } crash ? File.ReadAllText(crash) : null,
             Note = "Keine Schlüssel. NIC-Verkehr enthält LAN. ICMP-Ziel ist kein Spielservernachweis. Beobachtungsvergleich, kein kausaler Bufferbloat-Beweis."
         }, new JsonSerializerOptions { WriteIndented = true }));

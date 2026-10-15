@@ -35,12 +35,16 @@ public partial class MainWindow : Window
     private int _devicePage;
     private readonly Dynex.Core.StatusNotifications _notifications = new();
     private readonly Forms.ToolStripMenuItem _resumeItem;
+    private Dynex.Core.SessionSummary? _shownSession;
+    private readonly bool _guideAllowed;
     private double? _historyPointerRatio;
     private const int WmGetMinMaxInfo = 0x0024;
     private const uint MonitorDefaultToNearest = 2;
 
-    public MainWindow(DynexRuntime runtime, GitHubUpdateService? updates = null)
+    public MainWindow(DynexRuntime runtime, GitHubUpdateService? updates = null, bool showSetupGuide = false)
     {
+        // Existing installations that already measured their line skip the first-run guide.
+        _guideAllowed = showSetupGuide && runtime.Settings.CapacityMeasuredAtUtc is null;
         InitializeComponent();
         DeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
         _runtime = runtime;
@@ -98,6 +102,12 @@ public partial class MainWindow : Window
     }
     private void UpdateTray(RuntimeSnapshot s)
     {
+        RenderGuide(s);
+        if (s.LastSession is { } session && !ReferenceEquals(session, _shownSession))
+        {
+            _shownSession = session;
+            if (_runtime.Settings.Notifications) _tray.ShowBalloonTip(8000, "Spielsitzung beendet", session.Text, Forms.ToolTipIcon.Info);
+        }
         _resumeItem.Enabled = s.PausedUntil is not null;
         var ping = s.External.Current is { } ms ? $"{ms:0} ms" : "—";
         var limit = s.PausedUntil is { } until ? $"pausiert bis {until.ToLocalTime():HH:mm}" : s.LimitMbps is { } cap ? $"{cap:0.#} Mbit/s" : "kein Limit";
@@ -123,6 +133,7 @@ public partial class MainWindow : Window
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
         PriorityCombo.SelectedIndex = s.SharePriority switch { 0.5 => 0, 2 => 2, _ => 1 };
+        ProfileCombo.SelectedIndex = s.Profile switch { "Turnier" => 0, "Entspannt" => 2, "Standard" => 1, _ => -1 };
         _loading = false;
         _updates?.SetEnabled(s.AutoUpdate);
     }
@@ -333,6 +344,33 @@ public partial class MainWindow : Window
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = null });
         ErrorText.Text = "Manuelles Limit aufgehoben.";
     });
+    private async void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || ProfileCombo.SelectedItem is not ComboBoxItem { Tag: string profile } item) return;
+        await RunUiAction(async () =>
+        {
+            await _runtime.ApplyProfileAsync(profile);
+            ErrorText.Text = $"Profil {item.Content} aktiv.";
+        });
+    }
+    private async void GuideDone_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
+    {
+        await _runtime.CompleteSetupGuideAsync();
+        GuidePanel.Visibility = Visibility.Collapsed;
+    });
+    private void RenderGuide(RuntimeSnapshot s)
+    {
+        if (!_guideAllowed || _runtime.Settings.SetupGuideDone) { GuidePanel.Visibility = Visibility.Collapsed; return; }
+        GuidePanel.Visibility = Visibility.Visible;
+        var privateOk = s.NetworkProblem is null &&
+            s.Connection?.Kind is not (Dynex.Core.ConnectionProblemKind.NoPrivateNetwork or Dynex.Core.ConnectionProblemKind.FirewallMissing);
+        var peersOk = s.Devices.Count > 1;
+        var speedOk = _runtime.Settings.CapacityMeasuredAtUtc is not null;
+        GuideNetworkText.Text = privateOk ? "✓ 1 · Heimnetz ist privat und freigegeben." : "✗ 1 · " + (s.NetworkProblem ?? s.Connection?.ToString() ?? "Netzwerk prüfen.");
+        GuidePeerText.Text = peersOk ? $"✓ 2 · {s.Devices.Count - 1} weitere(r) PC verbunden." : "… 2 · Noch kein anderer PC gefunden. DYNEX auf dem zweiten PC starten (bei nur einem PC überspringen).";
+        GuideSpeedText.Text = speedOk ? "✓ 3 · Internetgeschwindigkeit gemessen." : "… 3 · " + (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Speedtest steht noch aus." : _runtime.SpeedTestMessage);
+        GuideDoneButton.Content = privateOk && speedOk ? "Fertig" : "Später";
+    }
     private async void PriorityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || PriorityCombo.SelectedItem is not ComboBoxItem item ||

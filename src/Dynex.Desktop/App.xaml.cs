@@ -71,7 +71,8 @@ public partial class App : System.Windows.Application
             }
             await _runtime.StartAsync();
             Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
-            var window = new MainWindow(_runtime, _updates);
+            // The first-run guide is for real installations; isolated test profiles keep their fixed layout.
+            var window = new MainWindow(_runtime, _updates, showSetupGuide: DesktopLifecycle.ProfilePath is null);
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
             window.Show();

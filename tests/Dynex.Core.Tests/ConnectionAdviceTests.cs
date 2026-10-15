@@ -175,3 +175,20 @@ internal static class ShareWeightTests
         catch (ArgumentException) { check(true, "out-of-range priorities are rejected"); }
     }
 }
+
+internal static class SessionTrackerTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        var tracker = new SessionTracker(TimeSpan.FromMinutes(2));
+        var t = DateTimeOffset.UtcNow;
+        check(tracker.Observe(true, "CS2", 20, false, t) is null, "session start returns nothing");
+        for (var i = 1; i <= 90; i++) tracker.Observe(true, "CS2", i == 45 ? null : i % 2 == 0 ? 20 : 40, i > 30, t.AddSeconds(2 * i));
+        var summary = tracker.Observe(false, null, 20, false, t.AddSeconds(182));
+        check(summary is { Game: "CS2", AveragePingMs: { } avg, MaxPingMs: 40 } s && Math.Round(avg) == 30 && Math.Round(s.Duration.TotalSeconds) == 180 &&
+            Math.Round(s.LimitedFor.TotalSeconds) == 120 && s.PingLossPercent > 0, "ended session reports duration, ping, loss and limited time");
+        check(summary!.Text.StartsWith("CS2: 3 min · Ø Ping 30 ms (max 40 ms)"), "summary text is readable");
+        tracker.Observe(true, "Short", 20, false, t.AddMinutes(10));
+        check(tracker.Observe(false, null, null, false, t.AddMinutes(10).AddSeconds(30)) is null, "very short sessions are not reported");
+    }
+}
