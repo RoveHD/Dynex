@@ -5,9 +5,10 @@ public static class LimitExplanation
 {
     public static string Describe(LimitDecision decision, bool localGaming, string? localGame,
         IReadOnlyList<PeerAdvertisement> remote, bool capacityMeasured, bool speedTestRunning,
-        bool driverEnabled, bool driverActive, double? manualLimitMbps, double? appliedLimitMbps)
+        bool driverEnabled, bool driverActive, double? manualLimitMbps, double? appliedLimitMbps, DateTimeOffset? pausedUntil = null)
     {
         if (speedTestRunning) return "Speedtest läuft · Begrenzung pausiert";
+        if (pausedUntil is { } until) return $"Von dir pausiert bis {until.ToLocalTime():HH:mm} Uhr · Downloads frei";
         if (!decision.GamingActive) return "Kein Spiel im Fokus · kein Limit";
         var gamers = new List<string>();
         if (localGaming) gamers.Add(string.IsNullOrWhiteSpace(localGame) ? "diesem PC" : $"diesem PC ({localGame})");

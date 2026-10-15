@@ -17,6 +17,7 @@ public sealed record UserSettings
     public bool AutoStart { get; init; } = true;
     public bool AutoUpdate { get; init; }
     public bool AutoConnectLan { get; init; } = true;
+    public bool Notifications { get; init; } = true;
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";
@@ -39,4 +40,4 @@ public sealed record RuntimeSnapshot(
     bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0,
     string? NetworkProblem = null, bool ProtectionIdle = false,
     Dynex.Core.PeerNetworkDiagnostics? NetworkDiagnostics = null,
-    string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null);
+    string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null);

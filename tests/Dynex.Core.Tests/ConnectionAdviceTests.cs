@@ -121,3 +121,25 @@ internal static class LimitExplanationTests
             "speed test pause takes precedence");
     }
 }
+
+internal static class StatusNotificationTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        var notes = new StatusNotifications(TimeSpan.FromSeconds(60));
+        var t = DateTimeOffset.UtcNow;
+        check(notes.Observe(["PC 2"], false, "", null, t).Count == 0, "first snapshot only sets the baseline");
+        check(notes.Observe(["PC 2"], false, "", null, t.AddSeconds(2)).Count == 0, "unchanged status does not notify");
+        var lost = notes.Observe([], false, "", null, t.AddSeconds(4));
+        check(lost is [{ Title: "PC nicht mehr verbunden" }] && lost[0].Text.Contains("PC 2"), "departed PC notifies once by name");
+        check(notes.Observe(["PC 2"], false, "", null, t.AddSeconds(6)) is [{ Title: "PC verbunden" }], "reconnected PC notifies");
+        check(notes.Observe([], false, "", null, t.AddSeconds(8)).Count == 0, "flapping PC is rate limited");
+        check(notes.Observe([], true, "Gaming auf PC 2 erkannt", null, t.AddSeconds(10)) is [{ Text: "Gaming auf PC 2 erkannt" }],
+            "limit activation notifies with its reason");
+        check(notes.Observe([], true, "x", null, t.AddSeconds(12)).Count == 0, "an ongoing limit does not repeat");
+        var advice = new PeerNetworkDiagnostics("Automatisch", [], []).Assess();
+        check(notes.Observe([], true, "x", advice, t.AddSeconds(14)) is [{ Title: "Verbindungsproblem" }], "a new actionable problem notifies");
+        check(LimitExplanation.Describe(new LimitDecision(16, "", true, null, false), true, null, [], true, false, true, true, null, 16,
+            pausedUntil: t.AddMinutes(30)).StartsWith("Von dir pausiert"), "a user pause is the stated limit reason");
+    }
+}

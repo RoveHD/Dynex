@@ -42,6 +42,18 @@ public sealed class DynexRuntime : IAsyncDisposable
     internal static string AppVersion { get; } = (typeof(DynexRuntime).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
     private TaskCompletionSource monitoringPulse = NewPulse();
     public bool IsSpeedTestWaiting { get; private set; }
+    private long pausedUntilTicks;
+    /// <summary>User pause of automatic and manual download limits. Not persisted: a restart ends it.</summary>
+    public DateTimeOffset? PausedUntil
+    {
+        get { var ticks = Interlocked.Read(ref pausedUntilTicks); return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero); }
+    }
+    public void PauseLimits(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero || duration > TimeSpan.FromHours(24)) throw new ArgumentOutOfRangeException(nameof(duration));
+        Interlocked.Exchange(ref pausedUntilTicks, DateTimeOffset.UtcNow.Add(duration).UtcTicks);
+    }
+    public void ResumeLimits() => Interlocked.Exchange(ref pausedUntilTicks, 0);
     public SpeedTestWaitReason SpeedTestWaitingFor { get; private set; }
     private static TaskCompletionSource NewPulse() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool IsSpeedTestRunning { get; private set; }
@@ -348,6 +360,9 @@ public sealed class DynexRuntime : IAsyncDisposable
                         decision = decision with { DownloadLimitMbps = null, SharedDownloadBudgetMbps = null, SharedCapacityMbps = null, SharedBudgetComplete = false };
                     // A manual value is a maximum while gaming, never an always-on limit.
                     if (!decision.GamingActive) decision = decision with { DownloadLimitMbps = null };
+                    var pausedUntil = PausedUntil;
+                    if (pausedUntil is { } until && until <= now) { Interlocked.CompareExchange(ref pausedUntilTicks, 0, until.UtcTicks); pausedUntil = null; }
+                    if (pausedUntil is not null) decision = decision with { DownloadLimitMbps = null };
                     PlannedDownloadLimitMbps = IsSpeedTestRunning ? null : decision.DownloadLimitMbps;
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
@@ -385,7 +400,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     var diagnostics = service.GetNetworkDiagnostics();
                     var limitReason = LimitExplanation.Describe(decision, gaming, focusedGame?.GameName, remote,
                         settings.CapacityMeasuredAtUtc is not null, IsSpeedTestRunning, settings.DriverEnabled && shapingAllowed,
-                        driver.Active, settings.ManualLimitMbps, driver.Mbps);
+                        driver.Active, settings.ManualLimitMbps, driver.Mbps, pausedUntil);
                     var snapshot = new RuntimeSnapshot(state, detail, gaming, game, driver.Active,
                         driver.Message, driver.Mbps, measurement.Down, measurement.Up, measurement.Router, measurement.External, devices, points,
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
@@ -396,7 +411,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && shaper.CaptureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
-                        Connection: diagnostics.Assess(firewallConfigured));
+                        Connection: diagnostics.Assess(firewallConfigured), PausedUntil: pausedUntil);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                 }

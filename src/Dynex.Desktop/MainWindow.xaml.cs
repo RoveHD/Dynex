@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private IReadOnlyList<HistoryPoint> _lastHistory = Array.Empty<HistoryPoint>();
     private IReadOnlyList<DeviceView> _deviceSnapshot = Array.Empty<DeviceView>();
     private int _devicePage;
+    private readonly Dynex.Core.StatusNotifications _notifications = new();
+    private readonly Forms.ToolStripMenuItem _resumeItem;
     private double? _historyPointerRatio;
     private const int WmGetMinMaxInfo = 0x0024;
     private const uint MonitorDefaultToNearest = 2;
@@ -63,6 +65,12 @@ public partial class MainWindow : Window
         _tray = new Forms.NotifyIcon { Icon = _trayIcon, Text = "DYNEX – Gaming-Netzwerkpriorisierung", Visible = true };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("DYNEX öffnen", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
+        menu.Items.Add(new Forms.ToolStripSeparator());
+        menu.Items.Add("Downloadlimit 30 Minuten pausieren", null, (_, _) => Dispatcher.Invoke(() => PauseLimits(TimeSpan.FromMinutes(30))));
+        menu.Items.Add("Downloadlimit 2 Stunden pausieren", null, (_, _) => Dispatcher.Invoke(() => PauseLimits(TimeSpan.FromHours(2))));
+        _resumeItem = new Forms.ToolStripMenuItem("Pause beenden", null, (_, _) => Dispatcher.Invoke(ResumeLimits)) { Enabled = false };
+        menu.Items.Add(_resumeItem);
+        menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Beenden", null, (_, _) => Dispatcher.Invoke(ExitApplication));
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
@@ -76,12 +84,38 @@ public partial class MainWindow : Window
         ApplyResponsiveScale();
     }
 
+    private void PauseLimits(TimeSpan duration)
+    {
+        _runtime.PauseLimits(duration);
+        _resumeItem.Enabled = true;
+        ErrorText.Text = $"Downloadlimit pausiert bis {_runtime.PausedUntil?.ToLocalTime():HH:mm} Uhr. Gilt nur für diesen PC.";
+    }
+    private void ResumeLimits()
+    {
+        _runtime.ResumeLimits();
+        _resumeItem.Enabled = false;
+        ErrorText.Text = "Pause beendet. Das Downloadlimit gilt wieder beim nächsten Messzyklus.";
+    }
+    private void UpdateTray(RuntimeSnapshot s)
+    {
+        _resumeItem.Enabled = s.PausedUntil is not null;
+        var ping = s.External.Current is { } ms ? $"{ms:0} ms" : "—";
+        var limit = s.PausedUntil is { } until ? $"pausiert bis {until.ToLocalTime():HH:mm}" : s.LimitMbps is { } cap ? $"{cap:0.#} Mbit/s" : "kein Limit";
+        var text = $"DYNEX · Ping {ping} · Limit {limit} · {s.Devices.Count} PCs";
+        _tray.Text = text.Length <= 63 ? text : text[..63]; // NotifyIcon rejects longer texts.
+        if (!_runtime.Settings.Notifications) return;
+        var peers = s.Devices.Skip(1).Select(d => d.Name).ToArray();
+        foreach (var note in _notifications.Observe(peers, s.LimitMbps is not null && s.DriverActive, s.LimitReason, s.Connection, DateTimeOffset.UtcNow))
+            if (!string.IsNullOrWhiteSpace(note.Text)) _tray.ShowBalloonTip(5000, note.Title, note.Text, Forms.ToolTipIcon.Info);
+    }
+
     private void Runtime_Updated(RuntimeSnapshot snapshot) => Dispatcher.BeginInvoke(new Action(() => RenderSnapshot(snapshot)));
     private void LoadSettings(UserSettings s)
     {
         _loading = true;
         RenderCapacity();
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
+        NotificationsCheck.IsChecked = s.Notifications;
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
@@ -101,6 +135,7 @@ public partial class MainWindow : Window
                 AutoConnectLan = AutoConnectCheck.IsChecked == true,
                 AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
+                Notifications = NotificationsCheck.IsChecked == true,
                 GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
@@ -369,6 +404,7 @@ public partial class MainWindow : Window
 
     private void RenderSnapshot(RuntimeSnapshot s)
     {
+        UpdateTray(s);
         RenderCapacity();
         HeaderState.Text = s.State.ToUpperInvariant(); DetailText.Text = s.Detail;
         GameText.Text = _runtime.Settings.Mode == GamingMode.Off ? "Fokus-Erkennung ausgeschaltet"
