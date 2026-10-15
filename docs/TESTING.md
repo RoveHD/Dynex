@@ -6,6 +6,16 @@ Am 15.10.2026 in einer Linux-Umgebung (.NET-SDK 10, Ziel net9.0) ausgeführt und
 
 Der Desktop und die Windows-Testprojekte (Runtime, Setup, UserCleanup) wurden mit `EnableWindowsTargeting` ohne Warnungen oder Fehler kompiliert, aber **nicht ausgeführt** (Windows erforderlich). Beide NSIS-Skripte wurden mit makensis 3.09 und Testinhalt erzeugt; der Signaturhaken lief dabei für Setup, Uninstaller und Bereinigung. `scripts/build.ps1` wurde mit PowerShell 7.4 syntaktisch geprüft. Nicht ausgeführt: WinVerifyTrust gegen echte signierte Dateien, Signieren mit einem echten Zertifikat, Rollback-Pfad eines echten Setups und der Zwei-PC-Test unten.
 
+### Funktionen aus der Featureliste (1.0.6)
+
+Zusätzlich geprüft: Benachrichtigungslogik (Übergänge, Ratenbegrenzung), Pause als Limitgrund, Bufferbloat-Bewertung und Median, Leerlauf-/Lastping im Speedtest, gewichtete Budgetanteile inklusive Rückfall auf gleiche Anteile mit älteren PCs, Spielsitzungs-Zusammenfassung, UPnP-Routerzähler (SSDP-Herkunft, Hostbindung, DTD-Abweisung, 32-Bit-Überlauf, End-to-End gegen einen simulierten Router) sowie Beta-Kanal (Vorabversionen, Entwürfe, fehlerhafte Einträge). Launcher-Erkennung (Ubisoft/EA/Battle.net-Registrierungen, Xbox `MicrosoftGame.config` inklusive DTD-Abweisung) läuft in den Windows-Tests.
+
+**GitHub Actions (Windows-Runner):** Runtime-, Setup-, UserCleanup-, GameDetection-, Bulk- und Shaper-Tests sowie der unsignierte Installer-Build laufen bei jedem Push; Lauf 7 (15.10.2026) war vollständig grün. Ein zeitabhängiger Updater-Test (Wettlauf zwischen Hintergrund- und manueller Prüfung) wurde dabei gefunden und behoben. Traffic- und Live-Tests benötigen echten Filter bzw. Router und bleiben manuell.
+
+Nicht automatisch prüfbar und deshalb offen: Infobereich-Benachrichtigungen und Assistent auf echtem Desktop, UPnP gegen echte Router, Launcher-Erkennung mit echten Installationen.
+
+**Bewusst nicht umgesetzt:** Upload-Begrenzung (würde den nativen Paketpfad für ausgehende Pakete ändern; ohne Test mit echtem NDIS-Filter zu riskant für Spiel- und ACK-Pakete) und eine englische Oberfläche (alle Texte müssten in Ressourcen ausgelagert werden; eigenes Paket).
+
 ### Abnahme auf zwei echten PCs (offen)
 
 Auf PC 1 und PC 2 jeweils DYNEX 1.0.6 installieren, beide im selben WLAN/LAN mit Windows-Profil **Privat**. Nach jedem Schritt „Diagnose exportieren“ sichern.
@@ -24,6 +34,12 @@ Auf PC 1 und PC 2 jeweils DYNEX 1.0.6 installieren, beide im selben WLAN/LAN mit
 | 10 | Spiel auf PC 2 im Fokus, Download auf PC 1 | PC 1: Downloadbudget mit Grund „Gaming auf PC 2 (…) erkannt“, Tooltip mit aktueller Geschwindigkeit |
 | 11 | Update 1.0.6 → Folgeversion über **Jetzt prüfen** | Signatur akzeptiert, Installation beim nächsten Start, Version erhöht |
 | 12 | Folgeversion mit absichtlich defektem Helper | Setup stellt 1.0.6 wieder her, Hinweis beim Start, kein erneuter Auto-Download |
+| 13 | Tray → 30 min pausieren, während PC 2 spielt | Limitgrund „Von dir pausiert bis …“, Downloads frei; „Pause beenden“ stellt das Limit wieder her |
+| 14 | PC 1 Priorität Hoch, PC 2 Normal, Spiel auf PC 2 | Limit PC 1 ≈ 2/3, PC 2 ≈ 1/3 des Budgets |
+| 15 | Speedtest bei laufendem Download auf einem Handy | Bufferbloat-Bewertung und Empfehlung erscheinen |
+| 16 | Router mit UPnP-Status (FRITZ!Box) | Download-Karte „Ganzes Heimnetz“; Tooltip mit Geräten ohne DYNEX |
+| 17 | Spiel aus Ubisoft/EA/Battle.net/Xbox starten | Spiel wird erkannt, Launcher allein nicht |
+| 18 | 5 min spielen, beenden | Benachrichtigung „Spielsitzung beendet“ mit Dauer und Ping |
 
 
 ## PC-Kopplung und Verbindungsdiagnose (1.0.5)

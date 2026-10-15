@@ -39,6 +39,10 @@ GitHub-Repository. Sie prüft HTTPS-Ziel, Dateigröße und SHA-256-Digest; auch 
 Installation wird die gespeicherte Datei erneut geprüft. Unvollständige Downloads
 werden nicht installiert. Die Anwendung enthält keine GitHub-Zugangsdaten.
 
+**Beta-Kanal (ab 1.0.6):** Mit **Vorabversionen (Beta) erhalten** berücksichtigt DYNEX auch GitHub-Releases,
+die als „Pre-release“ markiert sind (gleiches Tag-Format `vX.Y.Z`). Es gilt die höchste gültige Version; Entwürfe
+werden nie installiert. Alle Prüfungen (Hash, Signatur, Rückkehr bei Fehlern) sind identisch.
+
 Ab 1.0.6 prüft DYNEX zusätzlich die Authenticode-Signatur des Setups mit Windows
 (`WinVerifyTrust`), direkt nach dem Download und noch einmal unmittelbar vor dem Start:
 
@@ -90,6 +94,14 @@ genügend Reputation besteht; EV-Zertifikate bzw. Microsoft Trusted Signing verk
 Der Packet-Filter-Treiber stammt weiterhin vom Hersteller und wird separat geprüft.
 
 ## Folgeversion veröffentlichen
+
+**Automatisch (empfohlen):** Version in `src/Dynex.Desktop/Dynex.Desktop.csproj` erhöhen, committen und das Tag
+`vX.Y.Z` pushen. `.github/workflows/release.yml` führt alle Tests aus, baut und signiert und legt einen
+**Release-Entwurf** mit Setup, Bereinigung und `.sha256`-Dateien an. Dafür als Repository-Secrets hinterlegen:
+`DYNEX_SIGN_PFX_BASE64` (PFX-Datei Base64-kodiert) und `DYNEX_SIGN_PFX_PASSWORD`. Ohne Zertifikat bricht der Release ab,
+außer die Repository-Variable `ALLOW_UNSIGNED_RELEASE` ist `true`. Den Entwurf nach der Zwei-PC-Abnahme veröffentlichen.
+
+**Manuell:**
 
 Die Versionsnummer der Desktop-App und des Installers muss übereinstimmen.
 Nach Tests und `scripts/build.ps1 -Version X.Y.Z -RequireSignature …` das geprüfte, signierte

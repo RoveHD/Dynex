@@ -14,6 +14,16 @@ DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanage
 - **Downloadlimit erklärt:** Die Karte **Downloadbudget** zeigt neben dem aktiven Limit den Grund, z. B. „Gaming auf PC 2 (Valorant) erkannt · Budget geteilt auf 3 PCs“; der Tooltip ergänzt die aktuelle Geschwindigkeit.
 - **Abgesicherte Updates:** Authenticode-Prüfung des Setups vor der Installation (gleicher Herausgeber wie die installierte Version), Starttest der neuen Version und automatische Rückkehr zur vorherigen Version, wenn das Update fehlschlägt. [Details](docs/updates.md)
 - **Signierte Builds:** `scripts/build.ps1` signiert App, Helper, Setup, Uninstaller und Bereinigung, sobald ein Code-Signing-Zertifikat angegeben ist. [Signieren](docs/updates.md#signieren)
+- **Infobereich:** Rechtsklick → **Downloadlimit 30 Minuten / 2 Stunden pausieren** bzw. **Pause beenden** (nur dieser PC, endet auch beim Neustart). Der Tooltip zeigt Ping, Limit und Anzahl der PCs.
+- **Benachrichtigungen:** bei verbundenem/verlorenem PC, beginnender Begrenzung (mit Grund), neuen Verbindungsproblemen und am Ende einer Spielsitzung (Dauer, Ø/max. Ping, begrenzte Zeit). Abschaltbar unter Einstellungen → Allgemein; Wiederholungen derselben Meldung frühestens nach 60 s.
+- **Profile:** Turnier (40 % der Leitung für Downloads beim Spielen), Standard (65 %), Entspannt (85 %).
+- **Priorität pro PC:** Niedrig/Normal/Hoch verteilt das gemeinsame Budget im Verhältnis 0,5 : 1 : 2. Wirkt nur, wenn alle verbundenen PCs mindestens 1.0.6 nutzen; sonst gleiche Anteile, damit das Budget nie überbucht wird.
+- **Bufferbloat-Test:** Der Speedtest misst zusätzlich den Ping im Leerlauf und unter Volllast und bewertet den Anstieg (A+ bis F) mit Router-Empfehlung (SQM/Smart Queue).
+- **Ganzes Heimnetz:** Bietet der Router UPnP-Statusinformationen an (z. B. FRITZ!Box: „Statusinformationen über UPnP übertragen“), zeigt die Download-Karte den Gesamtverkehr des Routers und schätzt den Anteil von Geräten ohne DYNEX. Nur lesend; DYNEX steuert diese Geräte nicht.
+- **Mehr Spiele erkannt:** zusätzlich Installationen aus Ubisoft Connect, EA app, Battle.net und Xbox/Game Pass (nur in `MicrosoftGame.config` gelistete Programme).
+- **Erster Start:** Ein Assistent prüft live privates Netzwerk, zweiten PC und Speedtest. Bestehende Installationen mit Messung sehen ihn nicht.
+- **Beta-Kanal, Sicherung, Absturzbericht:** Vorabversionen optional unter Updates; Einstellungen sichern/wiederherstellen (ohne Schlüssel und Speedtest-Wert); unerwartete Abstürze werden lokal protokolliert und in „Diagnose exportieren“ aufgenommen – es wird nichts hochgeladen.
+- **CI:** GitHub Actions führt bei jedem Push alle portablen und Windows-Tests aus und baut den Installer; ein Tag `vX.Y.Z` erzeugt einen signierten Release-Entwurf (`.github/workflows`).
 
 ## Schnellstart
 
