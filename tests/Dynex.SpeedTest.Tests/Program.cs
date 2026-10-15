@@ -27,6 +27,15 @@ var success = await new SpeedTestService(new HttpClient(successfulHandler), succ
 var expectedRate = success.DownloadedBytes * 8d / success.Duration.TotalSeconds / 1_000_000d;
 Check(success.DownloadedBytes == 65_536 && Math.Abs(success.DownloadMbps - expectedRate) < 0.000001, "download rate is calculated from aggregate bytes and shared elapsed time");
 
+var probes = 0;
+var loadHandler = new TestHandler(async (_, token) => { await Task.Delay(1500, token); return Response(HttpStatusCode.OK, new byte[1_048_576], 1_048_576); });
+var loadedResult = await new SpeedTestService(new HttpClient(loadHandler), Options(1, 1_048_576, 1_048_576, TimeSpan.FromSeconds(3)),
+    _ => Task.FromResult<double?>(Interlocked.Increment(ref probes) <= 3 ? 20 : 180)).MeasureAsync(CancellationToken.None);
+Check(loadedResult.IdleLatencyMs == 20 && loadedResult.LoadedLatencyMs == 180, "idle and loaded latency are measured around the download load");
+Check(Dynex.Core.Bufferbloat.Rate(loadedResult.IdleLatencyMs, loadedResult.LoadedLatencyMs)?.Grade == "C", "measured latency increase is graded");
+var noProbe = await new SpeedTestService(new HttpClient(successfulHandler), successfulOptions).MeasureAsync(CancellationToken.None);
+Check(noProbe.IdleLatencyMs is null && noProbe.LoadedLatencyMs is null, "without a latency probe the result stays unrated");
+
 await ThrowsAsync<ArgumentOutOfRangeException>(() => Task.Run(() => new SpeedTestService(new HttpClient(), Options(2, 65_536, 65_536))), "configured stream budget cannot exceed maximum bytes");
 await ThrowsAsync<HttpRequestException>(() => new SpeedTestService(new HttpClient(new TestHandler((_, _) => Task.FromResult(Response(HttpStatusCode.InternalServerError, [], 0)))),
     Options(1, 65_536, 65_536)).MeasureAsync(CancellationToken.None), "HTTP errors fail the measurement");

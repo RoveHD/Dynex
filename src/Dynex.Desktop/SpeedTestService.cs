@@ -11,7 +11,8 @@ internal interface ISpeedTestService
     Task<SpeedTestResult> MeasureAsync(CancellationToken token);
 }
 
-internal sealed record SpeedTestResult(double DownloadMbps, long DownloadedBytes, TimeSpan Duration);
+internal sealed record SpeedTestResult(double DownloadMbps, long DownloadedBytes, TimeSpan Duration,
+    double? IdleLatencyMs = null, double? LoadedLatencyMs = null);
 
 internal sealed record SpeedTestOptions(
     Uri Endpoint,
@@ -36,12 +37,14 @@ internal sealed class SpeedTestService : ISpeedTestService
 
     private readonly HttpClient _client;
     private readonly SpeedTestOptions _options;
+    private readonly Func<CancellationToken, Task<double?>>? _probeLatency;
 
-    public SpeedTestService() : this(SharedClient, SpeedTestOptions.Default) { }
+    public SpeedTestService() : this(SharedClient, SpeedTestOptions.Default, PingCloudflareAsync) { }
 
-    internal SpeedTestService(HttpClient client, SpeedTestOptions? options = null)
+    internal SpeedTestService(HttpClient client, SpeedTestOptions? options = null, Func<CancellationToken, Task<double?>>? probeLatency = null)
     {
         _client = client;
+        _probeLatency = probeLatency;
         _options = options ?? SpeedTestOptions.Default;
         if (_options.StreamCount < 1 || _options.BytesPerStream < 1 || _options.MaximumBytes < 1 ||
             _options.BytesPerStream > _options.MaximumBytes / _options.StreamCount || _options.MaximumBytes > 256L * 1024 * 1024 ||
@@ -50,8 +53,27 @@ internal sealed class SpeedTestService : ISpeedTestService
             throw new ArgumentOutOfRangeException(nameof(options), "Die Speedtest-Limits sind ungültig.");
     }
 
+    private static async Task<double?> PingCloudflareAsync(CancellationToken token)
+    {
+        try
+        {
+            using var ping = new System.Net.NetworkInformation.Ping();
+            var reply = await ping.SendPingAsync(IPAddress.Parse("1.1.1.1"), 1000).WaitAsync(token).ConfigureAwait(false);
+            return reply.Status == System.Net.NetworkInformation.IPStatus.Success ? reply.RoundtripTime : null;
+        }
+        catch (System.Net.NetworkInformation.PingException) { return null; }
+    }
+
     public async Task<SpeedTestResult> MeasureAsync(CancellationToken token)
     {
+        // Bufferbloat: compare idle latency with latency while the download saturates the line.
+        double? idle = null;
+        if (_probeLatency is not null)
+        {
+            var samples = new List<double?>();
+            for (var i = 0; i < 3; i++) { samples.Add(await _probeLatency(token).ConfigureAwait(false)); }
+            idle = Dynex.Core.Bufferbloat.Median(samples);
+        }
         using var deadline = new CancellationTokenSource(_options.Deadline);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token);
         var stopwatch = Stopwatch.StartNew();
@@ -64,6 +86,23 @@ internal sealed class SpeedTestService : ISpeedTestService
         var workers = Enumerable.Range(0, _options.StreamCount)
             .Select(_ => DownloadWorkerAsync())
             .ToArray();
+        var loadedSamples = new List<double?>();
+        using var probeStop = new CancellationTokenSource();
+        var probing = _probeLatency is null ? Task.CompletedTask : Task.Run(async () =>
+        {
+            try
+            {
+                // Skip the TCP ramp-up so the samples reflect a saturated line.
+                await Task.Delay(500, probeStop.Token).ConfigureAwait(false);
+                while (!probeStop.IsCancellationRequested)
+                {
+                    var sample = await _probeLatency(probeStop.Token).ConfigureAwait(false);
+                    lock (loadedSamples) loadedSamples.Add(sample);
+                    await Task.Delay(250, probeStop.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
 
         try
         {
@@ -82,6 +121,8 @@ internal sealed class SpeedTestService : ISpeedTestService
         finally
         {
             stopwatch.Stop();
+            probeStop.Cancel();
+            await probing.ConfigureAwait(false);
         }
 
         token.ThrowIfCancellationRequested();
@@ -95,7 +136,9 @@ internal sealed class SpeedTestService : ISpeedTestService
         if (!double.IsFinite(mbps) || mbps < 1 || mbps > 10_000)
             throw new InvalidOperationException("Die gemessene Downloadrate liegt außerhalb des gültigen Bereichs (1 bis 10.000 Mbit/s).");
 
-        return new SpeedTestResult(mbps, downloaded, elapsed);
+        double? loaded;
+        lock (loadedSamples) loaded = Dynex.Core.Bufferbloat.Median(loadedSamples);
+        return new SpeedTestResult(mbps, downloaded, elapsed, idle, loaded);
     }
 
     private async Task DownloadStreamAsync(CancellationToken token, Action<int> addBytes)

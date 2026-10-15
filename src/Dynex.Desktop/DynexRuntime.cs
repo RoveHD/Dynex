@@ -230,7 +230,9 @@ public sealed class DynexRuntime : IAsyncDisposable
                         var measured = SettingsStore.Normalize(Settings with
                         {
                             CapacityMbps = Math.Round(result.DownloadMbps, 2),
-                            CapacityMeasuredAtUtc = DateTimeOffset.UtcNow
+                            CapacityMeasuredAtUtc = DateTimeOffset.UtcNow,
+                            IdleLatencyMs = result.IdleLatencyMs is { } idle ? Math.Round(idle, 1) : null,
+                            LoadedLatencyMs = result.LoadedLatencyMs is { } loaded ? Math.Round(loaded, 1) : null
                         });
                         SettingsStore.Validate(measured);
                         store.Save(measured);
@@ -450,7 +452,7 @@ public sealed class DynexRuntime : IAsyncDisposable
     /// <summary>Portable settings backup. Contains no keys; measured capacity stays specific to this PC.</summary>
     public string ExportSettings() => JsonSerializer.Serialize(new SettingsBackup(1, AppVersion, Settings with
     {
-        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false
+        CapacityMbps = 200, CapacityMeasuredAtUtc = null, AutomaticSpeedTestAttempted = false, IdleLatencyMs = null, LoadedLatencyMs = null
     }), new JsonSerializerOptions { WriteIndented = true });
     public async Task ImportSettingsAsync(string json)
     {
@@ -464,7 +466,8 @@ public sealed class DynexRuntime : IAsyncDisposable
         await SaveSettingsAsync(imported with
         {
             DeviceName = current.DeviceName, CapacityMbps = current.CapacityMbps,
-            CapacityMeasuredAtUtc = current.CapacityMeasuredAtUtc, AutomaticSpeedTestAttempted = current.AutomaticSpeedTestAttempted
+            CapacityMeasuredAtUtc = current.CapacityMeasuredAtUtc, AutomaticSpeedTestAttempted = current.AutomaticSpeedTestAttempted,
+            IdleLatencyMs = current.IdleLatencyMs, LoadedLatencyMs = current.LoadedLatencyMs
         });
     }
     private sealed record SettingsBackup(int Format, string Version, UserSettings Settings);
@@ -498,7 +501,8 @@ public sealed class DynexRuntime : IAsyncDisposable
                 settings = settings with { AutomaticSpeedTestAttempted = true };
             // A settings action queued during the test must not restore its old capacity.
             if (settings.CapacityMeasuredAtUtc != prior.CapacityMeasuredAtUtc)
-                settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc });
+                settings = SettingsStore.Normalize(settings with { CapacityMbps = prior.CapacityMbps, CapacityMeasuredAtUtc = prior.CapacityMeasuredAtUtc,
+                    IdleLatencyMs = prior.IdleLatencyMs, LoadedLatencyMs = prior.LoadedLatencyMs });
             store.Save(settings);
             try { if (!isolated && settings.AutoStart != prior.AutoStart) SetAutostart(settings.AutoStart); }
             catch { store.Save(prior); throw; }

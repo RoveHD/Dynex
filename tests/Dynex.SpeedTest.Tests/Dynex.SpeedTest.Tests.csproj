@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/Dynex.Desktop/SpeedTestService.cs" Link="SpeedTestService.cs" />
+    <ProjectReference Include="../../src/Dynex.Core/Dynex.Core.csproj" />
   </ItemGroup>
 </Project>

@@ -62,6 +62,8 @@ internal sealed class SettingsStore
         Range(value.BackgroundPercent, 10, 95, "Downloadbudget (%)");
         Range(value.ReservePerGamerMbps, 0, value.CapacityMbps, "Reserve je Gaming-PC");
         if (value.ManualLimitMbps is double limit) Range(limit, 0.1, 10000, "Manuelles Limit");
+        foreach (var latency in new[] { value.IdleLatencyMs, value.LoadedLatencyMs })
+            if (latency is double ms) Range(ms, 0, 10000, "Gemessener Ping");
         if (!Enum.IsDefined(value.Mode)) throw new ArgumentException("Ungültiger Gaming-Modus.");
         foreach (var target in new[] { value.RouterTarget, value.ExternalTarget })
             if (!string.IsNullOrWhiteSpace(target) && (!IPAddress.TryParse(target, out var ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))) throw new ArgumentException("Messziele müssen gültige IP-Adressen sein.");

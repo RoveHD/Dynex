@@ -8,6 +8,8 @@ public sealed record UserSettings
     public string DeviceName { get; init; } = Environment.MachineName;
     public double CapacityMbps { get; init; } = 200;
     public DateTimeOffset? CapacityMeasuredAtUtc { get; init; }
+    public double? IdleLatencyMs { get; init; }
+    public double? LoadedLatencyMs { get; init; }
     public bool AutomaticSpeedTestAttempted { get; init; }
     public double BackgroundPercent { get; init; } = 65;
     public double ReservePerGamerMbps { get; init; } = 10;

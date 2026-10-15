@@ -143,3 +143,16 @@ internal static class StatusNotificationTests
             pausedUntil: t.AddMinutes(30)).StartsWith("Von dir pausiert"), "a user pause is the stated limit reason");
     }
 }
+
+internal static class BufferbloatTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        check(Bufferbloat.Rate(20, 22) is { Grade: "A+", Recommendation: null }, "small latency increase rates A+");
+        check(Bufferbloat.Rate(20, 70) is { Grade: "B" }, "moderate increase rates B");
+        check(Bufferbloat.Rate(20, 200) is { Grade: "C" } c && c.Recommendation!.Contains("SQM"), "strong increase recommends router SQM");
+        check(Bufferbloat.Rate(20, 900)?.Grade == "F", "severe increase rates F");
+        check(Bufferbloat.Rate(null, 50) is null && Bufferbloat.Rate(20, double.NaN) is null, "missing samples give no rating");
+        check(Bufferbloat.Median([10, null, 30, 20]) == 20 && Bufferbloat.Median([5, null]) is null, "median ignores lost pings and needs two answers");
+    }
+}

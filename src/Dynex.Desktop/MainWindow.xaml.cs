@@ -313,6 +313,11 @@ public partial class MainWindow : Window
             (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
                 ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits benötigen eine erfolgreiche Messung."
                 : _runtime.SpeedTestMessage);
+        if (!running && !waiting && Dynex.Core.Bufferbloat.Rate(settings.IdleLatencyMs, settings.LoadedLatencyMs) is { } bloat)
+        {
+            SpeedTestHint.Text += "\n" + bloat.Summary + (bloat.Recommendation is { } tip ? "\n" + tip : "");
+            SpeedTestHint.ToolTip = SpeedTestHint.Text;
+        }
     }
 
     private async void ManualLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
