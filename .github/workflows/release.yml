@@ -59,12 +59,14 @@ jobs:
         shell: pwsh
         env:
           DYNEX_SIGN_PFX_PASSWORD: ${{ secrets.DYNEX_SIGN_PFX_PASSWORD }}
-          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
         run: |
-          if ($env:ALLOW_UNSIGNED -eq 'true' -and -not $env:DYNEX_SIGN_PFX) {
-            ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }}
-          } else {
+          # Signed whenever the certificate secrets exist; until then an unsigned build
+          # (Windows SmartScreen warns). Once a certificate is configured, signing is mandatory.
+          if ($env:DYNEX_SIGN_PFX) {
             ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }} -RequireSignature
+          } else {
+            Write-Warning 'Kein Signaturzertifikat hinterlegt: Release wird unsigniert gebaut.'
+            ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }}
           }
       - name: Remove certificate
         if: always()
@@ -76,5 +78,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = '${{ steps.version.outputs.value }}'
-          gh release create "v$v" --draft --title "DYNEX $v" --notes "Entwurf aus CI. Vor dem Veröffentlichen die Zwei-PC-Abnahme (docs/TESTING.md) durchführen." `
+          $signed = if ($env:HAS_PFX -eq 'true') { 'Setup und Programme sind signiert.' } else { 'Diese Version ist noch nicht code-signiert; Windows SmartScreen kann beim Start des Setups warnen („Weitere Informationen“ → „Trotzdem ausführen“). Die SHA-256-Prüfsummen liegen bei.' }
+          gh release create "v$v" --draft --title "DYNEX $v" --notes "Entwurf aus CI. $signed Vor dem Veröffentlichen die Zwei-PC-Abnahme (docs/TESTING.md) durchführen." `
             "artifacts/DYNEX-Setup-$v.exe" "artifacts/DYNEX-Setup-$v.exe.sha256" "artifacts/DYNEX-Cleanup-$v.exe" "artifacts/DYNEX-Cleanup-$v.exe.sha256"
