@@ -232,13 +232,18 @@ public sealed class TrafficOwnership : IDisposable
                 ReadTable(rows, true, 2); ReadTable(rows, false, 2);
                 ReadTable(rows, true, 23); ReadTable(rows, false, 23);
                 var identities = new Dictionary<int, (DateTimeOffset? Started, string? Name)>();
+                // One handle-free system query per refresh instead of opening every socket owner (including
+                // anti-cheat protected games) several times per second.
+                var table = Dynex.Native.ProcessTable.Snapshot();
                 for (var i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i];
                     if (!identities.TryGetValue(row.ProcessId, out var identity))
                     {
                         if (identities.Count >= 4096) throw new InvalidOperationException("Zu viele unterschiedliche Socket-Prozesse.");
-                        identity = ReadIdentity(row.ProcessId); identities[row.ProcessId] = identity;
+                        identity = table.TryGetValue(row.ProcessId, out var known)
+                            ? (known.StartedAtUtc, known.Name.Trim().ToLowerInvariant()) : (null, null);
+                        identities[row.ProcessId] = identity;
                     }
                     // Missing process identity cannot establish safe per-program ownership.
                     rows[i] = row with { ProcessId = identity.Started is not null && identity.Name is not null ? row.ProcessId : 0,
@@ -311,19 +316,6 @@ public sealed class TrafficOwnership : IDisposable
             pid = BinaryPrimitives.ReadUInt32LittleEndian(row.Slice(tcp ? 52 : 24, 4));
         }
         return new(new(tcp ? TransportProtocol.Tcp : TransportProtocol.Udp, local, localPort, remote, remotePort), pid <= int.MaxValue ? (int)pid : 0);
-    }
-
-    private static (DateTimeOffset? Started, string? Name) ReadIdentity(int pid)
-    {
-        if (pid <= 0) return (null, null);
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            var started = new DateTimeOffset(process.StartTime.ToUniversalTime());
-            var name = process.ProcessName.Trim().ToLowerInvariant();
-            return string.IsNullOrWhiteSpace(name) ? (null, null) : (started, name);
-        }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or Win32Exception or NotSupportedException) { return (null, null); }
     }
 
     public void Dispose()

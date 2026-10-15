@@ -17,6 +17,17 @@ internal static class QosChecks
             ControlProtocol.ParseCommand("{\"mbps\":null,\"qosEnabled\":true}").QosEnabled, "QoS-only IPC is opt-in and legacy defaults off");
         check(NdisPacketDevice.GetSendIoctlIndex(1) == 2 && NdisPacketDevice.GetSendIoctlIndex(2) == 3,
             "original NDIS flags route outbound to adapter and inbound to MSTCP");
+        check(!ControlProtocol.ParseCommand("{\"mbps\":null,\"qosEnabled\":true}").MarkGamePackets &&
+            ControlProtocol.ParseCommand("{\"mbps\":null,\"qosEnabled\":true,\"markGamePackets\":true}").MarkGamePackets,
+            "game packet marking is opt-in over IPC");
+        QosPacketMarker.MarkGamePackets = false;
+        using (var game = Packet(Flow(false), PacketDirection.Outbound, new byte[160]))
+        {
+            var before = game.Buffer.AsSpan(0, game.Length).ToArray();
+            check(!QosPacketMarker.TryMark(game, PacketPriority.Game) && game.Buffer.AsSpan(0, game.Length).SequenceEqual(before),
+                "by default outbound game packets leave byte-for-byte unchanged (anti-cheat safe)");
+        }
+        QosPacketMarker.MarkGamePackets = true;
         foreach (var ipv6 in new[] { false, true })
         foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice })
         {
@@ -41,6 +52,7 @@ internal static class QosChecks
             }
             check(correct, $"IPv{(ipv6 ? 6 : 4)} {priority} DSCP preserves ECN, VLAN, flow label/options and transport checksum");
         }
+        QosPacketMarker.MarkGamePackets = false;
         using (var incoming = Packet(Flow(false), PacketDirection.Inbound, new byte[160]))
         {
             var before = incoming.Buffer.AsSpan(0, incoming.Length).ToArray();

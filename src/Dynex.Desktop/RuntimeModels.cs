@@ -24,6 +24,7 @@ public sealed record UserSettings
     public double SharePriority { get; init; } = 1;
     public string Profile { get; init; } = "Standard";
     public bool SetupGuideDone { get; init; }
+    public bool MarkGamePackets { get; init; }
     public GamingMode Mode { get; init; } = GamingMode.Auto;
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";

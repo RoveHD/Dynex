@@ -185,6 +185,7 @@ try
         "actual unknown Steam game wins while Wallpaper Engine and another application run concurrently");
     GameCoverageChecks.Run(Check, temp);
     LauncherChecks.Run(Check, temp);
+    ProcessTableChecks.Run(Check);
 
     File.WriteAllBytes(appInfoPath, AppInfo(41, (431960, "Game"), (100, "Game")));
     catalog = GameDetector.ReadSteamCatalog([steamRoot]);

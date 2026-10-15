@@ -27,6 +27,14 @@ jobs:
           dotnet-version: 9.0.x
       - run: dotnet run --project tests/Dynex.${{ matrix.suite }}.Tests -c Release
 
+  anticheat-guard:
+    name: Anti-cheat API guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./scripts/anticheat-guard.ps1
+
   windows-tests:
     name: Windows tests (${{ matrix.suite }})
     runs-on: windows-latest

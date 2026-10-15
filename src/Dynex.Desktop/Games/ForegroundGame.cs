@@ -22,6 +22,12 @@ internal static class ForegroundGame
             return null;
         try
         {
+            // Handle-free identity: the foreground game is never opened from here.
+            if (Dynex.Native.ProcessTable.Snapshot().TryGetValue((int)pid, out var identity))
+            {
+                if (GetForegroundWindow() != window || GetWindowThreadProcessId(window, out var samePid) == 0 || samePid != pid) return null;
+                return new((int)pid, identity.Name, identity.StartedAtUtc);
+            }
             using var process = Process.GetProcessById((int)pid);
             var name = process.ProcessName;
             DateTimeOffset? startedAt = null;

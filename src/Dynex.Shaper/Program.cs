@@ -202,6 +202,7 @@ internal static class Program
                 if (commandId < 0) throw new FormatException("Ungültige Befehlsbestätigung.");
                 var shutdown = commandJson.RootElement.TryGetProperty("shutdown", out var shutdownValue) && shutdownValue.GetBoolean();
                 if (shutdown && (requested is not null || requestedQos)) throw new FormatException("Abschaltung erfordert mbps:null und qosEnabled:false.");
+                QosPacketMarker.MarkGamePackets = command.MarkGamePackets;
                 bulkPolicy.Protect(command.ProtectedProcesses);
                 qosPolicy.Protect(command.ProtectedProcesses);
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());

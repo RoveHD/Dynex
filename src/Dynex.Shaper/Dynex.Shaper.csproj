@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Dynex.Shaper.Tests" />
+    <Compile Include="../Dynex.Desktop/Native/ProcessTable.cs" Link="Native/ProcessTable.cs" />
     <None Update="native/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

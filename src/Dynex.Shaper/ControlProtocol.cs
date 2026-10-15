@@ -19,15 +19,16 @@ public static class ControlProtocol
     }
 
     public sealed record ProtectedProcess(int ProcessId, long? StartedAtUtcTicks);
-    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false);
+    public sealed record Command(double? Mbps, ProtectedProcess[] ProtectedProcesses, bool QosEnabled = false, bool MarkGamePackets = false);
 
     public static Command ParseCommand(string line)
     {
         var rate = ParseRate(line);
         using var json = JsonDocument.Parse(line);
         var qos = json.RootElement.TryGetProperty("qosEnabled", out var qosValue) && qosValue.GetBoolean();
+        var markGame = json.RootElement.TryGetProperty("markGamePackets", out var markValue) && markValue.GetBoolean();
         if (!json.RootElement.TryGetProperty("protectedProcesses", out var processes))
-            return new(rate, [], qos);
+            return new(rate, [], qos, markGame);
         if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() > 128)
             throw new FormatException("Ungültige Liste geschützter Programme.");
         var result = new List<ProtectedProcess>();
@@ -38,7 +39,7 @@ public static class ControlProtocol
             if (pid <= 0 || ticks is <= 0 || ticks > DateTime.MaxValue.Ticks) throw new FormatException("Ungültige Prozessidentität.");
             result.Add(new(pid, ticks));
         }
-        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos);
+        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, markGame);
     }
 
     public static async Task<string?> ReadLineAsync(TextReader reader, CancellationToken cancellationToken)

@@ -126,6 +126,7 @@ public partial class MainWindow : Window
         RenderCapacity();
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
         NotificationsCheck.IsChecked = s.Notifications;
+        MarkGameCheck.IsChecked = s.MarkGamePackets;
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         BetaUpdatesCheck.IsChecked = s.BetaUpdates;
         DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
@@ -148,7 +149,7 @@ public partial class MainWindow : Window
                 AutoConnectLan = AutoConnectCheck.IsChecked == true,
                 AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
-                Notifications = NotificationsCheck.IsChecked == true,
+                Notifications = NotificationsCheck.IsChecked == true, MarkGamePackets = MarkGameCheck.IsChecked == true,
                 GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };

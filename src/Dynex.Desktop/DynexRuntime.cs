@@ -401,6 +401,7 @@ public sealed class DynexRuntime : IAsyncDisposable
                     if (pausedUntil is { } until && until <= now) { Interlocked.CompareExchange(ref pausedUntilTicks, 0, until.UtcTicks); pausedUntil = null; }
                     if (pausedUntil is not null) decision = decision with { DownloadLimitMbps = null };
                     PlannedDownloadLimitMbps = IsSpeedTestRunning ? null : decision.DownloadLimitMbps;
+                    shaper.MarkGamePackets = settings.MarkGamePackets;
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
                         await shaper.ApplyAsync(PlannedDownloadLimitMbps, token, detectedGames, qosEnabled: decision.GamingActive,
                             protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||

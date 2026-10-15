@@ -119,8 +119,16 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
 /// <summary>RFC2474 DS field, RFC3168 ECN preservation, RFC1071 IPv4 header checksum.</summary>
 public static class QosPacketMarker
 {
+    private static volatile bool _markGamePackets;
+    /// <summary>
+    /// Off by default: game packets then leave this PC byte-for-byte unchanged, so no anti-cheat or game
+    /// server ever sees a modified header. Voice packets are still marked; game packets are never delayed.
+    /// </summary>
+    public static bool MarkGamePackets { get => _markGamePackets; set => _markGamePackets = value; }
+
     public static bool TryMark(CapturedPacket packet, PacketPriority priority)
     {
+        if (priority == PacketPriority.Game && !_markGamePackets) return false;
         if (packet.Direction != PacketDirection.Outbound || priority is not (PacketPriority.Game or PacketPriority.Voice) ||
             packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);

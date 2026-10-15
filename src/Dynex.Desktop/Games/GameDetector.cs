@@ -277,9 +277,33 @@ public sealed partial class GameDetector
         }
     }
 
+    private static readonly object ImagePathGate = new();
+    private static Dictionary<(int Pid, DateTimeOffset Started), string?> _imagePaths = new();
+
     private static IEnumerable<ProcessSnapshot> EnumerateProcesses()
     {
         if (!OperatingSystem.IsWindows()) yield break;
+        var table = Dynex.Native.ProcessTable.Snapshot();
+        if (table.Count > 0)
+        {
+            // Identities come from one handle-free system query. The executable path needs a
+            // query-limited handle, but only once per process instance (PID + start time), so a
+            // running game is touched once at launch instead of every two seconds.
+            Dictionary<(int, DateTimeOffset), string?> paths;
+            lock (ImagePathGate)
+            {
+                paths = new(table.Count);
+                foreach (var (pid, identity) in table)
+                {
+                    var key = (pid, identity.StartedAtUtc);
+                    paths[key] = _imagePaths.TryGetValue(key, out var known) ? known : TryGetImagePath(pid);
+                }
+                _imagePaths = paths; // Exited processes drop out of the cache.
+            }
+            foreach (var (pid, identity) in table)
+                yield return new ProcessSnapshot(identity.Name, pid, paths[(pid, identity.StartedAtUtc)], identity.StartedAtUtc);
+            yield break;
+        }
         Process[] processes;
         try { processes = Process.GetProcesses(); }
         catch { yield break; }
