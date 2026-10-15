@@ -93,15 +93,15 @@ public sealed class AutoLanPeerService : IPeerService
     public void Publish(bool isGaming, double? downloadMbps = null, double? latencyMs = null,
         double? appliedLimitMbps = null, string? game = null, bool shaperActive = false,
         double? idleBaselineMs = null, string? latencyTargetId = null, DateTimeOffset? idleBaselineAtUtc = null,
-        double? uploadMbps = null)
+        double? uploadMbps = null, string? topProgram = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!Valid(downloadMbps, 100000) || !Valid(uploadMbps, 100000) || !Valid(latencyMs, 10000) || !Valid(appliedLimitMbps, 100000) ||
             game?.Length > 80 || game?.Any(char.IsControl) == true || !Valid(idleBaselineMs, 10000) ||
-            latencyTargetId?.Length > 256 || latencyTargetId?.Any(char.IsControl) == true) throw new ArgumentException("Ungültiger lokaler Status.");
+            latencyTargetId?.Length > 256 || latencyTargetId?.Any(char.IsControl) == true || !WireAdvertisement.ValidProgram(topProgram)) throw new ArgumentException("Ungültiger lokaler Status.");
         Volatile.Write(ref _local, new(isGaming, downloadMbps, latencyMs, appliedLimitMbps, game, shaperActive,
             idleBaselineMs, latencyTargetId, idleBaselineAtUtc, Interlocked.Increment(ref _sampleSequence), uploadMbps,
-            Stopwatch.GetTimestamp()));
+            Stopwatch.GetTimestamp(), topProgram));
     }
 
     public IReadOnlyList<PeerAdvertisement> Snapshot()
@@ -184,7 +184,7 @@ public sealed class AutoLanPeerService : IPeerService
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
                                 UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal,
-                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight), tick);
+                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram), tick);
                             _names[id] = wire.DeviceName;
                             if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
                             Interlocked.Decrement(ref _rejected);
@@ -279,7 +279,8 @@ public sealed class AutoLanPeerService : IPeerService
                         _settings.DeviceName, local.Gaming, throughputIsFresh ? local.Download : null, local.Latency, local.Limit, local.Game, local.Shaper,
                         local.Baseline, local.Target, local.SampleSequence > 0 ? local.SampleSequence : null, local.BaselineAt,
                         throughputIsFresh ? local.Upload : null,
-                        throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight);
+                        throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight,
+                        throughputIsFresh ? local.TopProgram : null);
                     foreach (var session in _channels.Values)
                         if (EndpointAllowed(session.Endpoint.Address)) statuses.Add((_crypto.Encrypt(session.Crypto, wire), session.Endpoint));
                 }
@@ -414,7 +415,7 @@ public sealed class AutoLanPeerService : IPeerService
         await StopAsync().ConfigureAwait(false);
     }
     private sealed record State(bool Gaming, double? Download, double? Latency, double? Limit, string? Game, bool Shaper,
-        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick);
+        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick, string? TopProgram = null);
     private sealed class Session(AutoChannel crypto, IPEndPoint endpoint, long tick)
     {
         internal AutoChannel Crypto { get; } = crypto;

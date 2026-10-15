@@ -286,6 +286,7 @@ SessionTrackerTests.Run(Check);
 await RouterTrafficTests.Run(Check);
 UploadLimitTests.Run(Check);
 ComfortTests.Run(Check);
+IsolationTests.Run(Check);
 await PeerConnectionTests.Run(Check);
 await SharedBudgetTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");

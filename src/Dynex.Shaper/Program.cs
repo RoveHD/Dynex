@@ -105,7 +105,8 @@ internal static class Program
         long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
         var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
-        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot);
+        var accounting = new TrafficAccounting();
+        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
         var ownershipWorker = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -138,6 +139,7 @@ internal static class Program
             {
                 var current = Volatile.Read(ref session);
                 var ownershipReady = ownership.Snapshot.IsFresh;
+                var traffic = accounting.Snapshot();
                 var cleanupError = Volatile.Read(ref releaseError) ?? (current?.CleanupError is { } cleanup
                     ? "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanup : null);
                 var status = new
@@ -148,6 +150,8 @@ internal static class Program
                     uploadActive = current?.Active == true && current.HasUploadLimit && ownershipReady,
                     uploadMbps = current?.Active == true && current.HasUploadLimit && ownershipReady ? uploadRate : null,
                     uploadSentBytes = current?.UploadSentBytes ?? 0,
+                    topPrograms = current?.Active == true ? traffic.Top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
+                    gameServer = current?.Active == true ? traffic.GameServer?.ToString() : null,
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,
                     error = cleanupError ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
@@ -214,6 +218,7 @@ internal static class Program
                 var wantsOutbound = requestedQos || requestedUpload.HasValue;
                 var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue;
                 bulkPolicy.Protect(command.ProtectedProcesses);
+                bulkPolicy.AlwaysLimit(command.AlwaysLimit ?? []);
                 qosPolicy.Protect(command.ProtectedProcesses);
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
                 var current = Volatile.Read(ref session);

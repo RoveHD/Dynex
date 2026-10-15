@@ -17,9 +17,12 @@ internal sealed record WireAdvertisement(Guid DeviceId, Guid SessionId, long Seq
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? UploadMbps = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DownloadBudgetProposal? BudgetProposal = null,
     // Relative share of the common download budget (1 = normal). Older peers omit it.
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? ShareWeight = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? ShareWeight = null,
+    // Busiest program on the sender right now (e.g. "steam"), for "who is using the line".
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TopProgram = null)
 {
     internal static bool ValidWeight(double? weight) => weight is null || double.IsFinite(weight.Value) && weight >= 0.25 && weight <= 4;
+    internal static bool ValidProgram(string? name) => name is null || name.Length is > 0 and <= 64 && !name.Any(char.IsControl);
 }
 
 internal sealed class PacketCodec : IDisposable
@@ -87,7 +90,8 @@ internal sealed class PacketCodec : IDisposable
                 !ValidMetric(result.AppliedLimitMbps, 100000) || !ValidMetric(result.IdleBaselineMs, 10000) ||
                 !ValidMetric(result.UploadMbps, 100000) ||
                 result.LatencyTargetId?.Length > 256 || result.LatencyTargetId?.Any(char.IsControl) == true ||
-                result.LatencySampleSequence is <= 0 || result.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(result.ShareWeight)) return null;
+                result.LatencySampleSequence is <= 0 || result.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(result.ShareWeight) ||
+                !WireAdvertisement.ValidProgram(result.TopProgram)) return null;
             return result;
         }
         catch (Exception e) when (e is CryptographicException or JsonException or ArgumentException) { return null; }

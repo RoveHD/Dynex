@@ -22,6 +22,11 @@ public sealed class BulkDownloadPolicy
     private readonly Dictionary<FlowIdentity, FlowActivity> _uploadFlows = new();
     private readonly Dictionary<(int Pid, long StartedAt), FlowActivity> _uploadPrograms = new();
     private ControlProtocol.ProtectedProcess[] _protected = [];
+    private HashSet<string> _alwaysLimit = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Programs the user chose to limit at once while gaming (e.g. Steam), without the bulk threshold.</summary>
+    public void AlwaysLimit(IEnumerable<string> programs) =>
+        Volatile.Write(ref _alwaysLimit, new HashSet<string>(programs.Take(32), StringComparer.OrdinalIgnoreCase));
     private double _lastCleanup;
 
     public BulkDownloadPolicy(Func<OwnershipSnapshot> snapshot,
@@ -70,6 +75,8 @@ public sealed class BulkDownloadPolicy
         if (VoiceApplications.Contains(owner.ProcessName)) return false;
         if (Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId &&
             (p.StartedAtUtcTicks is null || p.StartedAtUtcTicks == owner.ProcessStartedAtUtc.Value.UtcTicks))) return false;
+        // Games and voice are checked first, so this list can never limit a running game.
+        if (Volatile.Read(ref _alwaysLimit).Contains(owner.ProcessName)) return true;
 
         var now = _clock();
         if (now - _lastCleanup > 5)

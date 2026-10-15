@@ -6,7 +6,8 @@ using System.Xml;
 
 namespace Dynex.Core;
 
-public sealed record RouterTrafficSample(double DownloadMbps, double UploadMbps, string RouterName);
+public sealed record RouterTrafficSample(double DownloadMbps, double UploadMbps, string RouterName,
+    string? Manufacturer = null, string? Model = null);
 
 /// <summary>
 /// Read-only whole-home throughput from the router's UPnP IGD counters (WANCommonInterfaceConfig).
@@ -19,7 +20,7 @@ public sealed class RouterTrafficMonitor : IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsClient;
     private readonly Func<CancellationToken, Task<(Uri Location, IPAddress Source)?>> _discover;
-    private (Uri Control, string Name)? _router;
+    private (Uri Control, string Name, string? Manufacturer, string? Model)? _router;
     private long _nextDiscoveryTick;
     private (long Received, long Sent, long Tick)? _last;
 
@@ -42,10 +43,11 @@ public sealed class RouterTrafficMonitor : IDisposable
                 if (await _discover(token).ConfigureAwait(false) is not { } found) return null;
                 var description = await GetBoundedAsync(found.Location, token).ConfigureAwait(false);
                 if (ParseControlUrl(description, found.Location) is not { } control) return null;
-                _router = (control, ParseFriendlyName(description) ?? found.Location.Host);
+                _router = (control, ParseFriendlyName(description) ?? found.Location.Host,
+                    ParseElement(description, "manufacturer"), ParseElement(description, "modelName"));
                 _last = null;
             }
-            var (url, name) = _router.Value;
+            var (url, name, manufacturer, model) = _router.Value;
             var received = await QueryAsync(url, "GetTotalBytesReceived", "NewTotalBytesReceived", token).ConfigureAwait(false);
             var sent = await QueryAsync(url, "GetTotalBytesSent", "NewTotalBytesSent", token).ConfigureAwait(false);
             var now = Stopwatch.GetTimestamp();
@@ -55,7 +57,7 @@ public sealed class RouterTrafficMonitor : IDisposable
             if (previous is not { } p) return null;
             var seconds = (now - p.Tick) / (double)Stopwatch.Frequency;
             if (seconds < 0.5) return null;
-            return new(Rate(p.Received, received.Value, seconds), Rate(p.Sent, sent.Value, seconds), name);
+            return new(Rate(p.Received, received.Value, seconds), Rate(p.Sent, sent.Value, seconds), name, manufacturer, model);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or XmlException or SocketException or IOException)
         {
@@ -142,16 +144,46 @@ public sealed class RouterTrafficMonitor : IDisposable
         return null;
     }
 
-    internal static string? ParseFriendlyName(string descriptionXml)
+    internal static string? ParseFriendlyName(string descriptionXml) => ParseElement(descriptionXml, "friendlyName");
+
+    internal static string? ParseElement(string descriptionXml, string element)
     {
-        var name = Load(descriptionXml)!.GetElementsByTagName("friendlyName").Cast<XmlNode>().FirstOrDefault()?.InnerText.Trim();
-        return name is { Length: > 0 and <= 80 } && !name.Any(char.IsControl) ? name : null;
+        var value = Load(descriptionXml)!.GetElementsByTagName(element).Cast<XmlNode>().FirstOrDefault()?.InnerText.Trim();
+        return value is { Length: > 0 and <= 80 } && !value.Any(char.IsControl) ? value : null;
     }
 
     internal static long? ParseCounter(string soapXml, string element)
     {
         var value = Load(soapXml)!.GetElementsByTagName(element).Cast<XmlNode>().FirstOrDefault()?.InnerText.Trim();
         return long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var counter) ? counter : null;
+    }
+
+    /// <summary>Distinct LAN devices answering an SSDP search, excluding this PC and the given router.</summary>
+    public static async Task<int?> CountLanDevicesAsync(IPAddress? router, CancellationToken token)
+    {
+        try
+        {
+            using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+            var search = Encoding.ASCII.GetBytes("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: ssdp:all\r\n\r\n");
+            await udp.SendAsync(search, new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1900), token).ConfigureAwait(false);
+            var local = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses).Select(a => a.Address).ToHashSet();
+            var devices = new HashSet<IPAddress>();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            try
+            {
+                while (devices.Count < 256)
+                {
+                    var result = await udp.ReceiveAsync(timeout.Token).ConfigureAwait(false);
+                    var source = result.RemoteEndPoint.Address;
+                    if (LanAddress.IsAllowed(source, false) && !local.Contains(source) && !source.Equals(router)) devices.Add(source);
+                }
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+            return devices.Count;
+        }
+        catch (SocketException) { return null; }
     }
 
     private static async Task<(Uri Location, IPAddress Source)?> DiscoverAsync(CancellationToken token)

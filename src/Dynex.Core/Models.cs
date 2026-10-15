@@ -66,7 +66,7 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
     string? Address = null, double? AppliedLimitMbps = null, string? Game = null, bool ShaperActive = false,
     double? IdleBaselineMs = null, string? LatencyTargetId = null, long? LatencySampleSequence = null,
     DateTimeOffset? IdleBaselineAtUtc = null, Guid? SessionId = null, double? UploadMbps = null,
-    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null, double? ShareWeight = null);
+    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null, double? ShareWeight = null, string? TopProgram = null);
 
 /// <summary>
 /// A participant's currently configured/measured capacity and reserve policy, not its measured traffic.

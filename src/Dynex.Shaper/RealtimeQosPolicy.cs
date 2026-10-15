@@ -7,7 +7,7 @@ namespace Dynex.Shaper;
 /// Receiver-thread-only real-time classification. Unknown ownership/protocols
 /// remain unmarked. No payload decryption or browser-wide exemptions.
 /// </summary>
-public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<double>? clock = null)
+public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<double>? clock = null, TrafficAccounting? accounting = null)
 {
     // Additional low-volume UDP candidates only; these names do not exempt
     // their file transfers or other traffic from BulkDownloadPolicy.
@@ -33,7 +33,9 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
             return PacketPriority.None;
         var owner = snapshot().Classify(flow);
         if (owner?.ProcessStartedAtUtc is not { } started || string.IsNullOrEmpty(owner.ProcessName)) return PacketPriority.None;
-        if (Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId && p.StartedAtUtcTicks == started.UtcTicks))
+        var isGame = Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId && p.StartedAtUtcTicks == started.UtcTicks);
+        accounting?.Observe(owner.ProcessName, packet.Direction == PacketDirection.Inbound, packet.Length - packet.IpOffset, isGame, flow.RemoteAddress);
+        if (isGame)
         {
             // Game asset downloads must not automatically receive CS4. TCP
             // controls and small interactive payloads, plus standard UDP gaming.

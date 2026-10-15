@@ -63,6 +63,9 @@ internal static class ConnectionAdviceTests
         var connected = a.GetNetworkDiagnostics();
         check(connected.Assess() is { Kind: ConnectionProblemKind.VersionMismatch } mismatch && mismatch.Cause.Contains("„PC 2“ 1.0.5"),
             "connected peers expose a version mismatch with the remote PC name");
+        b.Publish(false, downloadMbps: 50, topProgram: "steam");
+        await Until(() => a.Snapshot() is [{ TopProgram: "steam" }]);
+        check(true, "each PC shares its busiest program with the others");
         await b.DisposeAsync();
         await Until(() => a.Snapshot().Count == 0);
         check(a.GetNetworkDiagnostics() is { LostPeerName: "PC 2" }, "peer TTL expiry records which PC stopped answering");

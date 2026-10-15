@@ -61,3 +61,18 @@ internal static class ComfortTests
         check(WeeklyReport.Build([], [], t).Contains("noch keine"), "empty week is stated plainly");
     }
 }
+
+internal static class IsolationTests
+{
+    internal static void Run(Action<bool, string> check)
+    {
+        var silent = new PeerNetworkDiagnostics("Automatisch", ["192.168.1.2"], []);
+        check(silent.Assess(lan: new("FRITZ!Box Gastzugang")) is { Kind: ConnectionProblemKind.ClientIsolation } guest && guest.Cause.Contains("Gastnetz"),
+            "a guest Wi-Fi name explains why PCs cannot see each other");
+        check(silent.Assess(lan: new("Heimnetz", 0)) is { Kind: ConnectionProblemKind.ClientIsolation } isolation && isolation.NextStep.Contains("Isolation"),
+            "no other LAN device answering points to client isolation");
+        check(silent.Assess(lan: new("Heimnetz", 4)).Kind == ConnectionProblemKind.NoResponse, "other devices answering keeps the generic diagnosis");
+        check(new PeerNetworkDiagnostics("Automatisch", ["192.168.1.2"], [], ConnectedPeers: 1).Assess(lan: new("Gast")).Kind == ConnectionProblemKind.None,
+            "connected PCs are never reported as isolated");
+    }
+}

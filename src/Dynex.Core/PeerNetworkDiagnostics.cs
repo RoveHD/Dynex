@@ -1,7 +1,14 @@
 namespace Dynex.Core;
 
 /// <summary>What the user sees: an observed cause and exactly one concrete next step.</summary>
-public enum ConnectionProblemKind { None, NoPrivateNetwork, FirewallMissing, VersionMismatch, OtherMode, ClockSkew, WrongNetwork, PeerLost, NoResponse, NotConfirmed, ReceiveError }
+public enum ConnectionProblemKind { None, NoPrivateNetwork, FirewallMissing, VersionMismatch, OtherMode, ClockSkew, WrongNetwork, PeerLost, NoResponse, NotConfirmed, ReceiveError, ClientIsolation }
+
+/// <summary>Read-only observations about the local network used to explain why PCs do not see each other.</summary>
+public sealed record LanEnvironment(string? WifiName = null, int? OtherUpnpDevices = null)
+{
+    private static readonly string[] GuestMarkers = ["gast", "guest", "visitor", "besucher", "hotspot"];
+    public bool GuestNetwork => WifiName is { } name && GuestMarkers.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase));
+}
 
 public sealed record ConnectionAdvice(ConnectionProblemKind Kind, string Cause, string NextStep)
 {
@@ -39,7 +46,7 @@ public sealed record PeerNetworkDiagnostics(
     /// Orders causes from "fix on this PC" to "fix on the other PC". The firewall result comes from the
     /// separate read-only Windows check and is optional because the transport layer cannot observe it.
     /// </summary>
-    public ConnectionAdvice Assess(bool? firewallConfigured = null)
+    public ConnectionAdvice Assess(bool? firewallConfigured = null, LanEnvironment? lan = null)
     {
         var mismatched = (RemoteVersions ?? []).Where(v => LocalVersion is not null && v.Version != LocalVersion).ToArray();
         if (ReceiveError is not null)
@@ -76,6 +83,12 @@ public sealed record PeerNetworkDiagnostics(
         if (LostPeerName is not null)
             return new(ConnectionProblemKind.PeerLost, $"„{LostPeerName}“ antwortet seit {LostPeerAtUtc?.ToLocalTime():HH:mm} Uhr nicht mehr (Standby, Netzwechsel oder DYNEX beendet).",
                 $"Auf „{LostPeerName}“ prüfen, ob der PC wach ist und DYNEX läuft. Nach Standby oder WLAN-Wechsel verbindet DYNEX automatisch neu, sobald beide PCs im selben privaten Netz sind.");
+        if (ReceivedDatagrams - SelfDatagrams <= 0 && lan?.GuestNetwork == true)
+            return new(ConnectionProblemKind.ClientIsolation, $"Dieser PC ist mit dem Gastnetz „{lan.WifiName}“ verbunden. Gastnetze trennen Geräte voneinander, deshalb sehen sich die PCs nicht.",
+                "Beide PCs mit dem normalen Heim-WLAN bzw. per LAN-Kabel verbinden.");
+        if (ReceivedDatagrams - SelfDatagrams <= 0 && lan?.OtherUpnpDevices == 0)
+            return new(ConnectionProblemKind.ClientIsolation, "Außer dem Router antwortet kein anderes Gerät im Netz. Vermutlich ist im Router „Client-/AP-Isolation“ (WLAN-Geräte voneinander abschirmen) aktiv.",
+                "Im Router die Einstellung „Geräte untereinander kommunizieren lassen“ einschalten bzw. „AP-/Client-Isolation“ ausschalten, oder die PCs per LAN-Kabel verbinden.");
         if (ReceivedDatagrams - SelfDatagrams <= 0)
             return new(ConnectionProblemKind.NoResponse, "Der andere PC antwortet nicht: Noch keine UDP-Pakete anderer PCs beobachtet. Die Ursache ist noch nicht bestimmt (DYNEX aus, Firewall, Gastnetz oder Geräteisolation).",
                 "Auf dem anderen PC DYNEX starten. Hilft das nicht, dort einen Gruppencode erzeugen und hier importieren; er enthält die direkte Adresse. Im Router „Gastnetz“ bzw. „AP-/Client-Isolation“ abschalten.");
