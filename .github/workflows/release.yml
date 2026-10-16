@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/anticheat-guard.ps1
-          foreach ($suite in 'Core','Update','UpdateLifecycle','Adaptive','SpeedTest','Runtime','Setup','UserCleanup','GameDetection','Bulk','Shaper') {
+          foreach ($suite in 'Core','Update','UpdateLifecycle','Adaptive','SpeedTest','Runtime','Setup','UserCleanup','GameDetection','Bulk','Shaper','Devices','DeviceRuntime','ApplicationRules','UsageHistory') {
             dotnet run --project "tests/Dynex.$suite.Tests" -c Release
             if ($LASTEXITCODE -ne 0) { throw "$suite-Tests fehlgeschlagen." }
           }

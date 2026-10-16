@@ -5,11 +5,20 @@ DYNEX ist eine native Windows-11-App für gemeinsames Gaming- und Downloadmanage
 
 **Neue Desktop-Funktionen:** gezielter Zwei-PC-Test, gespeicherte Geräte mit Alias und Ausschlüssen, eigene Download-/Uploadregeln je Programm, automatische Netzwerkprofile und Verbrauchsverlauf je PC. [Bedienung, Speicherung und Grenzen](docs/desktop-features.md).
 
-**Version 1.0.8.** DYNEX kann optionale Updates auch während des Gamings mit höchstens 512 KiB/s herunterladen. Nach erfolgreichem Download und den für die Installation geltenden Hash- und Signaturprüfungen wird das Update automatisch installiert und DYNEX neu gestartet, sobald ungespeicherte Einstellungen und laufende UI-Aktionen abgeschlossen sind. [Ablauf und Grenzen](docs/updates.md).
+**Version 1.0.9.** DYNEX kann optionale Updates auch während des Gamings mit höchstens 512 KiB/s herunterladen. Nach erfolgreichem Download und den für die Installation geltenden Hash- und Signaturprüfungen wird das Update automatisch installiert und DYNEX neu gestartet, sobald ungespeicherte Einstellungen und laufende UI-Aktionen abgeschlossen sind. [Ablauf und Grenzen](docs/updates.md).
 
 Das DYNEX-Setup richtet die Downloadbegrenzung und die private Heimnetzverbindung mit ein. Fehlt der Netzwerkfilter, lädt es das offizielle Windows Packet Filter MSI direkt vom Hersteller, prüft Größe, festgelegten SHA-256 und Windows-Authenticode-Vertrauen und installiert es nach der Windows-UAC-Bestätigung. Eine gezielte Firewallregel erlaubt DYNEX UDP 39274 ausschließlich im privaten lokalen Subnetz. Das Setup dokumentiert, ob es den Filter neu installiert oder einen vorhandenen weiterverwendet. Die Filtereinrichtung kann die Verbindung kurz unterbrechen; ein Neustart wird nicht erzwungen. Für die erstmalige Einrichtung ist Internet nötig.
 
-**Vollständig entfernen:** Die Deinstallation bereinigt eigene Firewallfreigaben, Autostart, Einstellungen, Kopplungen, Update-Dateien und Verknüpfungen. Einen nachweislich von DYNEX installierten Netzwerkfilter entfernt sie über dessen offiziellen MSI-Uninstaller, sobald keine weitere registrierte DYNEX-Installation ihn benötigt. Für bereits deinstallierte ältere Versionen gibt es zusätzlich `DYNEX-Cleanup-1.0.8.exe`; es installiert DYNEX nicht erneut. Bei alten Filtern ohne Herkunftsnachweis fragt die Bereinigung ausdrücklich vor der Entfernung. [Ablauf und Grenzen](docs/installation.md#aktualisieren-und-entfernen).
+**Vollständig entfernen:** Die Deinstallation bereinigt eigene Firewallfreigaben, Autostart, Einstellungen, Kopplungen, Update-Dateien und Verknüpfungen. Einen nachweislich von DYNEX installierten Netzwerkfilter entfernt sie über dessen offiziellen MSI-Uninstaller, sobald keine weitere registrierte DYNEX-Installation ihn benötigt. Für bereits deinstallierte ältere Versionen gibt es zusätzlich `DYNEX-Cleanup-1.0.9.exe`; es installiert DYNEX nicht erneut. Bei alten Filtern ohne Herkunftsnachweis fragt die Bereinigung ausdrücklich vor der Entfernung. [Ablauf und Grenzen](docs/installation.md#aktualisieren-und-entfernen).
+
+**Neu in 1.0.9:**
+
+- **Schutz nach tatsächlichem Spielverkehr:** Download-/Uploadschutz und QoS reagieren auf Netzwerkpakete des erkannten Spiels. Ohne Spielverkehr bleibt die automatische Begrenzung aus; nach zehn Sekunden ohne Pakete läuft der lokale Schutz aus. Die Beobachtung erkennt einen späteren Wechsel ins Online-Spiel.
+- **PCs direkt in der Übersicht:** Verbundene Geräte erscheinen wieder mit aktuellem Status, Download, Upload und bestätigtem Limit. Die Liste passt auch in kleine Fenster und scrollt bei vielen PCs.
+- **Geräte und Verbindung prüfen:** Gespeicherte PCs mit lokalen Namen und Ausschlüssen sowie ein gezielter authentifizierter Zwei-PC-Test erleichtern die Fehlersuche.
+- **Eigene Programmregeln:** Explizite Download-/Uploadlimits je Programm sind unabhängig von der automatischen Spielerkennung möglich.
+- **Netzwerkprofile und Verbrauch:** Anschlussbezogene Einstellungen und Messwerte wechseln mit dem Netzwerk; der Verbrauchsverlauf zeigt Download und Upload je PC mit sichtbaren Messlücken.
+- **Start und Einrichtung:** Verbesserte LAN-Erkennung, Firewalldiagnosen und Startschutz behandeln Berechtigungsfehler und bestehende Installationen zuverlässiger. Die Release-Prüfung umfasst auch die neuen Geräte-, Regel- und Verlaufstests.
 
 **Neu in 1.0.6:**
 

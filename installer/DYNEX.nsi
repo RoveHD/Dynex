@@ -6,7 +6,7 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.8"
+  !define APP_VERSION "1.0.9"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."

@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.8',
+    [string]$Version = '1.0.9',
     # Authenticode signing. Either a certificate in the Windows certificate store
     # (thumbprint; works with hardware tokens/EV certificates) or a PFX file whose
     # password is read only from DYNEX_SIGN_PFX_PASSWORD, never from the command line.
