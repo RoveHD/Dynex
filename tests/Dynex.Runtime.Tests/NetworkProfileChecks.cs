@@ -8,7 +8,7 @@ internal static class NetworkProfileChecks
         var a = new NetworkIdentity(Guid.NewGuid().ToString("D"), "Zuhause");
         var b = new NetworkIdentity(Guid.NewGuid().ToString("D"), "Hotspot");
         var original = new UserSettings { CapacityMbps = 80, CapacityMeasuredAtUtc = now, AutomaticSpeedTestAttempted = true,
-            Profile = "Turnier", BackgroundPercent = 40, ManualLimitMbps = 30, UploadCapacityMbps = 12,
+            Profile = "Turnier", BackgroundPercent = 40, ManualLimitMbps = 30, SharedDownloadMaximumMbps = 25, UploadCapacityMbps = 12,
             DirectPeers = "10.0.0.4", AutoConnectLan = false, GameProcesses = "ExampleGame",
             ApplicationRules = [new("steam", 30)] };
         var home = SettingsStore.Normalize(NetworkProfiles.Activate(original, a, now));
@@ -19,10 +19,12 @@ internal static class NetworkProfileChecks
             "new network has its own unmeasured capacity and automatic discovery without old direct peers");
         check(hotspot.GameProcesses == original.GameProcesses && hotspot.ApplicationRules.Single().DownloadMbps == 30,
             "network switch preserves computer-wide games and program rules");
+        check(hotspot.SharedDownloadMaximumMbps is null, "shared maximum is specific to the home network");
         hotspot = SettingsStore.Normalize(hotspot with { CapacityMbps = 45, CapacityMeasuredAtUtc = now.AddMinutes(2), AutomaticSpeedTestAttempted = true });
         var restored = SettingsStore.Normalize(NetworkProfiles.Activate(hotspot, a, now.AddMinutes(3)));
         check(restored.CapacityMbps == 80 && restored.ManualLimitMbps == 30 && restored.UploadCapacityMbps == 12 && restored.DirectPeers == "10.0.0.4",
             "return to home restores its measured speeds and connection settings");
+        check(restored.SharedDownloadMaximumMbps == 25, "return to home restores shared maximum separately from local cap");
         check(NetworkProfiles.Activate(restored, b, now.AddMinutes(4)).CapacityMbps == 45,
             "each network keeps independent latest measurement");
         using var profile = new TestProfile(measured: true);
@@ -31,6 +33,13 @@ internal static class NetworkProfileChecks
         var loaded = store.Load();
         check(loaded.NetworkProfiles.Length == 2 && loaded.NetworkProfiles.Single(p => p.Id == b.Id).Policy.CapacityMbps == 45,
             "atomic settings persistence restores all network policies");
+        check(loaded.SharedDownloadMaximumMbps == 25 && loaded.NetworkProfiles.Single(p => p.Id == a.Id).Policy.SharedDownloadMaximumMbps == 25,
+            "shared maximum survives persistence in current and saved network policy");
+        foreach (var invalid in new[] { -1d, 0d, double.NaN, double.PositiveInfinity, 10001d })
+        {
+            try { SettingsStore.Validate(original with { SharedDownloadMaximumMbps = invalid }); check(false, "invalid shared maximum rejected"); }
+            catch (ArgumentException) { check(true, "invalid shared maximum rejected"); }
+        }
 
         // Both simulated networks use loopback targets; these tests never probe the actual LAN/Internet.
         var local = new UserSettings { CapacityMbps = 80, CapacityMeasuredAtUtc = now, AutomaticSpeedTestAttempted = true,

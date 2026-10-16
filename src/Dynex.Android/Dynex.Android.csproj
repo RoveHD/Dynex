@@ -5,8 +5,8 @@
     <RootNamespace>Dynex.Android</RootNamespace>
     <ApplicationId>de.dynex.mobile</ApplicationId>
     <ApplicationTitle>DYNEX</ApplicationTitle>
-    <Version>1.0.12</Version>
-    <ApplicationVersion>10012</ApplicationVersion>
+    <Version>1.0.13</Version>
+    <ApplicationVersion>10013</ApplicationVersion>
     <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>

@@ -121,7 +121,8 @@ internal static class GameTrafficChecks
             { ObserveGameTraffic: true, Mbps: null, UploadMbps: null, QosEnabled: false }, "observe-only IPC never enables limits or QoS");
         await HelperLifecycle(check);
         await ControllerStatus(check, started);
-        foreach (var frame in new[] { new string('x', 32769), "{\"active\":false,\"stopped\":true,\"releaseError\":null}" })
+        foreach (var frame in new[] { new string('x', 32769), "{\"active\":false,\"stopped\":true,\"releaseError\":null}",
+            "{\"limitedDownloadMbps\":-1}\n", "{\"limitedDownloadMbps\":100001}\n", "{\"limitedDownloadMbps\":\"25\"}\n" })
         {
             var controller = new ShaperController();
             using var stream = new MemoryStream(Encoding.UTF8.GetBytes(frame));
@@ -129,7 +130,7 @@ internal static class GameTrafficChecks
                 .Invoke(controller, [stream, CancellationToken.None])!;
             await read;
             check(controller.Status.Message.StartsWith("Helferstatus ungültig") && controller.Status.ActiveGameProcesses is null,
-                "oversized or partial status frames never establish successful observation or shutdown");
+                "oversized, partial or invalid activity frames never establish successful observation or shutdown");
         }
     }
 
@@ -160,6 +161,9 @@ internal static class GameTrafficChecks
                 !root.GetProperty("active").GetBoolean() && !root.GetProperty("qosActive").GetBoolean() && !root.GetProperty("uploadActive").GetBoolean() &&
                 root.GetProperty("activeGameProcesses").GetArrayLength() == 0,
                 "observe-only helper retains idle capture and never enables rates or QoS");
+            check(root.TryGetProperty("limitedDownloadMbps", out var load) &&
+                (load.ValueKind == JsonValueKind.Null || load.GetDouble() == 0),
+                "helper publishes only unknown or genuinely measured idle for an empty packet device");
         }
         foreach (var rate in new double?[] { 8, null })
         {
@@ -215,11 +219,20 @@ internal static class GameTrafficChecks
                 !command.RootElement.GetProperty("qosEnabled").GetBoolean() && command.RootElement.GetProperty("observeGameTraffic").GetBoolean(),
                 "post-start protection recheck can remove limits while preserving independently needed observation");
         await applying;
+        await output.WriteLineAsync("{\"active\":false,\"observingGameTraffic\":true,\"activeGameProcesses\":[],\"limitedDownloadMbps\":24.5}");
+        await Wait(() => controller.Status.LimitedDownloadMbps == 24.5);
+        check(controller.Status.LimitedDownloadMbps == 24.5, "desktop reads classified bulk ingress independently of NIC throughput");
+        Set("lastStatus", Stopwatch.GetTimestamp() - 7 * Stopwatch.Frequency);
+        check(controller.Status.LimitedDownloadMbps is null, "stale helper activity becomes unknown instead of a remembered download");
+        await output.WriteLineAsync("{\"active\":false,\"observingGameTraffic\":true,\"activeGameProcesses\":[],\"limitedDownloadMbps\":0}");
+        await Wait(() => controller.Status.LimitedDownloadMbps == 0);
+        check(controller.Status.LimitedDownloadMbps == 0, "measured zero bulk demand survives status parsing");
         await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, observingGameTraffic = true,
             activeGameProcesses = Enumerable.Range(1, 128).Select(id => new { processId = id, startedAtUtcTicks = started.UtcTicks, ageSeconds = 0d }) }));
         await Wait(() => controller.Status.ActiveGameProcesses?.Count == 128);
         check(controller.Status is { ObservingGameTraffic: true, Active: false, QosActive: false } && !controller.CaptureReleased,
             "desktop accepts 128 bounded observation records while capture remains owned");
+        check(controller.Status.LimitedDownloadMbps is null, "legacy status without bulk counters stays unknown rather than pretending idle");
         Set("lastStatus", Stopwatch.GetTimestamp() - 7 * Stopwatch.Frequency);
         check(controller.Status is { ObservingGameTraffic: false, ActiveGameProcesses: null }, "six-second stale observation status becomes unknown, not certified no-traffic");
         await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, observingGameTraffic = true,

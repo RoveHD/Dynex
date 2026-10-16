@@ -45,7 +45,8 @@ internal sealed class ShaperController : IAsyncDisposable
         {
             lock (sync)
             {
-                if ((status.Active || status.QosActive || status.ObservingGameTraffic || status.ApplicationRulesActive || observationRequested) &&
+                if ((status.Active || status.QosActive || status.ObservingGameTraffic || status.ApplicationRulesActive || observationRequested ||
+                    status.LimitedDownloadMbps.HasValue) &&
                     Stopwatch.GetElapsedTime(lastStatus).TotalSeconds > 6)
                     return new(false, null, "Netzwerkpriorisierung antwortet nicht mehr");
                 if (status.ActiveGameProcesses is null) return status;
@@ -168,6 +169,14 @@ internal sealed class ShaperController : IAsyncDisposable
                 var expirations = ReadActiveGames(root, observing);
                 var gamePackets = ReadCounter(root, "gamePriorityPackets");
                 var voicePackets = ReadCounter(root, "voicePriorityPackets");
+                double? limitedDownloadMbps = null;
+                if (root.TryGetProperty("limitedDownloadMbps", out var limitedDownload) && limitedDownload.ValueKind != JsonValueKind.Null)
+                {
+                    if (limitedDownload.ValueKind != JsonValueKind.Number || !limitedDownload.TryGetDouble(out var measured) ||
+                        !double.IsFinite(measured) || measured is < 0 or > 100000)
+                        throw new JsonException("Ungültige Downloadaktivität.");
+                    limitedDownloadMbps = measured;
+                }
                 var limit = root.TryGetProperty("mbps", out var rate) && rate.ValueKind == JsonValueKind.Number ? rate.GetDouble() : (double?)null;
                 var uploadActive = root.TryGetProperty("uploadActive", out var uploadValue) && uploadValue.GetBoolean();
                 var uploadLimit = uploadActive && root.TryGetProperty("uploadMbps", out var uploadRate) && uploadRate.ValueKind == JsonValueKind.Number
@@ -185,7 +194,7 @@ internal sealed class ShaperController : IAsyncDisposable
                     : observing ? "Spielverkehr wird beobachtet · Downloads sind momentan nicht begrenzt."
                     : "Bereit. Downloads sind momentan nicht begrenzt."),
                     qosActive, gamePackets, voicePackets, uploadLimit, programs, observing,
-                    observing ? expirations.Keys.ToArray() : null, appActive);
+                    observing ? expirations.Keys.ToArray() : null, appActive, limitedDownloadMbps);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
@@ -321,5 +330,6 @@ internal sealed class ShaperController : IAsyncDisposable
     internal sealed record ShaperStatus(bool Active, double? Mbps, string Message,
         bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0, double? UploadMbps = null,
         IReadOnlyList<ProgramTraffic>? TopPrograms = null, bool ObservingGameTraffic = false,
-        IReadOnlyList<GameTrafficIdentity>? ActiveGameProcesses = null, bool ApplicationRulesActive = false);
+        IReadOnlyList<GameTrafficIdentity>? ActiveGameProcesses = null, bool ApplicationRulesActive = false,
+        double? LimitedDownloadMbps = null);
 }

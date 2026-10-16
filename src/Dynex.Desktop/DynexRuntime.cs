@@ -246,6 +246,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
         UploadCapacityMbps = Settings.CapacityMeasuredAtUtc is not null ? Settings.UploadCapacityMbps : null,
         LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - EffectiveBackgroundPercent(Settings),
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
+        SharedDownloadMaximumMbps = Settings.SharedDownloadMaximumMbps,
         AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion, ShareWeight = Settings.SharePriority,
         // Test profiles may exercise real address editing/import, but must never send to that LAN.
         DirectPeers = isolated ? [] : SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
@@ -488,7 +489,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
-        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.UploadCapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
+        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.UploadCapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.SharedDownloadMaximumMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
         if (activePlanner == null || plannerPolicy != policy)
         { activePlanner = new LimitPlanner(CoreSettings()); plannerPolicy = policy; }
         var planner = activePlanner;
@@ -559,7 +560,9 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     var now = DateTimeOffset.UtcNow;
                     RecordUsageSample(measurement, remote, now);
                     var latencyTarget = settings.ExternalTarget + "|" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(measurement.RouteId)))[..16];
-                    var decision = planner.Plan(gaming, remote, IsSpeedTestRunning ? null : new ProbeStats(now, measurement.External.Current, measurement.Down, true, latencyTarget), now);
+                    var limitedDownloadMbps = shaper.Status.LimitedDownloadMbps;
+                    var decision = planner.Plan(gaming, remote, IsSpeedTestRunning ? null : new ProbeStats(now, measurement.External.Current,
+                        measurement.Down, true, latencyTarget, LimitedDownloadMbps: limitedDownloadMbps), now);
                     var capacityAvailable = decision.SharedCapacityMbps is not null;
                     var capacityFromPeer = settings.CapacityMeasuredAtUtc is null && capacityAvailable;
                     if (!capacityAvailable)
@@ -589,14 +592,21 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     // up as "not yet idle" for one cycle instead of "idle but QoS still active".
                     var captureReleased = shaper.CaptureReleased;
                     var driver = shaper.Status;
-                    // Each PC's confirmed limit must stay within its (priority-weighted) part of the pool.
-                    double? ShareFor(double weight) => decision.SharedDownloadBudgetMbps is { } pool
-                        ? Math.Floor(pool * weight / (decision.ShareWeightTotal ?? decision.ParticipantCount) * 100) / 100 : null;
-                    bool ConfirmedShare(bool active, double? applied, double weight) => active && applied is { } rate &&
-                        double.IsFinite(rate) && rate > 0 && (ShareFor(weight) is not { } share || rate <= share + .000001);
+                    // Idle devices have a prospective share; they do not consume a
+                    // downloader's allocation. Legacy/unknown activity keeps the all-PC divisor.
+                    var downloadWeight = decision.DownloadShareWeightTotal ?? decision.ShareWeightTotal ?? decision.ParticipantCount;
+                    var activeDownloadWeight = downloadWeight - decision.LocalShareWeight +
+                        (limitedDownloadMbps > .05 ? decision.LocalShareWeight : 0);
+                    var knownWeights = remote.All(p => p.ShareWeight is >= .25 and <= 4 && double.IsFinite(p.ShareWeight.Value));
+                    double? ShareFor(double weight, bool local, bool downloading) => decision.SharedDownloadBudgetMbps is { } pool
+                        ? Math.Floor(pool * weight / (decision.DownloadActivityComplete
+                            ? local ? downloadWeight : activeDownloadWeight + (downloading ? 0 : weight)
+                            : decision.ShareWeightTotal ?? decision.ParticipantCount) * 100) / 100 : null;
+                    bool ConfirmedShare(bool active, double? applied, double weight, bool local, bool downloading) => active && applied is { } rate &&
+                        double.IsFinite(rate) && rate > 0 && (ShareFor(weight, local, downloading) is not { } share || rate <= share + .000001);
                     service.Publish(gaming, measurement.Down, measurement.External.Current, driver.Mbps, game[..Math.Min(80, game.Length)], driver.Active,
                         decision.IdleBaselineMs, latencyTarget, decision.IdleBaselineAtUtc, uploadMbps: measurement.Up,
-                        topProgram: driver.TopPrograms?.FirstOrDefault()?.Name);
+                        topProgram: driver.TopPrograms?.FirstOrDefault()?.Name, limitedDownloadMbps: driver.LimitedDownloadMbps);
                     var devices = new List<DeviceView> { new(settings.DeviceName + " · dieser PC", measurement.Adapter, gaming, game, driver.Mbps, driver.Active ? "Begrenzt" : gaming ? "Gaming" : "Unbegrenzt", measurement.Down, measurement.Up,
                         driver.TopPrograms?.FirstOrDefault()?.Name) };
                     var aliases = Devices.ToDictionary(d => d.DeviceId, d => d.DisplayName);
@@ -668,8 +678,9 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
                         decision.SharedDownloadBudgetMbps, decision.ParticipantCount, decision.GamingCount,
                         decision.SharedCapacityMbps, decision.SharedBudgetComplete,
-                        (ConfirmedShare(driver.Active, driver.Mbps, decision.LocalShareWeight) ? 1 : 0) +
-                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps, p.ShareWeight ?? 1)),
+                        (ConfirmedShare(driver.Active, driver.Mbps, decision.LocalShareWeight, true, limitedDownloadMbps > .05) ? 1 : 0) +
+                        remote.Count(p => ConfirmedShare(p.ShaperActive, p.AppliedLimitMbps, knownWeights ? p.ShareWeight!.Value : 1,
+                            false, p.LimitedDownloadMbps > .05)),
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
                         ProtectionIdle: !decision.GamingActive && captureReleased && !driver.ApplicationRulesActive,
                         NetworkDiagnostics: diagnostics, LimitReason: limitReason,
@@ -678,7 +689,8 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                         ScheduleReason: schedule.Reason, WaitingForGameTraffic: waitingForTraffic,
                         ObservingGameTraffic: driver.ObservingGameTraffic && canObserve,
                         ApplicationRulesActive: driver.ApplicationRulesActive,
-                        SharedUploadCapacityMbps: decision.SharedUploadCapacityMbps, CapacityFromPeer: capacityFromPeer);
+                        SharedUploadCapacityMbps: decision.SharedUploadCapacityMbps, CapacityFromPeer: capacityFromPeer,
+                        DownloadActivityComplete: decision.DownloadActivityComplete);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                     foreach (var request in pending) request.TrySetResult(snapshot);
@@ -700,7 +712,8 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                         SharedDownloadBudgetMbps = null, ParticipantCount = 1, GamingCount = 0, SharedCapacityMbps = null, SharedBudgetComplete = false, ConfirmedParticipantCount = 0,
                         QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null,
                         LimitReason = "Messung unterbrochen · kein Limit aktiv", Connection = null, HomeTraffic = null,
-                        WaitingForGameTraffic = false, ObservingGameTraffic = false, SharedUploadCapacityMbps = null, CapacityFromPeer = false };
+                        WaitingForGameTraffic = false, ObservingGameTraffic = false, SharedUploadCapacityMbps = null, CapacityFromPeer = false,
+                        DownloadActivityComplete = false };
                     Updated?.Invoke(Snapshot);
                     foreach (var request in pending) request.TrySetException(ex);
                     pending.Clear();
@@ -980,7 +993,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
         // persistent settings or a later connection using another scope.
         if (Snapshot is { } prior)
             Snapshot = prior with { SharedDownloadBudgetMbps = null, SharedCapacityMbps = null,
-                SharedUploadCapacityMbps = null, SharedBudgetComplete = false, CapacityFromPeer = false };
+                SharedUploadCapacityMbps = null, SharedBudgetComplete = false, CapacityFromPeer = false, DownloadActivityComplete = false };
     }
     public async Task StopAsync(bool requireHelperExit = false)
     {

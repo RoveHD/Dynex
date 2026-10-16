@@ -2,6 +2,16 @@
 
 DYNEX Android verbindet sich im WLAN mit DYNEX-PCs. Die App erkennt selbst keine Spiele. Sie liest den authentifizierten Gaming-Status und berechnet aus dem vom PC gemessenen, freigegebenen Leitungsbudget ihren Downloadanteil. Ein optionales Handy-Limit ist nur eine zusätzliche Obergrenze. Ohne gemessenen Budgetvorschlag oder aktives PC-Gaming wird kein Limit erfunden. Das Limit gilt nur für Downloads; Mobilfunk bleibt unbegrenzt.
 
+Seit 1.0.13 wertet das Handy außerdem frische Latenzmeldungen der spielenden PCs aus. Bei anhaltend erhöhter PC-Netzwerklatenz und tatsächlich ausgelastetem Handy-Download senkt es seinen Anteil schrittweise; nach mehreren neuen, gesunden PC-Messungen gibt es langsam wieder Bandbreite frei. Ein manuelles Handy-Maximum bleibt eine Obergrenze und wird ebenfalls nachgeregelt. Wiederholte oder alte Messungen lösen keine weiteren Schritte aus. Die App verwendet den konfigurierten Netzwerktest des PCs, nicht direkt den im Spiel angezeigten Ping, und erzeugt selbst keine zusätzlichen Ping-Abfragen.
+
+Diese Anpassung benötigt einen gültigen Leerlaufvergleich des PCs (höchstens 30 Minuten alt) sowie eine aktuelle gemessene Handy-Last. Fehlt der Vergleich, zeigt DYNEX **PC-Latenzvergleich fehlt · festes Downloadbudget**; es verspricht dann keine adaptive Nachregelung. Bei WLAN-/Sitzungswechsel, Pause, fehlendem Gaming oder fehlendem Budget wird der Zustand zurückgesetzt. Handy-Uploads bleiben vorerst unbegrenzt; eine garantierte Paket-Reihenfolge im Router entsteht durch die Downloadsteuerung nicht.
+
+## Gemeinsames Budget ab 1.0.13
+
+Die Windows-Einstellung **Gemeinsames Gaming-Budget (Mbit/s)** setzt eine Obergrenze für alle aktiven Downloads zusammen. Sie wird mit dem ursprünglichen gemessenen PC-Leitungsbudget übertragen; Android erfindet keine eigene Anschlussmessung. Bei normaler Priorität ergeben 25 Mbit/s insgesamt: ein aktiver Downloader bis 25, zwei je 12,5, drei je 8,33. Ein reiner Gaming-PC ohne großen Download belegt keinen laufenden Downloadanteil. Andere Prioritäten verteilen die Anteile gewichtet. Ein optionales Handy-Limit und die adaptive Nachregelung können den eigenen Anteil weiter senken.
+
+Die Aktivität stammt aus frischen, tatsächlich klassifizierten Downloadbytes des PC-Filters beziehungsweise des Handy-Proxys vor der Drosselung. Unbekannte Werte bleiben unbekannt; solange nicht alle Aktivitätswerte vorliegen, werden alle verbundenen Geräte mitgezählt. Auch ein ruhendes Gerät hat eine begrenzte Startzuteilung. Neue oder endende Downloads werden nach dem nächsten Geräteaustausch berücksichtigt; die dezentrale Regelung kann während dieses Übergangs kurz über dem gemeinsamen Maximum liegen. Alle Geräte müssen aktualisiert sein. Ohne Gaming bleibt das Limit aus, und Mobilfunk bleibt unbegrenzt.
+
 ## Voraussetzungen und Build
 
 Der lokale Build wurde mit .NET SDK 9.0.315 und Android workload 35.0.78 sowie den Repository-Tools unter `.tools` eingerichtet: Android API 35/build-tools 35.0.0 und Microsoft JDK 17.0.14. SDK und Workload müssen zuvor installiert sein; die Skripte installieren sie nicht und ändern weder `PATH` noch globale SDK-Einstellungen. `prepare-android.ps1` stellt das offizielle hev-socks5-tunnel 2.19.0 AAR bereit, prüft den fest eingetragenen SHA-256 und extrahiert nur die beiden benötigten ABI-Bibliotheken.

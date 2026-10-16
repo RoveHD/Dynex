@@ -11,7 +11,7 @@ namespace Dynex.Mobile;
 public readonly record struct ProxySnapshot(long DownloadBytes, long UploadBytes, int ActiveSessions,
     long LimitedDownloadBytes = 0, long LimitVersion = 0, long? DownloadLimitBytesPerSecond = null,
     long AcceptedConnections = 0, long AuthenticatedConnections = 0, long AuthenticationFailures = 0,
-    long OutboundFailures = 0);
+    long OutboundFailures = 0, long? BulkDownloadIngressBytes = null);
 
 /// <summary>
 /// Loopback-only RFC1928/RFC1929 SOCKS5 server for a trusted local TUN engine.
@@ -49,6 +49,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     private int port;
     private int downloadNoticeSent;
     private long limitedDownloadBytes, limitVersion;
+    private long bulkDownloadIngressBytes;
     private long? downloadLimit;
     private long acceptedConnections, authenticatedConnections, authenticationFailures, outboundFailures;
 
@@ -86,7 +87,8 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     {
         lock (trafficSync) return new(DownloadBytes, UploadBytes, sessions.Count,
             limitedDownloadBytes, limitVersion, downloadLimit, Interlocked.Read(ref acceptedConnections),
-            Interlocked.Read(ref authenticatedConnections), Interlocked.Read(ref authenticationFailures), Interlocked.Read(ref outboundFailures));
+            Interlocked.Read(ref authenticatedConnections), Interlocked.Read(ref authenticationFailures), Interlocked.Read(ref outboundFailures),
+            Interlocked.Read(ref bulkDownloadIngressBytes));
     }
     public void SetDownloadLimit(long? bytesPerSecond)
     {
@@ -291,6 +293,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     return;
                 }
                 var limitedVersion = LimitedVersion(limited);
+                if (download && limited) Interlocked.Add(ref bulkDownloadIngressBytes, received);
                 if (limited) await limiter.WaitAsync(received, lifetime.Token).ConfigureAwait(false);
                 var remaining = buffer.AsMemory(0, received);
                 while (!remaining.IsEmpty)
@@ -559,6 +562,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     if (received.ReceivedBytes + headerLength > MaximumUdpPacket) continue;
                     var eligible = owner.shouldLimitDownload(source);
                     var limitedVersion = owner.LimitedVersion(eligible);
+                    if (eligible) Interlocked.Add(ref owner.bulkDownloadIngressBytes, received.ReceivedBytes);
                     if (eligible) await owner.limiter.WaitAsync(received.ReceivedBytes, lifetime.Token).ConfigureAwait(false);
                     var packet = EncodeEndpoint(source, received.ReceivedBytes);
                     payload.AsSpan(0, received.ReceivedBytes).CopyTo(packet.AsSpan(headerLength));

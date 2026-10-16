@@ -30,6 +30,15 @@ async Task Scenario(string name, Func<Task> run)
 }
 var timeout = TimeSpan.FromSeconds(8);
 
+if (args.Contains("--download-activity-only"))
+{
+    await Scenario("classified download demand and active shared allocations", () => DownloadActivityChecks.RunAsync(Check));
+    Console.WriteLine($"Download activity checks: {checks} passed, {failures.Count} failed; loopback peers and simulated capture status only.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
 await Scenario("authenticated PC capacity consumer and source isolation", () => CapacitySharingChecks.RunAsync(Check));
 if (args.Contains("--capacity-only"))
 {

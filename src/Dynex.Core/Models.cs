@@ -17,6 +17,8 @@ public sealed record DynexSettings
     public double HeadroomPercent { get; init; } = 15;
     public double GamingReserveMbps { get; init; } = 12;
     public double? ManualDownloadLimitMbps { get; init; }
+    /// <summary>Gaming-time maximum shared by bulk downloaders, before per-device adaptive reductions.</summary>
+    public double? SharedDownloadMaximumMbps { get; init; }
     public bool AdaptiveEnabled { get; init; } = true;
     public TimeSpan PeerTtl { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(2);
@@ -35,6 +37,7 @@ public sealed record DynexSettings
             !double.IsFinite(HeadroomPercent) || HeadroomPercent is < 0 or > 90 ||
             !double.IsFinite(GamingReserveMbps) || GamingReserveMbps is < 0 or > 100000 ||
             ManualDownloadLimitMbps is { } m && (!double.IsFinite(m) || m is < 0.1 or > 100000) ||
+            SharedDownloadMaximumMbps is { } shared && (!double.IsFinite(shared) || shared is < 0.1 or > 100000) ||
             UploadCapacityMbps is { } upload && (!double.IsFinite(upload) || upload is < .1 or > 100000))
             throw new ArgumentException("Bandbreiteneinstellungen sind ungültig.");
         if (PeerTtl < TimeSpan.FromSeconds(1) || PeerTtl > TimeSpan.FromSeconds(30) ||
@@ -68,7 +71,8 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
     string? Address = null, double? AppliedLimitMbps = null, string? Game = null, bool ShaperActive = false,
     double? IdleBaselineMs = null, string? LatencyTargetId = null, long? LatencySampleSequence = null,
     DateTimeOffset? IdleBaselineAtUtc = null, Guid? SessionId = null, double? UploadMbps = null,
-    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null, double? ShareWeight = null, string? TopProgram = null, int? RemotePort = null);
+    DownloadBudgetProposal? BudgetProposal = null, string? AppVersion = null, double? ShareWeight = null, string? TopProgram = null, int? RemotePort = null,
+    double? LimitedDownloadMbps = null);
 
 /// <summary>
 /// A participant's currently configured/measured capacity and reserve policy, not its measured traffic.
@@ -77,35 +81,47 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
 /// </summary>
 public sealed record DownloadBudgetProposal(double LineMbps, double HeadroomPercent, double GamingReserveMbps,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    double? UploadCapacityMbps = null)
+    double? UploadCapacityMbps = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    double? SharedDownloadMaximumMbps = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsValid => double.IsFinite(LineMbps) && LineMbps is >= 1 and <= 100000 &&
         double.IsFinite(HeadroomPercent) && HeadroomPercent is >= 0 and <= 90 &&
         double.IsFinite(GamingReserveMbps) && GamingReserveMbps is >= 0 and <= 100000 &&
-        (UploadCapacityMbps is null || double.IsFinite(UploadCapacityMbps.Value) && UploadCapacityMbps is >= .1 and <= 100000);
+        (UploadCapacityMbps is null || double.IsFinite(UploadCapacityMbps.Value) && UploadCapacityMbps is >= .1 and <= 100000) &&
+        (SharedDownloadMaximumMbps is null || double.IsFinite(SharedDownloadMaximumMbps.Value) && SharedDownloadMaximumMbps is >= .1 and <= 100000);
 
     internal static DownloadBudgetProposal FromSettings(DynexSettings settings) =>
-        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps, settings.UploadCapacityMbps);
+        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps, settings.UploadCapacityMbps, settings.SharedDownloadMaximumMbps);
 
     internal double Remaining(int gamingCount) => Math.Max(0, LineMbps * (1 - HeadroomPercent / 100) - gamingCount * GamingReserveMbps);
 }
 
+/// <summary>LimitedDownloadMbps is measured classified bulk input before pacing;
+/// null means unavailable, zero means measured idle. Adapter or game/voice bytes are not bulk evidence.</summary>
 public sealed record ProbeStats(DateTimeOffset TimestampUtc, double? ExternalLatencyMs,
-    double? DownloadMbps, bool IsGamingRelevant = true, string TargetId = "default");
+    double? DownloadMbps, bool IsGamingRelevant = true, string TargetId = "default", double? LimitedDownloadMbps = null);
 
 /// <summary>
 /// Shared metadata describes the conservative planning pool, not proof that a driver applied it.
-/// Complete means all currently observed participants supplied valid proposals and the per-PC share
-/// can be represented. It does not establish a globally converged membership view or detect partitions.
+/// Complete means the shares can be represented and either every participant supplied a valid
+/// capacity proposal (legacy pool), or a measured maximum source and current activity telemetry
+/// from every participant are available (shared maximum). It does not establish a globally
+/// converged membership view or detect partitions.
 /// AppliedLimitMbps/ShaperActive remain the separate confirmations; missing/disabled filters cannot
 /// be controlled by this policy. Zero gamers means there is no automatic shared pool.
+/// ParticipantCount/ShareWeightTotal always cover all peers (also for upload allocation).
+/// DownloadParticipantCount/DownloadShareWeightTotal cover active peers plus self prospectively;
+/// an idle local device thus has a bounded starting share without reserving it on active peers.
+/// DownloadActivityComplete means all activity is known, not atomic agreement on simultaneous starts.
 /// </summary>
 public sealed record LimitDecision(double? DownloadLimitMbps, string Reason, bool GamingActive,
     double? IdleBaselineMs, bool AdaptiveReduced, DateTimeOffset? IdleBaselineAtUtc = null,
     double? SharedDownloadBudgetMbps = null, int ParticipantCount = 1, int GamingCount = 0,
     double? SharedCapacityMbps = null, bool SharedBudgetComplete = false, double? ShareWeightTotal = null, double LocalShareWeight = 1,
-    double? SharedUploadCapacityMbps = null, double? SharedUploadBudgetMbps = null);
+    double? SharedUploadCapacityMbps = null, double? SharedUploadBudgetMbps = null,
+    int DownloadParticipantCount = 1, bool DownloadActivityComplete = false, double? DownloadShareWeightTotal = null);
 
 internal static class LanAddress
 {

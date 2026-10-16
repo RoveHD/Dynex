@@ -251,4 +251,123 @@ Near(decision.DownloadLimitMbps, 55, "local gaming without a prior idle baseline
 Check(decision.IdleBaselineMs is null, "gaming samples cannot be learned as idle baseline");
 Near(new LimitPlanner(settings).Plan(true, [Gamer(0, 1)], Local(20), origin.AddSeconds(20)).DownloadLimitMbps, 120,
     "remote peer expiry cannot free background downloads while local gaming continues");
+// A manual maximum is the real starting budget, even when the shared allocation is larger.
+var manualSettings = settings with { ManualDownloadLimitMbps = 25 };
+LimitPlanner ManualIdleBaseline()
+{
+    var p = new LimitPlanner(manualSettings);
+    for (var i = 0; i < 5; i++) p.Plan(false, [], Local(-10 + i * 2, 2), origin.AddSeconds(-10 + i * 2));
+    return p;
+}
+var manualLocal = ManualIdleBaseline();
+for (var i = 0; i < 3; i++)
+{
+    var t = i * 5;
+    decision = manualLocal.Plan(true, [], Local(t, 24, 90), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 21.25, "local congestion at a manual maximum reduces that maximum immediately");
+Check(decision.AdaptiveReduced && decision.SharedDownloadBudgetMbps == 120,
+    "manual local adaptation preserves the common download pool metadata");
+for (var i = 0; i < 3; i++)
+{
+    var t = 26 + i * 2;
+    decision = manualLocal.Plan(true, [], Local(t, 2, 21), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 23.75, "local recovery gradually restores the manual maximum");
+for (var i = 0; i < 3; i++)
+{
+    var t = 46 + i * 2;
+    decision = manualLocal.Plan(true, [], Local(t, 2, 21), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 25, "local recovery cannot exceed the manual maximum");
+Check(!decision.AdaptiveReduced, "full manual local recovery clears the reduction state");
+
+var manualPeer = new LimitPlanner(manualSettings);
+for (var i = 0; i < 3; i++)
+{
+    var t = i * 5;
+    decision = manualPeer.Plan(false, [Gamer(t, i + 1)], Local(t, 24), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 21.25, "peer congestion at a manual maximum reduces that maximum immediately");
+Check(decision.AdaptiveReduced && decision.SharedDownloadBudgetMbps == 120,
+    "manual peer adaptation preserves the common download pool metadata");
+var manualReset = new LimitPlanner(manualSettings);
+for (var i = 0; i < 3; i++)
+{
+    var t = i * 5;
+    manualReset.Plan(false, [Gamer(t, i + 1)], Local(t, 24), origin.AddSeconds(t));
+}
+var endedManual = manualReset.Plan(false, [], now: origin.AddSeconds(12));
+Check(endedManual.DownloadLimitMbps == 25 && !endedManual.AdaptiveReduced,
+    "ending gaming clears an active adaptive reduction while preserving the manual maximum");
+Near(new LimitPlanner(settings with { ManualDownloadLimitMbps = 100 }).Plan(false, [Gamer(0, 1)], Local(0, 24), origin).DownloadLimitMbps,
+    60, "a manual maximum above the allocation cannot increase the allocated share");
+for (var i = 0; i < 5; i++)
+{
+    var t = 30 + i * 5;
+    decision = manualPeer.Plan(false, [Gamer(t, i + 4, 21)], Local(t, 2), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 22.5, "complete peer recovery rounds gradually restore the manual maximum");
+for (var i = 0; i < 15; i++)
+{
+    var t = 55 + i * 5;
+    decision = manualPeer.Plan(false, [Gamer(t, i + 9, 21)], Local(t, 2), origin.AddSeconds(t));
+}
+Near(decision.DownloadLimitMbps, 25, "peer recovery cannot exceed the manual maximum");
+Check(!decision.AdaptiveReduced, "full manual peer recovery clears the reduction state");
+Near(manualPeer.Plan(false, [], now: origin.AddSeconds(140)).DownloadLimitMbps, 25,
+    "ending gaming preserves the configured manual maximum");
+
+foreach (var peerFeedback in new[] { false, true })
+{
+    var lowLoad = ManualIdleBaseline();
+    var noBaseline = new LimitPlanner(manualSettings);
+    for (var i = 0; i < 3; i++)
+    {
+        var t = i * 5;
+        var peers = peerFeedback ? new[] { Gamer(t, i + 1) } : [];
+        decision = lowLoad.Plan(!peerFeedback, peers, Local(t, 2, 90), origin.AddSeconds(t));
+        noBaseline.Plan(!peerFeedback, peers.Select(p => p with { IdleBaselineMs = null }).ToArray(),
+            Local(t, 24, 90), origin.AddSeconds(t));
+    }
+    Check(decision.DownloadLimitMbps == 25 && !decision.AdaptiveReduced,
+        $"manual {(peerFeedback ? "peer" : "local")} adaptation still requires sufficient own load");
+    var noBaselineDecision = noBaseline.Plan(!peerFeedback,
+        peerFeedback ? [Gamer(12, 4) with { IdleBaselineMs = null }] : [], Local(12, 24, 90), origin.AddSeconds(12));
+    Check(noBaselineDecision.DownloadLimitMbps == 25 && !noBaselineDecision.AdaptiveReduced,
+        $"manual {(peerFeedback ? "peer" : "local")} adaptation still requires a valid baseline");
+}
+// Each consumer adapts only its assigned share of the original common maximum.
+var commonSettings = settings with { SharedDownloadMaximumMbps = 25 };
+for (var downloaders = 1; downloaders <= 3; downloaders++)
+{
+    var ids = Enumerable.Range(0, downloaders).Select(_ => Guid.NewGuid()).ToArray();
+    var plans = new List<LimitDecision>();
+    foreach (var id in ids)
+    {
+        var adaptive = new LimitPlanner(commonSettings with { DeviceId = id });
+        for (var sample = 0; sample < 3; sample++)
+        {
+            var t = sample * 5;
+            var peers = ids.Where(other => other != id).Select(other => new PeerAdvertisement(other, "Downloader", false,
+                80, 20, origin.AddSeconds(t), ShareWeight: 1, LimitedDownloadMbps: 25)).Append(
+                Gamer(t, sample + 1) with { ShareWeight = 1, LimitedDownloadMbps = 0 }).ToArray();
+            decision = adaptive.Plan(false, peers, Local(t, 80) with { LimitedDownloadMbps = 25 }, origin.AddSeconds(t));
+        }
+        plans.Add(decision);
+    }
+    Check(plans.All(p => p.AdaptiveReduced && p.SharedDownloadBudgetMbps == 25 && p.DownloadParticipantCount == downloaders),
+        $"{downloaders} consumers adapt allocated shares without modifying or duplicating the original shared maximum");
+    Check(plans.Sum(p => p.DownloadLimitMbps) <= 21.25 && plans.All(p => p.DownloadLimitMbps <= 25d / downloaders),
+        $"{downloaders} adaptive consumers cannot overdraw the 25 Mbps common pool");
+}
+var gameOnlyLoad = new LimitPlanner(commonSettings);
+for (var sample = 0; sample < 3; sample++)
+{
+    var t = sample * 5;
+    decision = gameOnlyLoad.Plan(false, [Gamer(t, sample + 1) with { ShareWeight = 1, LimitedDownloadMbps = 0 }],
+        Local(t, 115) with { LimitedDownloadMbps = 0 }, origin.AddSeconds(t));
+}
+Check(!decision.AdaptiveReduced && decision.DownloadLimitMbps == 25,
+    "known zero classified bulk overrides high interface/game traffic as adaptation load evidence");
 Console.WriteLine($"{checks} adaptive checks passed; pure policy, no sockets, router or shaper changes.");

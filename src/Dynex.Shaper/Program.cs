@@ -111,6 +111,8 @@ internal static class Program
         var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
         var gameTraffic = new GameTrafficMonitor(() => ownership.Snapshot);
         var applicationPolicy = new ApplicationRulePolicy(() => ownership.Snapshot);
+        var downloadActivity = new DownloadActivityMeter();
+        PacketPump? measuredSession = null;
         var ownershipWorker = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -143,6 +145,13 @@ internal static class Program
             {
                 var current = Volatile.Read(ref session);
                 var ownershipReady = ownership.Snapshot.IsFresh;
+                if (!ReferenceEquals(current, measuredSession))
+                {
+                    downloadActivity.Sample(null);
+                    measuredSession = current;
+                }
+                var limitedDownloadMbps = downloadActivity.Sample(current?.Active == true && ownershipReady
+                    ? current.LimitedDownloadBytes : null);
                 var top = accounting.Snapshot();
                 var cleanupError = Volatile.Read(ref releaseError) ?? (current?.CleanupError is { } cleanup
                     ? "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanup : null);
@@ -159,6 +168,7 @@ internal static class Program
                     uploadActive = current?.Active == true && current.HasUploadLimit && ownershipReady,
                     uploadMbps = current?.Active == true && current.HasUploadLimit && ownershipReady ? uploadRate : null,
                     uploadSentBytes = current?.UploadSentBytes ?? 0,
+                    limitedDownloadMbps,
                     topPrograms = current?.Active == true ? top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,

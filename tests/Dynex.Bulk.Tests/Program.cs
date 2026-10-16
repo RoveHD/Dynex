@@ -142,6 +142,10 @@ catch (FormatException) { Check(true, "invalid protected PID rejected"); }
     var deadline = DateTime.UtcNow.AddSeconds(2);
     while (pump.ReceivedBytes < 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
     Check(pump.ReceivedBytes >= 288000 && pump.DroppedPackets > 0, "two bulk flows fill the single shared bounded queue");
+    deadline = DateTime.UtcNow.AddSeconds(1);
+    while (pump.LimitedDownloadBytes < 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
+    Check(pump.LimitedDownloadBytes == 288000 && pump.SentBytes < pump.LimitedDownloadBytes,
+        "bulk demand counts all ingress IP bytes before pacing and overflow drops");
     long interactiveBytes = 0;
     for (var i = 0; i < 32; i++)
         foreach (var interactive in new[] { game4, game6, voice4, voice6 })
@@ -160,6 +164,13 @@ catch (FormatException) { Check(true, "invalid protected PID rejected"); }
         "protected traffic bypasses the download backlog instead of sharing its cap");
     Check(pump.GamePriorityPackets == 64 && pump.VoicePriorityPackets > 0,
         "real QoS classifier counts successful v4/v6 game/voice priority delivery with two saturated downloads");
+    Check(pump.LimitedDownloadBytes == 288000, "protected IPv4/IPv6 game and voice packets never inflate download demand");
+    pump.UpdateLimit(null);
+    device.Enqueue(Packet(flow, ethernet: true));
+    deadline = DateTime.UtcNow.AddSeconds(1);
+    while (pump.LimitedDownloadBytes == 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
+    Check(pump.LimitedDownloadBytes == 289440 && !pump.HasDownloadLimit,
+        "bulk ingress remains measurable without a current cap and excludes Ethernet overhead");
 }
 owners = [new(flow, 501, started, "WhatsApp")];
 Check(Feed(new(Snapshot, [], () => now), flow), "additional voice-app QoS eligibility does not exempt its TCP file downloads");
@@ -229,6 +240,24 @@ clockNow = 2;
 accounting.Observe("steam", true, 1);
 var top = accounting.Snapshot();
 Check(top.Length == 2 && top[0] is { Name: "steam", DownMbps: 10 } && top[1].Name == "game", "per-program rates rank the busiest program first");
+var activityClock = 0d;
+var activity = new DownloadActivityMeter(() => activityClock);
+Check(activity.Sample(0) is null, "first bulk counter sample is unknown rather than measured idle");
+activityClock = 2;
+Check(activity.Sample(6_250_000) == 25, "bulk ingress byte deltas produce a real 25 Mbit/s rate");
+activityClock = 4;
+Check(activity.Sample(6_250_000) == 0, "a fresh unchanged bulk counter means measured idle");
+activityClock = 12;
+Check(activity.Sample(10_000_000) is null, "stale bulk intervals cannot become fresh activity");
+activityClock = 14;
+Check(activity.Sample(0) is null, "a restarted capture rebases the bulk counter without negative traffic");
+activityClock = 16;
+Check(activity.Sample(250_000) == 1, "a fresh capture recovers from a counter reset");
+Check(activity.Sample(null) is null, "missing capture becomes unknown immediately");
+activityClock = 18;
+Check(activity.Sample(500_000) is null, "restoring capture needs a new baseline instead of including the unavailable interval");
+activityClock = 20;
+Check(activity.Sample(750_000) == 1, "fresh capture resumes activity after a missing interval");
 Console.WriteLine($"{passed}/{passed} bulk checks passed. No kernel filter installed or activated.");
 
 sealed class PacketTestDevice(Action<CapturedPacket> send) : IPacketDevice

@@ -80,6 +80,7 @@ public sealed class PacketPump : IAsyncDisposable
     private readonly Task _sender;
     private readonly Task _uploadSender;
     private long _receivedBytes;
+    private long _limitedDownloadBytes;
     private long _sentBytes;
     private long _uploadSentBytes;
     private long _droppedPackets;
@@ -120,6 +121,8 @@ public sealed class PacketPump : IAsyncDisposable
     public Exception? Failure => Volatile.Read(ref _failure);
     public string? CleanupError => Volatile.Read(ref _cleanupError);
     public long ReceivedBytes => Interlocked.Read(ref _receivedBytes);
+    /// <summary>Shared-budget-eligible IP bytes at ingress, before pacing or queue drops.</summary>
+    public long LimitedDownloadBytes => Interlocked.Read(ref _limitedDownloadBytes);
     public long SentBytes => Interlocked.Read(ref _sentBytes);
     public long UploadSentBytes => Interlocked.Read(ref _uploadSentBytes);
     public long DroppedPackets => Interlocked.Read(ref _droppedPackets);
@@ -176,10 +179,20 @@ public sealed class PacketPump : IAsyncDisposable
                 PacketPriority priority;
                 try { priority = _priority?.Invoke(packet) ?? PacketPriority.None; }
                 catch { packet.Dispose(); throw; }
+                bool bulkDownload;
+                try
+                {
+                    // Observe demand even when no download cap currently exists. Socket
+                    // ownership and the bulk policy exclude games, voice and unknown flows.
+                    bulkDownload = packet.Direction == PacketDirection.Inbound && priority == PacketPriority.None &&
+                        _shouldLimit?.Invoke(packet) == true;
+                }
+                catch { packet.Dispose(); throw; }
                 // Interactive traffic (games, voice) never enters a queue. Downloads are
                 // paced only when a limit exists; uploads only through an explicit policy,
                 // so TCP acknowledgements and unknown flows always leave immediately.
                 Lane? lane = null;
+                var applicationDownload = false;
                 // Explicit rules override automatic game/voice exemptions.
                 ApplicationLimit? application;
                 try { application = _applicationRule?.Invoke(packet); }
@@ -190,17 +203,25 @@ public sealed class PacketPump : IAsyncDisposable
                         if (_applicationLanes.TryGetValue(application.ProcessName, out var lanes))
                         {
                             var candidate = packet.Direction == PacketDirection.Inbound ? lanes.Down : lanes.Up;
-                            if (Volatile.Read(ref candidate.Pacer) is not null) lane = candidate;
+                            if (Volatile.Read(ref candidate.Pacer) is not null)
+                            {
+                                lane = candidate;
+                                applicationDownload = packet.Direction == PacketDirection.Inbound;
+                            }
                         }
                 }
                 if (lane is null && priority == PacketPriority.None)
                 {
                     if (packet.Direction == PacketDirection.Inbound)
                     {
-                        if (Volatile.Read(ref _download.Pacer) is not null && (_shouldLimit is null || _shouldLimit(packet))) lane = _download;
+                        if (Volatile.Read(ref _download.Pacer) is not null && (_shouldLimit is null || bulkDownload)) lane = _download;
                     }
                     else if (_shouldLimitUpload is not null && Volatile.Read(ref _upload.Pacer) is not null && _shouldLimitUpload(packet)) lane = _upload;
                 }
+                // Explicit download rules also consume shared capacity, including
+                // games or otherwise unclassified flows. Count each ingress packet once.
+                if (bulkDownload || applicationDownload)
+                    Interlocked.Add(ref _limitedDownloadBytes, packet.Length - packet.IpOffset);
                 if (lane is null)
                 {
                     using (packet)

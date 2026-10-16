@@ -111,7 +111,7 @@ internal static class LimitExplanationTests
         var shared = new LimitDecision(16, "", true, null, false, ParticipantCount: 3, GamingCount: 1);
         PeerAdvertisement Peer(string name, bool gaming, string? game = null) => new(Guid.NewGuid(), name, gaming, null, null, DateTimeOffset.UtcNow, Game: game);
         check(LimitExplanation.Describe(shared, false, null, [Peer("PC 2", true, "Valorant"), Peer("PC 3", false)], true, false, true, true, null, 16)
-            == "Gaming auf PC 2 (Valorant) erkannt · Budget geteilt auf 3 PCs", "remote gamer is named as the limit reason");
+            == "Gaming auf PC 2 (Valorant) erkannt · Budget vorläufig auf 3 Geräte geteilt", "remote gamer is named as the limit reason");
         check(LimitExplanation.Describe(shared with { AdaptiveReduced = true }, true, "CS2", [Peer("PC 2", true)], true, false, true, true, null, 16)
             .StartsWith("Gaming auf diesem PC (CS2) und PC 2 erkannt · Ping gestiegen"), "several gamers and adaptive reduction are listed");
         check(LimitExplanation.Describe(shared with { DownloadLimitMbps = 5 }, true, null, [], true, false, true, true, 5, 5).Contains("manuelle Obergrenze"),

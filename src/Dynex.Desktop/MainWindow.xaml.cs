@@ -227,6 +227,7 @@ public partial class MainWindow : Window
         foreach (var process in SettingsStore.Split(s.GameProcesses)) _configuredProcesses.Add(process);
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
+        SharedLimitBox.Text = s.SharedDownloadMaximumMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         UploadLimitCheck.IsChecked = s.UploadLimitEnabled;
         ManualUploadBox.Text = s.ManualUploadLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
@@ -256,6 +257,7 @@ public partial class MainWindow : Window
                 NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
                 WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                 ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
+                SharedDownloadMaximumMbps = ReadSharedLimit(),
                 GameProcesses = ConfiguredProcessesText, DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
@@ -419,6 +421,7 @@ public partial class MainWindow : Window
                 ExternalBox.Text.Trim() != saved.ExternalTarget ||
                 ((WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != saved.WeekendProfile ||
                 !MatchesLimit(ManualLimitBox.Text, saved.ManualLimitMbps) ||
+                !MatchesLimit(SharedLimitBox.Text, saved.SharedDownloadMaximumMbps) ||
                 !MatchesLimit(ManualUploadBox.Text, saved.ManualUploadLimitMbps);
         }
     }
@@ -587,6 +590,22 @@ public partial class MainWindow : Window
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = value });
         ErrorText.Text = "Obergrenze gespeichert. Gilt bei bestätigtem Spiel-Netzwerkverkehr.";
     });
+    private async void SharedLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
+    {
+        EnsureNetworkEditContext();
+        var value = ReadSharedLimit();
+        await _runtime.SaveSettingsAsync(_runtime.Settings with { SharedDownloadMaximumMbps = value });
+        ErrorText.Text = value is { } rate
+            ? $"Gemeinsames Gaming-Budget: höchstens {rate:0.##} Mbit/s für alle aktiven Downloads."
+            : "Gemeinsames Gaming-Budget wird aus der Anschlussmessung berechnet.";
+    });
+    private double? ReadSharedLimit()
+    {
+        if (string.IsNullOrWhiteSpace(SharedLimitBox.Text)) return null;
+        if (_runtime.Settings.CapacityMeasuredAtUtc is null)
+            throw new ArgumentException("Für ein gemeinsames Downloadmaximum zuerst auf diesem PC den Anschluss messen. Dann wird die Obergrenze mit seinem Leitungsbudget an alle Geräte übertragen.");
+        return Number(SharedLimitBox.Text, "Gemeinsames Downloadbudget");
+    }
     private async void ClearLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
         EnsureNetworkEditContext();
@@ -918,12 +937,13 @@ public partial class MainWindow : Window
             ? $"{NetworkHelpText.Text}\nModus: {network.Mode}\nLokale Adressen: {string.Join(", ", network.LocalAddresses)}\nGesendet: {network.SentDatagrams} · Empfangen: {network.ReceivedDatagrams} (davon eigene: {network.SelfDatagrams}) · Bestätigte Statuspakete: {network.AcceptedStatusDatagrams}\nVollständige Werte: Diagnose exportieren."
             : NetworkHelpText.Text;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
-            ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "Gerät" : "Geräte")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
+            ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s insgesamt · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
             : "Sobald Spiel-Netzwerkverkehr bestätigt ist, teilen sich die DYNEX-Geräte ein Downloadbudget.";
         CoordinationText.Text = s.SharedDownloadBudgetMbps.HasValue
             ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} Geräten bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
                 (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen Geräten prüfen." :
-                    s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem Gerät eingeschaltet sein." : "")
+                    s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem Gerät eingeschaltet sein." : "") +
+                (s.DownloadActivityComplete ? " Aktive Downloads teilen das Budget; neue Downloads werden nach dem nächsten Geräteaustausch berücksichtigt." : " Downloadaktivität noch nicht vollständig bekannt; vorläufig teilen alle Geräte das Budget.")
             : "Spiel- und Sprachchatpakete umgehen die Downloadwarteschlange. DYNEX muss auf jedem beteiligten Gerät laufen.";
         PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
         if (s.NetworkProblem is not null)

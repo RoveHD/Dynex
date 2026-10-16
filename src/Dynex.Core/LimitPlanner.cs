@@ -45,20 +45,51 @@ public sealed class LimitPlanner
         // Minimize the complete reserve-adjusted proposals, not only the raw line speeds:
         // different headroom and per-gamer settings must not produce different shared pools.
         double? capacity = proposals.Count == 0 ? null : proposals.Min(p => p.LineMbps);
+        var maxima = proposals.Where(p => p.SharedDownloadMaximumMbps.HasValue).Select(p => p.SharedDownloadMaximumMbps!.Value).ToList();
+        // Only original measured proposals carry shared policy. An unmeasured local
+        // maximum cannot silently become a private cap that other devices never see.
+        double? maximum = maxima.Count == 0 ? null : maxima.Min();
         double? pool = active && proposals.Count > 0 ? proposals.Min(p => p.Remaining(gamers)) : null;
-        var complete = proposals.Count == participants && (pool is null || pool / participants >= 0.1);
+        if (active && maximum is { } sharedMaximum) pool = pool is { } available ? Math.Min(available, sharedMaximum) : sharedMaximum;
         var uploadProposals = proposals.Where(p => p.UploadCapacityMbps.HasValue).ToArray();
         double? uploadCapacity = uploadProposals.Length == 0 ? null : uploadProposals.Min(p => p.UploadCapacityMbps!.Value);
         double? uploadPool = active && uploadProposals.Length > 0
             ? uploadProposals.Min(p => p.UploadCapacityMbps!.Value * (1 - p.HeadroomPercent / 100)) : null;
         // Gaming exempts game packets in the packet policy, not every download on that PC.
-        // Every live PC can download in the background, so every PC shares this budget.
+        // Uploads continue to use ALL participants, independently of download activity.
         // Priorities apply only when every live peer announces one; a peer without it (older
         // release) assumes equal shares, so weighting then could overcommit the pool.
         var weighted = live.All(p => p.ShareWeight is { } w && WireAdvertisement.ValidWeight(w));
         var localWeight = weighted ? _settings.ShareWeight : 1;
         var totalWeight = weighted ? localWeight + live.Sum(p => p.ShareWeight!.Value) : participants;
-        double? automatic = pool is { } shared ? Math.Max(0.1, weighted ? shared * localWeight / totalWeight : shared / participants) : null;
+        var localActivityKnown = probe is not null && probe.TimestampUtc <= at.AddSeconds(1) &&
+            at - probe.TimestampUtc < _settings.PeerTtl && ValidLimitedLoad(probe.LimitedDownloadMbps);
+        var activityComplete = localActivityKnown && live.All(p => ValidLimitedLoad(p.LimitedDownloadMbps));
+        var downloadParticipants = participants;
+        var downloadWeight = totalWeight;
+        var minimumDownloadWeight = weighted ? Math.Min(localWeight, live.Select(p => p.ShareWeight!.Value).DefaultIfEmpty(localWeight).Min()) : 1;
+        if (activityComplete)
+        {
+            var downloading = live.Where(p => p.LimitedDownloadMbps > .05).ToArray();
+            // Always include self prospectively. An idle shaper therefore has a bounded
+            // starting rate and can report activity without needing an unbounded lane.
+            // Already active devices converge after the next heartbeat/planning round;
+            // this is not an atomic cross-device token bucket during simultaneous starts.
+            downloadParticipants = downloading.Length + 1;
+            downloadWeight = localWeight + downloading.Sum(p => weighted ? p.ShareWeight!.Value : 1);
+            minimumDownloadWeight = weighted ? Math.Min(localWeight, downloading.Select(p => p.ShareWeight!.Value).DefaultIfEmpty(localWeight).Min()) : 1;
+        }
+        double? automatic = pool is { } shared ? Math.Max(0.1, shared * localWeight / downloadWeight) : null;
+        var allocationRepresentable = pool is null || pool * minimumDownloadWeight / downloadWeight >= .1;
+        // The new telemetry also establishes support for active shared-max allocation.
+        // Capacity consumers (phones) need not invent proposals to participate; legacy
+        // peers without this telemetry cannot confirm enforcement of the new maximum.
+        var complete = (maximum is not null ? activityComplete && proposals.Count > 0 : proposals.Count == participants) && allocationRepresentable;
+        // A manual maximum may be lower than the shared allocation. Adapt both
+        // the load threshold and the applied rate from that actual starting budget.
+        var adaptiveBudget = automatic;
+        if (adaptiveBudget is { } allocation && _settings.ManualDownloadLimitMbps is { } manualMaximum)
+            adaptiveBudget = Math.Min(allocation, manualMaximum);
 
         if (!active || !_settings.AdaptiveEnabled)
         {
@@ -72,27 +103,28 @@ public sealed class LimitPlanner
             var hasPeerBaseline = automatic is not null && gamingPeers.Any(p => ValidBaseline(p, at));
             // A local gamer is itself an authoritative latency source. Remote healthy baselines
             // must not suppress local congestion, or let local health release a remote reduction.
-            Observe(probe, at, active, automatic, localGaming || !hasPeerBaseline, !hasPeerBaseline);
-            if (automatic is { } cap) ObserveGamingPeers(gamingPeers, probe, at, cap, hasPeerBaseline,
+            Observe(probe, at, active, adaptiveBudget, localGaming || !hasPeerBaseline, !hasPeerBaseline);
+            if (adaptiveBudget is { } cap) ObserveGamingPeers(gamingPeers, probe, at, cap, hasPeerBaseline,
                 localGaming, !localGaming || LocalGameRecovered(probe, at));
         }
         // Round shared budgets down so independent PCs cannot round their sum above the reserve.
-        if (automatic is { } budget) automatic = Math.Floor(Math.Max(0.1, budget * _factor) * 100) / 100;
-        var limit = automatic;
-        if (_settings.ManualDownloadLimitMbps is { } manual)
-            limit = limit is { } auto ? Math.Min(auto, manual) : manual;
+        var limit = adaptiveBudget is { } budget
+            ? Math.Floor(Math.Max(0.1, budget * _factor) * 100) / 100
+            : _settings.ManualDownloadLimitMbps;
         var reason = automatic is not null
             ? (_factor < 0.999 ? "Große Downloads begrenzt · Spiele frei · Latenzreserve erhöht" : "Große Downloads begrenzt · Spiele frei · LAN-Budget geteilt")
             : active && capacity is null ? "Gaming erkannt · keine bestätigte Kapazität · kein automatisches Limit"
             : "Kein Gaming aktiv · automatische Begrenzung frei";
         if (_settings.ManualDownloadLimitMbps is not null) reason += " · manuelles Limit";
-        if (active && !complete) reason += pool / participants < 0.1
+        if (active && !complete) reason += !allocationRepresentable
             ? " · gemeinsames Budget unter technischem Mindestlimit"
             : " · gemeinsames Budget noch nicht mit allen PCs abgestimmt";
         return new(limit is { } value ? Math.Round(value, 2) : null, reason, active, _baseline, _factor < 0.999,
             _baseline is null ? null : _baselineAt, pool, participants, gamers, capacity, complete, totalWeight, localWeight,
-            uploadCapacity, uploadPool);
+            uploadCapacity, uploadPool, downloadParticipants, activityComplete, downloadWeight);
     }
+
+    private static bool ValidLimitedLoad(double? load) => load is >= 0 and <= 100000 && double.IsFinite(load.Value);
 
     private void Observe(ProbeStats? probe, DateTimeOffset now, bool gaming, double? budget, bool adjust, bool allowRecovery)
     {
@@ -111,7 +143,7 @@ public sealed class LimitPlanner
         }
         if (!probe.IsGamingRelevant || string.IsNullOrWhiteSpace(probe.TargetId) ||
             probe.ExternalLatencyMs is not { } latency || !double.IsFinite(latency) || latency < 0 || latency > 10000 ||
-            probe.DownloadMbps is not { } load || !double.IsFinite(load) || load < 0)
+            (probe.LimitedDownloadMbps ?? probe.DownloadMbps) is not { } load || !double.IsFinite(load) || load < 0)
         { _high = _low = 0; return; }
         if (!gaming && load <= _settings.LineMbps * 0.15)
         {
@@ -190,7 +222,7 @@ public sealed class LimitPlanner
 
         var localLoadValid = local is not null && local.TimestampUtc <= now.AddSeconds(1) &&
             now - local.TimestampUtc <= TimeSpan.FromSeconds(10) &&
-            local.DownloadMbps is { } load && double.IsFinite(load) && load >= budget * _factor * .75;
+            (local.LimitedDownloadMbps ?? local.DownloadMbps) is { } load && double.IsFinite(load) && load >= budget * _factor * .75;
         var newElevated = valid.Any(v => v.IsNew && High(v)) && localLoadValid;
         if (newElevated)
         {

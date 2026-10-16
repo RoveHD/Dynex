@@ -14,6 +14,12 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name);
 }
 void Near(double? actual, double expected, string name) => Check(actual is { } d && Math.Abs(d - expected) < 0.02, name);
+if (args.Contains("--shared-download-activity"))
+{
+    await SharedDownloadActivityTests.Run(Check);
+    Console.WriteLine($"{checks} shared download checks passed; UDP integration ran on loopback only.");
+    return;
+}
 if (args.Contains("--auto-lan-clock") || args.Contains("--auto-lan-clock-crypto"))
 {
     await AutoLanClockTests.Run(Check, args.Contains("--auto-lan-clock-crypto"));
@@ -312,6 +318,7 @@ ComfortTests.Run(Check);
 IsolationTests.Run(Check);
 await PeerConnectionTests.Run(Check);
 await SharedBudgetTests.Run(Check);
+await SharedDownloadActivityTests.Run(Check);
 Console.WriteLine($"{checks} checks passed; UDP integration ran on loopback only.");
 }
 catch (Exception error)

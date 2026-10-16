@@ -78,16 +78,16 @@ public sealed partial class PeerService : IPeerService
     public void Publish(bool isGaming, double? downloadMbps = null, double? latencyMs = null,
         double? appliedLimitMbps = null, string? game = null, bool shaperActive = false,
         double? idleBaselineMs = null, string? latencyTargetId = null, DateTimeOffset? idleBaselineAtUtc = null,
-        double? uploadMbps = null, string? topProgram = null)
+        double? uploadMbps = null, string? topProgram = null, double? limitedDownloadMbps = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!Valid(downloadMbps, 100000) || !Valid(uploadMbps, 100000) || !Valid(latencyMs, 10000) || !Valid(appliedLimitMbps, 100000) ||
+        if (!Valid(downloadMbps, 100000) || !Valid(limitedDownloadMbps, 100000) || !Valid(uploadMbps, 100000) || !Valid(latencyMs, 10000) || !Valid(appliedLimitMbps, 100000) ||
             game?.Length > 80 || game?.Any(char.IsControl) == true || !Valid(idleBaselineMs, 10000) ||
             latencyTargetId?.Length > 256 || latencyTargetId?.Any(char.IsControl) == true || !WireAdvertisement.ValidProgram(topProgram))
             throw new ArgumentException("Ungültiger lokaler Status.");
         Volatile.Write(ref _local, new(isGaming, downloadMbps, latencyMs, appliedLimitMbps, game, shaperActive,
             idleBaselineMs, latencyTargetId, idleBaselineAtUtc, Interlocked.Increment(ref _sampleSequence), uploadMbps,
-            Stopwatch.GetTimestamp(), topProgram));
+            Stopwatch.GetTimestamp(), topProgram, limitedDownloadMbps));
     }
 
     public IReadOnlyList<PeerAdvertisement> Snapshot()
@@ -198,7 +198,7 @@ public sealed partial class PeerService : IPeerService
                         wire.DownloadMbps, wire.LatencyMs, now, endpoint.Address.ToString(), wire.AppliedLimitMbps,
                         wire.Game, wire.ShaperActive, wire.IdleBaselineMs, wire.LatencyTargetId,
                         wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId, UploadMbps: wire.UploadMbps,
-                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram, RemotePort: endpoint.Port), wire.SessionId, tick, endpoint);
+                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram, RemotePort: endpoint.Port, LimitedDownloadMbps: wire.LimitedDownloadMbps), wire.SessionId, tick, endpoint);
                     Interlocked.Increment(ref _accepted);
                     changed = true;
                 }
@@ -240,7 +240,7 @@ public sealed partial class PeerService : IPeerService
                     state.Baseline, state.Target, state.SampleSequence > 0 ? state.SampleSequence : null, state.BaselineAt,
                     throughputIsFresh ? state.Upload : null,
                     throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight,
-                        throughputIsFresh ? state.TopProgram : null));
+                        throughputIsFresh ? state.TopProgram : null, throughputIsFresh ? state.LimitedDownload : null));
                 IPEndPoint[] targets;
                 bool expired;
                 lock (_gate)
@@ -345,7 +345,7 @@ public sealed partial class PeerService : IPeerService
     }
 
     private sealed record LocalState(bool Gaming, double? Download, double? Latency, double? Limit, string? Game, bool Shaper,
-        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick, string? TopProgram = null);
+        double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick, string? TopProgram = null, double? LimitedDownload = null);
     private sealed record ReceivedPeer(PeerAdvertisement Advertisement, Guid Session, long Tick, IPEndPoint Endpoint);
     private sealed record ReplayEntry(long Sequence, long Tick, bool Retired = false);
 }

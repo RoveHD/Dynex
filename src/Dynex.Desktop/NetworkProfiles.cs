@@ -16,6 +16,7 @@ public sealed record NetworkProfilePolicy
     public double BackgroundPercent { get; init; } = 65;
     public double ReservePerGamerMbps { get; init; } = 10;
     public double? ManualLimitMbps { get; init; }
+    public double? SharedDownloadMaximumMbps { get; init; }
     public double SharePriority { get; init; } = 1;
     public bool UploadLimitEnabled { get; init; } = true;
     public double? ManualUploadLimitMbps { get; init; }
@@ -30,7 +31,7 @@ public sealed record NetworkProfilePolicy
         AutomaticSpeedTestAttempted = s.AutomaticSpeedTestAttempted, UploadCapacityMbps = s.UploadCapacityMbps,
         IdleLatencyMs = s.IdleLatencyMs, LoadedLatencyMs = s.LoadedLatencyMs, Profile = s.Profile,
         BackgroundPercent = s.BackgroundPercent, ReservePerGamerMbps = s.ReservePerGamerMbps,
-        ManualLimitMbps = s.ManualLimitMbps, SharePriority = s.SharePriority,
+        ManualLimitMbps = s.ManualLimitMbps, SharedDownloadMaximumMbps = s.SharedDownloadMaximumMbps, SharePriority = s.SharePriority,
         UploadLimitEnabled = s.UploadLimitEnabled, ManualUploadLimitMbps = s.ManualUploadLimitMbps,
         RouterTarget = s.RouterTarget, ExternalTarget = s.ExternalTarget, AutoConnectLan = s.AutoConnectLan, DirectPeers = s.DirectPeers
     };
@@ -41,7 +42,7 @@ public sealed record NetworkProfilePolicy
         AutomaticSpeedTestAttempted = AutomaticSpeedTestAttempted, UploadCapacityMbps = UploadCapacityMbps,
         IdleLatencyMs = IdleLatencyMs, LoadedLatencyMs = LoadedLatencyMs, Profile = Profile,
         BackgroundPercent = BackgroundPercent, ReservePerGamerMbps = ReservePerGamerMbps,
-        ManualLimitMbps = ManualLimitMbps, SharePriority = SharePriority,
+        ManualLimitMbps = ManualLimitMbps, SharedDownloadMaximumMbps = SharedDownloadMaximumMbps, SharePriority = SharePriority,
         UploadLimitEnabled = UploadLimitEnabled, ManualUploadLimitMbps = ManualUploadLimitMbps,
         RouterTarget = RouterTarget, ExternalTarget = ExternalTarget, AutoConnectLan = AutoConnectLan, DirectPeers = DirectPeers
     };

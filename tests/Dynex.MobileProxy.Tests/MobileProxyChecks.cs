@@ -272,6 +272,7 @@ public static class MobileProxyChecks
         await WaitUntil(() => Volatile.Read(ref observedDownloads) == 1);
         Check(proxy.DownloadBytes > 0 && observedDownloads == 1, "forwarded payload wakes status exactly once across multiple streams");
         Check(proxy.Snapshot().LimitedDownloadBytes == 0, "unlimited LAN payload cannot confirm an applied internet limit");
+        Check(proxy.Snapshot().BulkDownloadIngressBytes == 0, "LAN bypass download never joins the measured bulk allocation");
         var dnsListener = new TcpListener(IPAddress.Loopback, 0);
         dnsListener.Start();
         try
@@ -338,6 +339,8 @@ public static class MobileProxyChecks
                     "TCP counters include actual payload only, not authentication/framing");
                 Check(limitedProxy.Snapshot() is { LimitedDownloadBytes: 131_072, DownloadLimitBytesPerSecond: 65_536 },
                     "TCP limit confirmation counts actual payload after its limiter reservation");
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 131_072,
+                    "durable TCP bulk ingress counts actual classified payload before pacing");
                 var priorVersion = limitedProxy.Snapshot().LimitVersion;
                 limitedProxy.SetDownloadLimit(65_536);
                 Check(limitedProxy.Snapshot().LimitVersion == priorVersion && limitedProxy.Snapshot().LimitedDownloadBytes == 131_072,
@@ -345,6 +348,8 @@ public static class MobileProxyChecks
                 limitedProxy.SetDownloadLimit(1);
                 Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0 && limitedProxy.Snapshot().LimitVersion > priorVersion,
                     "changing a limit invalidates old payload confirmation immediately");
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 131_072,
+                    "changing a limit preserves lifetime bulk activity instead of resetting it with confirmation");
                 await Send(clients[1], new byte[32_768]);
                 await Read(remotes[1], 32_768).WaitAsync(TimeSpan.FromSeconds(1));
                 Check(limitedProxy.UploadBytes == 32_768, "upload remains unlimited while download rate is one byte per second");
@@ -352,11 +357,20 @@ public static class MobileProxyChecks
                 var pending = Read(clients[0], 32_768);
                 await Task.Delay(60, token);
                 Check(!pending.IsCompleted, "TCP relay blocks at reduced rate");
+                await WaitUntil(() => limitedProxy.Snapshot().BulkDownloadIngressBytes > 131_072);
+                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
+                    "blocked ingress is observed as bulk activity without claiming forwarded/applied payload");
                 limitedProxy.SetDownloadLimit(null);
                 await pending.WaitAsync(TimeSpan.FromSeconds(1));
                 Check(true, "unlimited releases waiting TCP relay");
                 Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
                     "payload released by removing a cap cannot confirm either the old or a new cap");
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 163_840,
+                    "removing the limit preserves the cumulative ingress count");
+                await Send(remotes[0], new byte[4096]);
+                await Read(clients[0], 4096);
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 167_936 && limitedProxy.Snapshot().LimitedDownloadBytes == 0,
+                    "eligible bulk ingress is measured even with no limiter installed");
                 limitedProxy.SetDownloadLimit(1);
                 await Send(remotes[0], new byte[32_768]);
                 await limitedProxy.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
@@ -457,11 +471,16 @@ public static class MobileProxyChecks
                     "TCP and UDP downloads share the same aggregate byte budget");
                 Check(mixed.Snapshot().LimitedDownloadBytes == 65_536,
                     "TCP and UDP both contribute only forwarded rate-controlled payload to confirmation");
+                Check(mixed.Snapshot().BulkDownloadIngressBytes == 65_536,
+                    "TCP and authenticated UDP share the durable bulk ingress counter");
                 mixed.SetDownloadLimit(1);
                 await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
                 var pending = UdpReceive(udpClient);
                 await Task.Delay(60, token);
                 Check(!pending.IsCompleted, "UDP payload waits at low download rate");
+                await WaitUntil(() => mixed.Snapshot().BulkDownloadIngressBytes == 98_304);
+                Check(mixed.Snapshot().LimitedDownloadBytes == 0,
+                    "UDP ingress is measured before its pacing wait without confirming delivery");
                 mixed.SetDownloadLimit(null);
                 await pending.WaitAsync(TimeSpan.FromSeconds(1));
                 Check(true, "unlimited promptly releases a pending UDP response");
@@ -546,6 +565,36 @@ public static class MobileProxyChecks
             "proxy or native-tunnel replacement forgets prior-session traffic and confirmation");
         check(monitor.Observe(null, 2) is { DownloadMbps: null, UploadMbps: null, LimitApplied: false },
             "failed or absent data plane cannot publish measured zero or an applied limit");
+        check(monitor.Observe(new(0, 0, 0), null).LimitedDownloadMbps is null,
+            "legacy snapshots without a bulk counter retain unknown classified activity");
+        monitor.Reset();
+        sample = new(0, 0, 0, BulkDownloadIngressBytes: 0);
+        check(monitor.Observe(sample, null).LimitedDownloadMbps is null,
+            "first live bulk snapshot needs a real measurement interval");
+        clock.Advance(4);
+        check(monitor.Observe(sample, null) is { LimitedDownloadMbps: 0, DownloadMbps: null, ForwardingObserved: false },
+            "live proxy measures classified bulk idle without inventing forwarding or total NIC throughput");
+        clock.Advance(4);
+        sample = sample with { BulkDownloadIngressBytes = 12_500_000 };
+        check(monitor.Observe(sample, null) is { LimitedDownloadMbps: 25, DownloadMbps: null, LimitApplied: false },
+            "bulk ingress measures actual pre-pacing demand independently of forwarded traffic");
+        sample = sample with { LimitVersion = 3, LimitedDownloadBytes = 0, DownloadLimitBytesPerSecond = 1 };
+        clock.Advance(4);
+        sample = sample with { BulkDownloadIngressBytes = 25_000_000 };
+        check(monitor.Observe(sample, .000008).LimitedDownloadMbps == 25,
+            "limit-version changes cannot zero or spike durable bulk demand");
+        clock.Advance(11);
+        check(monitor.Observe(sample, null).LimitedDownloadMbps is null,
+            "sampling gaps over ten seconds remain unknown instead of publishing stale averaged activity");
+        clock.Advance(4);
+        check(monitor.Observe(sample, null).LimitedDownloadMbps == 0,
+            "fresh consecutive idle snapshots restore a measured zero after a sampling gap");
+        clock.Advance(4);
+        check(monitor.Observe(sample with { BulkDownloadIngressBytes = 0 }, null).LimitedDownloadMbps is null,
+            "data-plane counter reset discards the previous lifetime rather than publishing negative demand");
+        monitor.Reset();
+        check(monitor.Observe(null, null).LimitedDownloadMbps is null,
+            "stopped proxy or tunnel never claims measured classified idle");
         check(global::Dynex.Android.AdGuardSetupDiagnostics.VpnIntegrationHint(false, false) is null &&
             global::Dynex.Android.AdGuardSetupDiagnostics.VpnIntegrationHint(true, true) is null,
             "VPN integration hint requires installed VPN and missing forwarding, not mere package presence");

@@ -28,6 +28,10 @@ public sealed class DynexVpnService : VpnService
     private bool adGuardRequested;
     private string? peerKey, proxyKey, lastNetwork, fault, lastNotification;
     private readonly ProxyTrafficMonitor trafficMonitor = new();
+    private readonly MobileLimitPlanner limitPlanner = new();
+    private ProbeStats? lastDownloadProbe;
+    private MobileSettings? plannerSettings;
+    private bool plannerPaused;
 
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
@@ -100,6 +104,13 @@ public sealed class DynexVpnService : VpnService
                 var transport = networkState.Transport;
                 var refresh = Interlocked.Exchange(ref refreshRequested, 0) != 0;
                 var networkChanged = lastNetwork != transport?.Fingerprint;
+                if (networkChanged || plannerSettings != settings || plannerPaused != paused)
+                {
+                    limitPlanner.Reset();
+                    lastDownloadProbe = null;
+                    plannerSettings = settings;
+                    plannerPaused = paused;
+                }
                 if (networkChanged || refresh) { fault = null; lastNetwork = transport?.Fingerprint; }
                 if (Interlocked.Exchange(ref revoked, 0) != 0 && !settings.UseAdGuardProxy)
                     fault = "VPN-Freigabe entzogen · DYNEX erneut starten, sobald das andere VPN beendet ist";
@@ -126,8 +137,8 @@ public sealed class DynexVpnService : VpnService
                 }
                 if (refresh && wifi is not null) peers?.RequestDiscovery();
                 var devices = peers?.Snapshot() ?? Array.Empty<PeerAdvertisement>();
-                var plan = MobileLimitPolicy.Plan(deviceId, devices, settings.AutoConnect, paused,
-                    settings.GamingDownloadLimitMbps, settings.SharePriority);
+                var plan = limitPlanner.Plan(deviceId, devices, lastDownloadProbe, settings.AutoConnect, paused,
+                    settings.GamingDownloadLimitMbps, settings.SharePriority, wifiConnected: wifi is not null);
                 var cap = wifi is not null ? plan.DownloadLimitMbps : null;
                 var conflict = !settings.UseAdGuardProxy && networkState.OtherVpnActive;
                 ProxySnapshot? traffic = null;
@@ -155,6 +166,7 @@ public sealed class DynexVpnService : VpnService
                             proxy.DownloadObserved += Wake;
                             await proxy.StartAsync(token).ConfigureAwait(false);
                             trafficMonitor.Reset();
+                            lastDownloadProbe = null;
                             trafficMonitor.Observe(proxy.Snapshot(), cap);
                             proxyKey = key;
                         }
@@ -193,6 +205,7 @@ public sealed class DynexVpnService : VpnService
                                     VpnCompatibility.SetOwnVpn(true); network.SetOwnVpn(true);
                                     tunnel = await NativeTunnelSession.StartAsync(this, wifi, (long)(rate * 125000), Wake, token).ConfigureAwait(false);
                                     trafficMonitor.Reset();
+                                    lastDownloadProbe = null;
                                 }
                             }
                             else tunnel.SetDownloadLimit((long)(rate * 125000));
@@ -212,9 +225,12 @@ public sealed class DynexVpnService : VpnService
                 var evidence = trafficMonitor.Observe(wifi is not null ? traffic : null, cap);
                 var download = evidence.DownloadMbps;
                 var upload = evidence.UploadMbps;
+                lastDownloadProbe = download.HasValue || evidence.LimitedDownloadMbps.HasValue
+                    ? new ProbeStats(DateTimeOffset.UtcNow, null, download, IsGamingRelevant: false, TargetId: "",
+                        LimitedDownloadMbps: evidence.LimitedDownloadMbps) : null;
                 var applied = evidence.LimitApplied && (settings.UseAdGuardProxy ? proxy is not null : tunnel?.IsRunning == true);
                 peers?.Publish(false, downloadMbps: download, uploadMbps: upload,
-                    appliedLimitMbps: applied ? cap : null, shaperActive: applied);
+                    appliedLimitMbps: applied ? cap : null, shaperActive: applied, limitedDownloadMbps: evidence.LimitedDownloadMbps);
                 var status = fault ?? (conflict ? "Anderes VPN aktiv · DYNEX pausiert" : settings.UseAdGuardProxy
                     ? transport is null ? "Proxy bereit · DYNEX in AdGuard ausnehmen oder Netzverbindung prüfen"
                         : wifi is null ? "Mobilfunk/anderes Netz · unbegrenzte Proxy-Durchleitung"
@@ -286,6 +302,8 @@ public sealed class DynexVpnService : VpnService
 
     private async Task StopPeersAsync()
     {
+        limitPlanner.Reset();
+        lastDownloadProbe = null;
         var old = peers; peers = null; peerKey = null;
         if (old is not null) { old.PeersChanged -= Wake; await old.DisposeAsync().ConfigureAwait(false); }
     }
@@ -297,6 +315,7 @@ public sealed class DynexVpnService : VpnService
         old.DownloadObserved -= Wake;
         await old.DisposeAsync().ConfigureAwait(false);
         trafficMonitor.Reset();
+        lastDownloadProbe = null;
     }
 
     private async Task StopTunnelAsync()
@@ -304,7 +323,7 @@ public sealed class DynexVpnService : VpnService
         var old = tunnel; tunnel = null;
         if (old is null && !VpnCompatibility.OwnVpnActive) return;
         try { if (old is not null) await old.DisposeAsync().ConfigureAwait(false); }
-        finally { VpnCompatibility.SetOwnVpn(false); network?.SetOwnVpn(false); trafficMonitor.Reset(); }
+        finally { VpnCompatibility.SetOwnVpn(false); network?.SetOwnVpn(false); trafficMonitor.Reset(); lastDownloadProbe = null; }
     }
 
     private void ShowNotification(string text)

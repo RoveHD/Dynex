@@ -488,7 +488,7 @@
                   <StackPanel>
                     <TextBlock Text="LIMITS BEIM SPIELEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,3" />
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,2">
-                      <TextBlock Text="Download (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
+                      <TextBlock Text="Dieser PC (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
                       <TextBox x:Name="ManualLimitBox" Width="72" Margin="0,0,5,0" ToolTip="Gilt bei tatsächlichem Netzwerkverkehr eines Spiels auf einem DYNEX-PC. Fokus allein reicht nicht; ohne Spielverkehr gibt es kein Limit. Leer = automatisch." />
                       <Button Content="Speichern" Click="ManualLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0,0,4,0" />
                       <Button Content="Aufheben" Click="ClearLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0" />
@@ -540,12 +540,17 @@
                     <CheckBox x:Name="DriverCheck" Content="Beim Spielen priorisieren und große Downloads begrenzen" Style="{StaticResource WrappedCheck}" />
                     <Button x:Name="SetupButton" Content="Downloadbegrenzung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,3,0,0" />
                     <TextBlock x:Name="SetupHint" Text="Windows bestätigt das Einschalten." Style="{StaticResource Caption}" Margin="0,4,0,5" TextWrapping="Wrap" />
-                    <TextBlock Text="Während Gaming teilt DYNEX das Downloadbudget zwischen deinen PCs auf. Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
+                    <TextBlock Text="Beim Spielen teilen aktive Downloads auf PC und Handy das gemeinsame Budget. Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
                 <Border Style="{StaticResource Card}" Padding="12,8" Margin="0,8,0,0">
                   <StackPanel>
                     <TextBlock Text="BUDGET &amp; DATEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                    <TextBlock Text="Gemeinsames Gaming-Budget (Mbit/s)" Style="{StaticResource Caption}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,3,0,6">
+                      <TextBox x:Name="SharedLimitBox" Width="82" Margin="0,0,8,0" ToolTip="Gesamtobergrenze für Downloads aller DYNEX-Geräte beim Spielen. Bei normaler Priorität: 25 insgesamt → zwei aktive Downloads je 12,5. Leer = aus Anschlussmessung berechnen. Alle Geräte benötigen DYNEX 1.0.13 oder neuer." AutomationProperties.Name="Gemeinsames Downloadbudget in Mbit pro Sekunde" />
+                      <Button x:Name="SharedLimitButton" Content="Übernehmen" Click="SharedLimit_Click" Style="{StaticResource CompactButton}" Padding="7,4" />
+                    </StackPanel>
                     <Grid>
                       <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />

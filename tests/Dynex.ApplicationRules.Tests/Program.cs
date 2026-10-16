@@ -75,30 +75,37 @@ using (var device = new Device())
     await device.WaitCount(4);
     var times = device.Sent.Where(x => x.Marker == 1).Select(x => x.At).ToArray();
     Check(times.Length >= 3 && Stopwatch.GetElapsedTime(times[0], times[2]).TotalSeconds >= .20, "same-name packets share cumulative budget");
+    Check(pump.LimitedDownloadBytes == 6000, "explicit download lanes count otherwise unclassified ingress without a global cap");
 }
 using (var device = new Device())
 {
     var a = new ApplicationLimit("steam", 10, null); var b = new ApplicationLimit("onedrive", 10, null);
-    await using var pump = new PacketPump(device, .1, applicationRule: p => p.Buffer[0] == 1 ? a : b, applicationRules: [a, b]);
+    await using var pump = new PacketPump(device, .1, shouldLimit: _ => true,
+        applicationRule: p => p.Buffer[0] == 1 ? a : b, applicationRules: [a, b]);
     for (var i = 0; i < 3; i++) { device.Push(Raw(1, 1500)); device.Push(Raw(2, 1500)); }
     await device.WaitCount(4);
     var times = device.Sent.Select(x => x.At).ToArray();
     Check(Stopwatch.GetElapsedTime(times[0], times[3]).TotalSeconds >= .30, "both apps share global budget in addition to app budgets");
+    Check(pump.LimitedDownloadBytes == 9000, "bulk classification plus an explicit download lane counts every ingress packet exactly once");
 }
+foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice })
 using (var device = new Device())
 {
     var slow = new ApplicationLimit("steam", .1, .1);
-    await using var pump = new PacketPump(device, null, priority: _ => PacketPriority.Game,
+    await using var pump = new PacketPump(device, null, priority: _ => priority,
         applicationRule: _ => slow, applicationRules: [slow]);
     device.Push(Raw(1, 10000));
-    await Task.Delay(30);
-    Check(device.Sent.Count == 0, "explicit rule overrides game exemption");
+    using var received = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+    while (pump.LimitedDownloadBytes < 10000) await Task.Delay(5, received.Token);
+    Check(device.Sent.Count == 0, "explicit rule overrides interactive exemption: " + priority);
+    Check(pump.LimitedDownloadBytes == 10000, "explicit interactive download lane contributes shared demand: " + priority);
     pump.UpdateApplicationRules([]);
     await device.WaitCount(1);
     Check(!pump.HasApplicationRules, "removal releases current delayed packet immediately");
     device.Push(Raw(2, 10000));
     await device.WaitCount(2);
     Check(pump.Failure is null, "removed queue does not fail delivery");
+    Check(pump.LimitedDownloadBytes == 10000, "interactive traffic without an active explicit rule contributes no download demand: " + priority);
 }
 using (var device = new Device())
 {
@@ -108,6 +115,7 @@ using (var device = new Device())
     device.Push(Raw(2, 1000, PacketDirection.Outbound));
     await device.WaitCount(1);
     Check(device.Sent.First().Marker == 2, "upload and download queues independent");
+    Check(pump.LimitedDownloadBytes == 10000, "explicit upload traffic does not inflate shared download demand");
 }
 using (var device = new Device { ThrowOnSend = true })
 {

@@ -20,6 +20,6 @@ public interface IPeerService : IDisposable, IAsyncDisposable
     void Publish(bool isGaming, double? downloadMbps = null, double? latencyMs = null,
         double? appliedLimitMbps = null, string? game = null, bool shaperActive = false,
         double? idleBaselineMs = null, string? latencyTargetId = null, DateTimeOffset? idleBaselineAtUtc = null,
-        double? uploadMbps = null, string? topProgram = null);
+        double? uploadMbps = null, string? topProgram = null, double? limitedDownloadMbps = null);
     IReadOnlyList<PeerAdvertisement> Snapshot();
 }

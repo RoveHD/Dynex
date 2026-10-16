@@ -27,7 +27,9 @@ public static class LimitExplanation
         if (manualLimitMbps is { } manual && Math.Abs(decision.DownloadLimitMbps.Value - manual) < 0.005)
             details.Add("manuelle Obergrenze");
         else if (decision.AdaptiveReduced) details.Add("Ping gestiegen, stärker gebremst");
-        else if (decision.ParticipantCount > 1) details.Add($"Budget geteilt auf {decision.ParticipantCount} PCs" +
+        else if (decision.ParticipantCount > 1) details.Add((decision.DownloadActivityComplete
+            ? "Gemeinsames Budget nach aktiven Downloads"
+            : $"Budget vorläufig auf {decision.ParticipantCount} Geräte geteilt") +
             (decision.LocalShareWeight > 1 ? ", hohe Priorität" : decision.LocalShareWeight < 1 ? ", niedrige Priorität" : ""));
         if (!driverActive || appliedLimitMbps is null) details.Add("Begrenzung wird noch aktiviert");
         return string.Join(" · ", details);

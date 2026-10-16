@@ -183,7 +183,7 @@ internal sealed class AutoLanCrypto : IDisposable
             if (wire is null || wire.DeviceId != channel.Remote.DeviceId || wire.SessionId != channel.Remote.SessionId ||
                 wire.Sequence != sequence || wire.SentAtUnixMs != sent || string.IsNullOrWhiteSpace(wire.DeviceName) ||
                 wire.DeviceName.Length > 80 || wire.DeviceName.Any(char.IsControl) || wire.Game?.Length > 80 || wire.Game?.Any(char.IsControl) == true ||
-                !Valid(wire.DownloadMbps, 100000) || !Valid(wire.UploadMbps, 100000) || !Valid(wire.LatencyMs, 10000) || !Valid(wire.AppliedLimitMbps, 100000) ||
+                !Valid(wire.DownloadMbps, 100000) || !Valid(wire.UploadMbps, 100000) || !Valid(wire.LimitedDownloadMbps, 100000) || !Valid(wire.LatencyMs, 10000) || !Valid(wire.AppliedLimitMbps, 100000) ||
                 !Valid(wire.IdleBaselineMs, 10000) || wire.LatencyTargetId?.Length > 256 || wire.LatencyTargetId?.Any(char.IsControl) == true ||
                 wire.LatencySampleSequence is <= 0 || wire.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(wire.ShareWeight) ||
                 !WireAdvertisement.ValidProgram(wire.TopProgram)) return null;
