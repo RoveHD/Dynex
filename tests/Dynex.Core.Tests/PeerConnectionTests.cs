@@ -101,10 +101,17 @@ internal static class PeerConnectionTests
         using var remote = new AutoLanCrypto(AutoLanIdentity.GenerateSigningKey());
         using var remoteSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         var automaticEndpoint = new IPEndPoint(IPAddress.Loopback, automaticSettings.Port);
-        await SendUntil(remoteSocket, remote.Hello(DateTimeOffset.UtcNow.AddMinutes(-2)), automaticEndpoint,
+        // Legacy peers cannot answer the new freshness extension, so their signed
+        // announcements still require synchronized UTC and explain clock skew.
+        var staleLegacyHello = remote.Sign(remote.Local with
+        {
+            SentAtUnixMs = DateTimeOffset.UtcNow.AddMinutes(-2).ToUnixTimeMilliseconds(),
+            FreshnessChallenge = null, TargetFreshnessChallenge = null, StatusSequence = null
+        }, 1);
+        await SendUntil(remoteSocket, staleLegacyHello, automaticEndpoint,
             () => automatic.GetNetworkDiagnostics().AuthenticatedClockSkewDatagrams > 0);
         check(automatic.GetNetworkDiagnostics().LearnedEndpoints == 0 && automatic.GetNetworkDiagnostics().AcceptedHandshakes == 0,
-            "stale signed AutoLAN announcements explain clock skew without creating trust or a return route");
+            "stale signed legacy AutoLAN announcements explain clock skew without creating trust or a return route");
         await SendUntil(remoteSocket, remote.Hello(DateTimeOffset.UtcNow), automaticEndpoint,
             () => automatic.GetNetworkDiagnostics().AcceptedHandshakes >= 1);
         using (var receiveTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
