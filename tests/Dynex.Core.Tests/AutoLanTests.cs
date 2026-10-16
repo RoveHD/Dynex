@@ -39,7 +39,7 @@ internal static class AutoLanTests
         using var channelA = cryptoA.Derive(helloB!);
         using var channelB = cryptoB.Derive(helloA!);
         var wire = new WireAdvertisement(idA, cryptoA.Local.SessionId, 1, now.ToUnixTimeMilliseconds(), "Encrypted device", true,
-            4, 25, 50, "Encrypted game", true, 20, "target-route", 1, now, 0);
+            4, 25, 50, "Encrypted game", true, 20, "target-route", 1, now, 0, new(500, 20, 10, 40));
         var encrypted = cryptoA.Encrypt(channelA, wire);
         check(!Encoding.UTF8.GetString(encrypted).Contains("Encrypted", StringComparison.Ordinal), "AutoLAN status names and game metadata are encrypted");
         check(cryptoB.Decrypt(channelB, encrypted, now) == wire, "independent ECDH clients derive matching directional AES-GCM keys");
@@ -53,6 +53,8 @@ internal static class AutoLanTests
             "AutoLAN rejects authenticated invalid reserve-policy proposals");
         check(cryptoB.Decrypt(channelB, cryptoA.Encrypt(channelA, wire with { Sequence = 4, BudgetProposal = new(0, 15, 12) }), now) is null,
             "AutoLAN rejects authenticated zero-capacity proposals");
+        check(cryptoB.Decrypt(channelB, cryptoA.Encrypt(channelA, wire with { Sequence = 4, BudgetProposal = new(500, 20, 10, -1) }), now) is null,
+            "AutoLAN rejects authenticated invalid upload capacities before publishing any peer metadata");
         check(cryptoB.Decrypt(channelB, encrypted, now) is null, "AutoLAN rejects replayed encrypted sequence numbers");
         var packet2 = cryptoA.Encrypt(channelA, wire with { Sequence = 5 });
         for (var i = 0; i < packet2.Length; i++)
@@ -125,7 +127,7 @@ internal static class AutoLanTests
             DeviceId = idA, DeviceName = "Automatic A", Port = portA, LoopbackOnly = true,
             DirectPeers = [new(IPAddress.Loopback, portB)], PeerTtl = TimeSpan.FromSeconds(1), HeartbeatInterval = TimeSpan.FromMilliseconds(150)
         };
-        var settingsB = settingsA with { DeviceId = idB, DeviceName = "Automatic B", Port = portB, DirectPeers = [] };
+        var settingsB = settingsA with { DeviceId = idB, DeviceName = "Automatic B", Port = portB, DirectPeers = [], UploadCapacityMbps = 40 };
         var scopeRecovered = false;
         await using (var recovery = new AutoLanPeerService(settingsA with { LoopbackOnly = false, DirectPeers = [], Port = FreePort() }, keyA,
             () => ([], Volatile.Read(ref scopeRecovered) ? null : "Temporary profile probe error")))

@@ -30,6 +30,15 @@ async Task Scenario(string name, Func<Task> run)
 }
 var timeout = TimeSpan.FromSeconds(8);
 
+await Scenario("authenticated PC capacity consumer and source isolation", () => CapacitySharingChecks.RunAsync(Check));
+if (args.Contains("--capacity-only"))
+{
+    Console.WriteLine($"Capacity sharing checks: {checks} passed, {failures.Count} failed.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
 await Scenario("network-specific profiles and measurement isolation", () => NetworkProfileChecks.RunAsync(Check));
 if (args.Contains("--profiles-only"))
 {

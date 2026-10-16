@@ -5,7 +5,8 @@ namespace Dynex.Mobile;
 /// <summary>A planned consumer share, never a measured capacity or confirmation of an applied shaper limit.</summary>
 public sealed record MobileLimitDecision(double? DownloadLimitMbps, bool GamingActive, string Reason,
     double? SharedDownloadBudgetMbps = null, double? SharedCapacityMbps = null, int ParticipantCount = 1,
-    int GamingCount = 0, bool SharedBudgetComplete = false, double ShareWeightTotal = 1, double LocalShareWeight = 1);
+    int GamingCount = 0, bool SharedBudgetComplete = false, double ShareWeightTotal = 1, double LocalShareWeight = 1,
+    double? SharedUploadCapacityMbps = null);
 
 /// <summary>
 /// Consumer-only planning from AutoLanPeerService.Snapshot(): the caller must supply
@@ -40,11 +41,13 @@ public static class MobileLimitPolicy
         var proposals = live.Select(peer => peer.BudgetProposal).Where(proposal => proposal is { IsValid: true })
             .Cast<DownloadBudgetProposal>().ToArray();
         var capacity = proposals.Length == 0 ? (double?)null : proposals.Min(proposal => proposal.LineMbps);
+        var uploads = proposals.Where(proposal => proposal.UploadCapacityMbps.HasValue).ToArray();
+        double? uploadCapacity = uploads.Length == 0 ? null : uploads.Min(proposal => proposal.UploadCapacityMbps!.Value);
         var pool = gamers == 0 || proposals.Length == 0 ? (double?)null : proposals.Min(proposal =>
             Math.Max(0, proposal.LineMbps * (1 - proposal.HeadroomPercent / 100) - gamers * proposal.GamingReserveMbps));
         var complete = proposals.Length == live.Length && proposals.Length != 0 && (pool is null || pool / participants >= .1);
         MobileLimitDecision Decision(double? rate, string reason) => new(rate, gamers > 0, reason,
-            pool, capacity, participants, gamers, complete, totalWeight, localWeight);
+            pool, capacity, participants, gamers, complete, totalWeight, localWeight, uploadCapacity);
         if (paused) return Decision(null, "Pausiert · kein Limit");
         if (gamers == 0) return Decision(null, "Kein Gaming auf verbundenen PCs · kein Limit");
         if (pool is not { } budget) return Decision(null, "Gaming erkannt · keine bestätigte PC-Kapazität · kein Limit");

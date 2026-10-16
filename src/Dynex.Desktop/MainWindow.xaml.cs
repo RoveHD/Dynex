@@ -537,12 +537,17 @@ public partial class MainWindow : Window
         var settings = _runtime.Settings;
         var running = _runtime.IsSpeedTestRunning;
         var waiting = _runtime.IsSpeedTestWaiting;
-        CapacityBox.Text = settings.CapacityMeasuredAtUtc.HasValue
-            ? settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture) : "—";
-        // Display the measured capacity as a placeholder without saving it as a manual limit.
-        ManualUploadBox.Tag = settings.CapacityMeasuredAtUtc.HasValue && settings.UploadCapacityMbps is { } measuredUpload
-            ? measuredUpload.ToString("0.##", CultureInfo.CurrentCulture) : "—";
-        CapacityBox.Opacity = settings.CapacityMeasuredAtUtc.HasValue ? 1 : 0.6;
+        var snapshot = _runtime.Snapshot;
+        var fromPeer = snapshot?.CapacityFromPeer == true;
+        var capacity = snapshot?.SharedCapacityMbps ?? (settings.CapacityMeasuredAtUtc.HasValue ? settings.CapacityMbps : (double?)null);
+        var uploadCapacity = snapshot?.SharedUploadCapacityMbps ?? (settings.CapacityMeasuredAtUtc.HasValue ? settings.UploadCapacityMbps : null);
+        CapacityBox.Text = capacity?.ToString("0.##", CultureInfo.CurrentCulture) ?? "—";
+        CapacityBox.ToolTip = fromPeer ? "Frische Leitungskapazität von verbundenem PC; keine eigene Messung."
+            : snapshot?.ParticipantCount > 1 ? "Konservative gemeinsame Leitung aus den Kapazitäten verbundener PCs."
+            : "Eigene erfolgreiche Speedtest-Messung";
+        // Effective capacity is a placeholder, never a stored manual maximum.
+        ManualUploadBox.Tag = uploadCapacity?.ToString("0.##", CultureInfo.CurrentCulture) ?? "—";
+        CapacityBox.Opacity = capacity.HasValue ? 1 : 0.6;
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
         {
@@ -555,12 +560,18 @@ public partial class MainWindow : Window
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}" +
               (settings.UploadCapacityMbps is { } upload ? $" · Upload {upload:0.#} Mbit/s. " : ". ")
             : "Noch nicht gemessen. ";
-        var detail = running || waiting ? _runtime.SpeedTestMessage : measured +
-            (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
-                ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits benötigen eine erfolgreiche Messung."
+        var shared = capacity is { } down && snapshot?.ParticipantCount > 1
+            ? $"Gemeinsame Leitung: ↓ {down:0.##}" + (uploadCapacity is { } up ? $" / ↑ {up:0.##}" : "") + " Mbit/s. " : "";
+        if (fromPeer) measured = shared + "Von verbundenem PC übernommen; keine eigene Messung. ";
+        else measured = shared + measured;
+        var showWaiting = waiting && !fromPeer;
+        var detail = running || showWaiting ? _runtime.SpeedTestMessage : measured +
+            (fromPeer ? "Eigene Messung und manuelle Obergrenzen bleiben getrennt."
+                : string.IsNullOrEmpty(_runtime.SpeedTestMessage)
+                ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits verwenden eine eigene Messung oder frische PC-Leitungswerte."
                 : _runtime.SpeedTestMessage);
-        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
-            (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Einmal automatisch, danach manuell." : _runtime.SpeedTestMessage);
+        SpeedTestHint.Text = running || showWaiting ? _runtime.SpeedTestMessage : measured +
+            (fromPeer ? "Eigene Messung bleibt getrennt." : string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Einmal automatisch, danach manuell." : _runtime.SpeedTestMessage);
         if (!running && !waiting && Dynex.Core.Bufferbloat.Rate(settings.IdleLatencyMs, settings.LoadedLatencyMs) is { } bloat)
         {
             SpeedTestHint.Text += "\n" + bloat.Summary;
@@ -605,10 +616,11 @@ public partial class MainWindow : Window
         var privateOk = s.NetworkProblem is null &&
             s.Connection?.Kind is not (Dynex.Core.ConnectionProblemKind.NoPrivateNetwork or Dynex.Core.ConnectionProblemKind.FirewallMissing);
         var peersOk = s.Devices.Count > 1;
-        var speedOk = _runtime.Settings.CapacityMeasuredAtUtc is not null;
+        var speedOk = _runtime.Settings.CapacityMeasuredAtUtc is not null || s.SharedCapacityMbps is not null;
         GuideNetworkText.Text = privateOk ? "✓ 1 · Heimnetz ist privat und freigegeben." : "✗ 1 · " + (s.NetworkProblem ?? s.Connection?.ToString() ?? "Netzwerk prüfen.");
         GuidePeerText.Text = peersOk ? $"✓ 2 · {s.Devices.Count - 1} weitere(r) PC verbunden." : "… 2 · Noch kein anderer PC gefunden. DYNEX auf dem zweiten PC starten (bei nur einem PC überspringen).";
-        GuideSpeedText.Text = speedOk ? "✓ 3 · Internetgeschwindigkeit gemessen." : "… 3 · " + (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Speedtest steht noch aus." : _runtime.SpeedTestMessage);
+        GuideSpeedText.Text = s.CapacityFromPeer ? "✓ 3 · Leitung von verbundenem PC übernommen."
+            : speedOk ? "✓ 3 · Internetgeschwindigkeit gemessen." : "… 3 · " + (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Speedtest steht noch aus." : _runtime.SpeedTestMessage);
         GuideDoneButton.Content = privateOk && speedOk ? "Fertig" : "Später";
     }
     private async void PriorityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -812,7 +824,8 @@ public partial class MainWindow : Window
         UpCaption.Text = s.UploadLimitMbps is { } upCap ? $"Andere Uploads ≤ {upCap:0.0} Mbps" : "Gesamter Versand";
         UpCaption.ToolTip = s.UploadLimitMbps is not null
             ? "Große Uploads anderer Programme sind begrenzt. Spiele, Sprachchat und Download-Bestätigungen bleiben frei."
-            : _runtime.Settings.UploadCapacityMbps is null ? "Upload-Begrenzung braucht einen Speedtest ab DYNEX 1.0.6 (misst auch den Upload)." : null;
+            : s.SharedUploadCapacityMbps is null && _runtime.Settings.UploadCapacityMbps is null
+                ? "Upload-Begrenzung benötigt eine eigene Uploadmessung oder frische Upload-Kapazität eines verbundenen PCs." : null;
         if (s.HomeTraffic is { } home)
         {
             // NIC counters include LAN traffic, so the remainder is only an estimate.

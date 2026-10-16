@@ -17,7 +17,7 @@ Bei Passwortdateien für Store und Key zwei getrennte Dateien verwenden, auch we
 
 ## AdGuard-Einrichtungsassistent
 
-Beim ersten Öffnen nach der Installation startet der Assistent. Er bleibt unter **Einstellungen → AdGuard einrichten** erreichbar. Er benötigt AdGuard für Android ab Version 4 und führt durch drei Schritte:
+Beim ersten Öffnen mit installiertem AdGuard startet der Assistent. Ohne AdGuard erscheint er nicht; die zugehörige Einrichtung ist deaktiviert. Wird AdGuard später installiert, bietet DYNEX die Einrichtung beim nächsten Öffnen an. Bei installiertem AdGuard bleibt der Assistent unter **Einstellungen → AdGuard einrichten** erreichbar. Er benötigt AdGuard für Android ab Version 4 und führt durch drei Schritte:
 
 1. AdGuard öffnen und unter **App-Verwaltung → DYNEX → Datenverkehr durch AdGuard leiten** DYNEX selbst ausnehmen, damit keine Proxy-Schleife entsteht. Anschließend unter **Einstellungen → Allgemein → Erweiterte Einstellungen → Automatisierung** die Automatisierung freigeben.
 2. Das dort angezeigte Automatisierungs-Passwort einmal lokal in DYNEX eingeben. DYNEX speichert es mit einem eigenen, nicht exportierbaren Android-Keystore-Schlüssel verschlüsselt außerhalb von Android-Backups. DYNEX startet zuerst seinen lokalen Listener und fordert dann über AdGuards dokumentierte Schnittstelle die Einrichtung und Aktivierung des SOCKS5-Proxys an. Ein bisher ausgewählter Proxy wird dabei ersetzt; Werbe- und DNS-Filter werden nicht geändert.
@@ -32,6 +32,10 @@ Im AdGuard-Modus sucht DYNEX nur im WLAN nach PCs. Mobilfunk wird nicht begrenzt
 Im eigenständigen Modus benötigt DYNEX die einmalige Android-VPN-Freigabe. Ein bereits aktives anderes VPN blockiert diesen Modus. Der Tunnel läuft nur bei gemeldetem PC-Gaming und vorhandenem Downloadlimit. Bei Mobilfunk wartet DYNEX passiv auf ein WLAN-Ereignis und sucht nicht nach PCs.
 
 Der WLAN-Status wird über Netzwerkereignisse und einen viersekündigen Heartbeat beobachtet; bei Mobilfunk ruht die periodische Suche. DYNEX verwendet dafür weder Wake-Locks noch GPS noch WLAN-Scans. Eine konkrete Akkuersparnis wird nicht zugesichert. Benachrichtigungen zeigen den tatsächlichen Lauf- und Limitstatus; ein laufender Proxy-Dienst allein bedeutet noch nicht, dass AdGuard bereits Daten durch ihn leitet.
+
+Nach **Schutz einschalten** bleibt der Vordergrunddienst auch beim Verlassen der Oberfläche und Entfernen aus der Liste zuletzt geöffneter Apps aktiv. **Stoppen** beendet ihn ausdrücklich. Androids erzwungenes Beenden und herstellerspezifische Akku-Eingriffe können einen Dienst trotzdem beenden. Der Android-Autostart bleibt einstellbar; DYNEX fordert keine dauerhafte CPU-Wachhaltung an.
+
+Die Übersicht zeigt die von verbundenen PCs übernommene Download-/Uploadkapazität in Mbit/s. Daraus berechnet DYNEX den Downloadanteil des Handys. Ein unbekannter Uploadwert bleibt **—**; das Handy erfindet keine eigene Leitungsmessung. Ohne laufenden Dienst sind Pause, Stoppen und Aktualisieren deaktiviert; ohne WLAN oder automatische PC-Verbindung ist auch die Suche deaktiviert. Speichern wird erst bei Änderungen aktiv, eine angeforderte Suche meldet sich sichtbar zurück.
 
 ## Prüfstatus und Grenzen
 

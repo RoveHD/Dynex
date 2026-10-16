@@ -19,7 +19,9 @@ public sealed record MobileSnapshot(
     bool IsRunning = false,
     bool AdGuardSetupRequested = false,
     bool ProxyForwardingObserved = false,
-    bool HasNetworkTransport = false)
+    bool HasNetworkTransport = false,
+    double? SharedCapacityMbps = null,
+    double? SharedUploadCapacityMbps = null)
 {
     public static MobileSnapshot Initial { get; } = new(
         "", false, false, false, false,

@@ -249,7 +249,7 @@ public sealed class DynexVpnService : VpnService
                         p.DownloadMbps, p.UploadMbps, p.ShaperActive ? p.AppliedLimitMbps : null)).ToArray(),
                     wifi is not null, conflict, settings.UseAdGuardProxy, true,
                     settings.UseAdGuardProxy && adGuardRequested, settings.UseAdGuardProxy && traffic?.DownloadBytes > forwardingBaseline,
-                    transport is not null));
+                    transport is not null, plan.SharedCapacityMbps, plan.SharedUploadCapacityMbps));
                 ShowNotification(status);
                 // On cellular, the proxy only wakes for actual traffic; the controller
                 // sleeps until Android reports a network change or the user acts.

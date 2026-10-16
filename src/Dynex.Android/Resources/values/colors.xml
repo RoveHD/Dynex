@@ -9,4 +9,5 @@
   <color name="dynex_text">#F3F3F5</color>
   <color name="dynex_muted">#9296A1</color>
   <color name="dynex_success">#69C69A</color>
+  <color name="dynex_icon_background">#08090C</color>
 </resources>

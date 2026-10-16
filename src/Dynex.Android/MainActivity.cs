@@ -40,10 +40,12 @@ public sealed class MainActivity : Activity
     private readonly Color _green = Color.ParseColor("#69C69A");
 
     private LinearLayout _content = null!;
+    private ScrollView _scroll = null!;
     private LinearLayout _overview = null!;
     private LinearLayout _settingsPage = null!;
     private TextView _connectionStatus = null!;
     private TextView _limitStatus = null!;
+    private TextView _pcCapacity = null!;
     private TextView _downloadValue = null!;
     private TextView _uploadValue = null!;
     private TextView _deviceSummary = null!;
@@ -55,6 +57,12 @@ public sealed class MainActivity : Activity
     private Button _settingsPauseButton = null!;
     private Button _headerRefreshButton = null!;
     private Button _connectionRefreshButton = null!;
+    private Button _startButton = null!;
+    private Button _stopButton = null!;
+    private Button _saveButton = null!;
+    private Button _overviewTab = null!;
+    private Button _settingsTab = null!;
+    private Button _proxySetupButton = null!;
     private EditText _deviceName = null!;
     private Switch _autoConnect = null!;
     private Switch _autoStart = null!;
@@ -63,6 +71,10 @@ public sealed class MainActivity : Activity
     private SeekBar _sharePriority = null!;
     private TextView _sharePriorityValue = null!;
     private bool _pendingVpnStart;
+    private string? _pendingServiceAction;
+    private bool? _pendingPause;
+    private bool _loadingSettings;
+    private bool _stopConfirmationShowing;
     private bool _showAdGuardWizardStatusAfterStart;
     private AlertDialog? _adGuardWizardDialog;
     private EditText? _adGuardWizardPassword;
@@ -78,7 +90,7 @@ public sealed class MainActivity : Activity
         LoadSettingsIntoForm();
         Render(MobileState.Current);
         MobileState.Changed += OnMobileStateChanged;
-        if (MobileState.Current.IsOnWifi) SendServiceAction(ActionRefresh);
+        if (CanRefresh(MobileState.Current)) SendServiceAction(ActionRefresh);
         new Handler(Looper.MainLooper!).Post(ShowFirstRunAdGuardWizardIfNeeded);
     }
 
@@ -95,7 +107,11 @@ public sealed class MainActivity : Activity
     protected override void OnResume()
     {
         base.OnResume();
-        if (_content is not null) Render(MobileState.Current);
+        if (_content is not null)
+        {
+            Render(MobileState.Current);
+            new Handler(Looper.MainLooper!).Post(ShowFirstRunAdGuardWizardIfNeeded);
+        }
     }
 
     private void BuildInterface()
@@ -107,35 +123,35 @@ public sealed class MainActivity : Activity
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         header.SetGravity(GravityFlags.CenterVertical);
         header.SetPadding(Dp(20), Dp(15), Dp(20), Dp(12));
-        var mark = new View(this);
-        mark.SetBackgroundColor(_accentBright);
-        header.AddView(mark, new LinearLayout.LayoutParams(Dp(4), Dp(36)) { RightMargin = Dp(12) });
+        var mark = new ImageView(this) { ContentDescription = "DYNEX-Logo" };
+        mark.SetImageResource(Resource.Drawable.dynex_logo);
+        header.AddView(mark, new LinearLayout.LayoutParams(Dp(40), Dp(40)) { RightMargin = Dp(10) });
         var brand = new LinearLayout(this) { Orientation = Orientation.Vertical };
         brand.AddView(Label("DYNEX", 22, _text, true));
         brand.AddView(Label("MOBILE NETWORK PROTECTION", 10, _muted, true));
         header.AddView(brand, new LinearLayout.LayoutParams(0, -2, 1));
         _headerRefreshButton = TextButton("↻", false);
         _headerRefreshButton.ContentDescription = "Verbindung aktualisieren";
-        _headerRefreshButton.Click += (_, _) => SendServiceAction(ActionRefresh);
+        _headerRefreshButton.Click += (_, _) => RefreshConnection();
         header.AddView(_headerRefreshButton, new LinearLayout.LayoutParams(Dp(44), Dp(42)));
         outer.AddView(header);
 
         var navigation = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         navigation.SetPadding(Dp(20), 0, Dp(20), Dp(10));
-        var overviewTab = TextButton("ÜBERSICHT", false);
-        var settingsTab = TextButton("EINSTELLUNGEN", false);
-        overviewTab.Click += (_, _) => ShowPage(false);
-        settingsTab.Click += (_, _) => ShowPage(true);
-        navigation.AddView(overviewTab, new LinearLayout.LayoutParams(0, Dp(42), 1) { RightMargin = Dp(8) });
-        navigation.AddView(settingsTab, new LinearLayout.LayoutParams(0, Dp(42), 1));
+        _overviewTab = TextButton("ÜBERSICHT", false);
+        _settingsTab = TextButton("EINSTELLUNGEN", false);
+        _overviewTab.Click += (_, _) => ShowPage(false);
+        _settingsTab.Click += (_, _) => ShowPage(true);
+        navigation.AddView(_overviewTab, new LinearLayout.LayoutParams(0, Dp(42), 1) { RightMargin = Dp(8) });
+        navigation.AddView(_settingsTab, new LinearLayout.LayoutParams(0, Dp(42), 1));
         outer.AddView(navigation);
 
-        var scroll = new ScrollView(this) { FillViewport = true };
-        scroll.SetClipToPadding(false);
-        scroll.SetPadding(Dp(20), 0, Dp(20), Dp(20));
+        _scroll = new ScrollView(this) { FillViewport = true };
+        _scroll.SetClipToPadding(false);
+        _scroll.SetPadding(Dp(20), 0, Dp(20), Dp(20));
         _content = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        scroll.AddView(_content);
-        outer.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        _scroll.AddView(_content);
+        outer.AddView(_scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         SetContentView(outer);
 
         BuildOverview();
@@ -159,13 +175,15 @@ public sealed class MainActivity : Activity
         connectionCard.AddView(_protectionExplanation, Spacing(top: 5));
         _vpnConsentExplanation = Label("Beim ersten Start fragt Android einmal nach der Freigabe für den lokalen VPN-Schutz.", 12, _muted);
         connectionCard.AddView(_vpnConsentExplanation, Spacing(top: 5));
-        connectionCard.AddView(PrimaryButton("SCHUTZ EINSCHALTEN", RequestVpnAndStart), Spacing(top: 13));
+        _startButton = PrimaryButton("SCHUTZ EINSCHALTEN", () => RequestVpnAndStart());
+        connectionCard.AddView(_startButton, Spacing(top: 13));
+        connectionCard.AddView(Label("Nach dem Einschalten läuft DYNEX auch bei geschlossener App im Hintergrund weiter. Stoppen beendet den Dienst.", 12, _muted), Spacing(top: 7));
         var connectionActions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var stop = TextButton("Stoppen", false);
-        stop.Click += (_, _) => RequestStop();
+        _stopButton = TextButton("Stoppen", false);
+        _stopButton.Click += (_, _) => RequestStop();
         _connectionRefreshButton = TextButton("Aktualisieren", false);
-        _connectionRefreshButton.Click += (_, _) => SendServiceAction(ActionRefresh);
-        connectionActions.AddView(stop, new LinearLayout.LayoutParams(0, Dp(40), 1) { RightMargin = Dp(8) });
+        _connectionRefreshButton.Click += (_, _) => RefreshConnection();
+        connectionActions.AddView(_stopButton, new LinearLayout.LayoutParams(0, Dp(40), 1) { RightMargin = Dp(8) });
         connectionActions.AddView(_connectionRefreshButton, new LinearLayout.LayoutParams(0, Dp(40), 1));
         connectionCard.AddView(connectionActions, Spacing(top: 8));
         _overview.AddView(connectionCard, Spacing(bottom: 10));
@@ -174,6 +192,8 @@ public sealed class MainActivity : Activity
         protectionCard.AddView(SectionLabel("GAMING-SCHUTZ"));
         _limitStatus = Label("Warte auf Gaming-Status vom PC", 18, _accentBright, true);
         protectionCard.AddView(_limitStatus, Spacing(top: 8, bottom: 5));
+        _pcCapacity = Label("PC-Leitung · warte auf Messwerte", 12, _muted);
+        protectionCard.AddView(_pcCapacity, Spacing(bottom: 5));
         protectionCard.AddView(Label("Begrenzt wird erst, wenn der Schutz tatsächlich aktiv ist.", 12, _muted));
         _pauseButton = TextButton("PAUSE", false);
         _pauseButton.Click += (_, _) => TogglePause();
@@ -219,9 +239,9 @@ public sealed class MainActivity : Activity
         proxyCard.AddView(_adGuardProxy, Spacing(top: 6));
         proxyCard.AddView(Label("AdGuard behält Androids VPN. DYNEX stellt einen lokalen SOCKS5-Proxy für die AdGuard-Durchleitung bereit. Mobilfunk bleibt unbegrenzt, die Durchleitung bleibt aktiv. Wenn du den Proxy ausschaltest, benötigt DYNEX eine eigene Android-VPN-Freigabe.", 12, _muted), Spacing(top: 3, bottom: 8));
         proxyCard.AddView(Label("Einmal mit dem Automatisierungs-Passwort verbinden. DYNEX trägt die Proxy-Daten in AdGuard ein. Das Passwort bleibt verschlüsselt auf diesem Handy.", 12, _muted), Spacing(bottom: 9));
-        var proxySetup = TextButton("ADGUARD EINRICHTEN", false);
-        proxySetup.Click += (_, _) => ShowAdGuardWizard();
-        proxyCard.AddView(proxySetup);
+        _proxySetupButton = TextButton("ADGUARD EINRICHTEN", false);
+        _proxySetupButton.Click += (_, _) => ShowAdGuardWizard();
+        proxyCard.AddView(_proxySetupButton);
         _settingsPage.AddView(proxyCard, Spacing(bottom: 10));
 
         var limitsCard = Card();
@@ -230,7 +250,7 @@ public sealed class MainActivity : Activity
         _gamingLimit = EditField("Leer = automatisch");
         _gamingLimit.InputType = global::Android.Text.InputTypes.ClassNumber | global::Android.Text.InputTypes.NumberFlagDecimal;
         limitsCard.AddView(_gamingLimit);
-        limitsCard.AddView(Label("Leer lässt DYNEX die verfügbare Bandbreite automatisch verteilen.", 12, _muted), Spacing(top: 5));
+        limitsCard.AddView(Label("Die Leitungswerte kommen automatisch vom PC. Leer lässt DYNEX daraus deinen Anteil berechnen; eine Eingabe kann diesen nur weiter senken.", 12, _muted), Spacing(top: 5));
         limitsCard.AddView(Label("Hintergrund-Anteil", 12, _muted), Spacing(top: 12, bottom: 3));
         _sharePriority = new SeekBar(this) { Max = 375, Progress = 75 };
         limitsCard.AddView(_sharePriority);
@@ -240,6 +260,7 @@ public sealed class MainActivity : Activity
         {
             var value = 0.25 + e.Progress / 100d;
             _sharePriorityValue.Text = $"Anteil: {value.ToString("0.00", CultureInfo.CurrentCulture)}×";
+            UpdateSaveButton();
         };
         _settingsPage.AddView(limitsCard, Spacing(bottom: 10));
 
@@ -249,9 +270,14 @@ public sealed class MainActivity : Activity
         _settingsPauseButton = TextButton("SCHUTZ PAUSIEREN", false);
         _settingsPauseButton.Click += (_, _) => TogglePause();
         pauseCard.AddView(_settingsPauseButton);
-        var save = PrimaryButton("EINSTELLUNGEN SPEICHERN", SaveSettings);
-        pauseCard.AddView(save, Spacing(top: 10));
+        _saveButton = PrimaryButton("EINSTELLUNGEN SPEICHERN", SaveSettings);
+        pauseCard.AddView(_saveButton, Spacing(top: 10));
         _settingsPage.AddView(pauseCard);
+        _deviceName.TextChanged += (_, _) => UpdateSaveButton();
+        _gamingLimit.TextChanged += (_, _) => UpdateSaveButton();
+        _autoConnect.CheckedChange += (_, _) => UpdateSaveButton();
+        _autoStart.CheckedChange += (_, _) => UpdateSaveButton();
+        _adGuardProxy.CheckedChange += (_, _) => UpdateSaveButton();
     }
 
     private void Render(MobileSnapshot state)
@@ -277,9 +303,9 @@ public sealed class MainActivity : Activity
         else if (state.IsPaused)
             _limitStatus.Text = "Pausiert · keine Begrenzung";
         else if (state.LimitApplied)
-            _limitStatus.Text = $"Begrenzt · {FormatRate(state.DownloadLimitMbps)}";
+            _limitStatus.Text = $"Begrenzt · {FormatRate(state.DownloadLimitMbps)} Mbit/s";
         else if (state.LimitPlanned)
-            _limitStatus.Text = $"Limit geplant · {FormatRate(state.DownloadLimitMbps)}";
+            _limitStatus.Text = $"Limit geplant · {FormatRate(state.DownloadLimitMbps)} Mbit/s";
         else if (proxyRunning && !state.HasNetworkTransport)
             _limitStatus.Text = "Kein aktives Netz · keine Begrenzung";
         else if (proxyRunning && !state.IsOnWifi)
@@ -300,6 +326,9 @@ public sealed class MainActivity : Activity
             _limitStatus.Text = "Noch kein PC-Gaming-Status";
 
         _limitStatus.SetTextColor(otherVpnBlocksStandalone ? _accentBright : state.LimitApplied ? _green : state.LimitPlanned ? _accentBright : _text);
+        _pcCapacity.Text = state.SharedCapacityMbps is not null
+            ? $"Vom PC übernommen · ↓ {FormatRate(state.SharedCapacityMbps)} / ↑ {FormatRate(state.SharedUploadCapacityMbps)} Mbit/s"
+            : "PC-Leitung · noch keine bestätigten Messwerte";
         if (_adGuardWizardStatus is not null)
         {
             if (state.ProxyForwardingObserved)
@@ -315,10 +344,29 @@ public sealed class MainActivity : Activity
         }
         _downloadValue.Text = FormatRate(state.DownloadMbps);
         _uploadValue.Text = FormatRate(state.UploadMbps);
-        _pauseButton.Text = state.IsPaused ? "WEITER" : "PAUSE";
-        _settingsPauseButton.Text = state.IsPaused ? "SCHUTZ FORTSETZEN" : "SCHUTZ PAUSIEREN";
-        _headerRefreshButton.Enabled = state.IsOnWifi;
-        _connectionRefreshButton.Enabled = state.IsOnWifi;
+        var busy = _pendingServiceAction is not null || _pendingVpnStart;
+        _startButton.Text = _pendingServiceAction == ActionStart ? "DYNEX STARTET …"
+            : state.IsRunning ? "HINTERGRUNDDIENST AKTIV" : "SCHUTZ EINSCHALTEN";
+        _stopButton.Text = _pendingServiceAction == ActionStop ? "WIRD GESTOPPT …" : "STOPPEN";
+        SetButtonEnabled(_startButton, !state.IsRunning && !busy);
+        SetButtonEnabled(_stopButton, state.IsRunning && !busy);
+        _pauseButton.Text = _pendingPause.HasValue ? "WIRD ÜBERNOMMEN …" : state.IsPaused ? "WEITER" : "PAUSE";
+        _settingsPauseButton.Text = _pendingPause.HasValue ? "WIRD ÜBERNOMMEN …"
+            : state.IsPaused ? "SCHUTZ FORTSETZEN" : "SCHUTZ PAUSIEREN";
+        SetButtonEnabled(_pauseButton, state.IsRunning && !busy && !_pendingPause.HasValue);
+        SetButtonEnabled(_settingsPauseButton, state.IsRunning && !busy && !_pendingPause.HasValue);
+        SetButtonEnabled(_headerRefreshButton, CanRefresh(state));
+        SetButtonEnabled(_connectionRefreshButton, CanRefresh(state));
+        _connectionRefreshButton.ContentDescription = CanRefresh(state) ? "PC-Suche aktualisieren"
+            : !state.IsRunning ? "Aktualisieren: zuerst DYNEX einschalten"
+            : !state.IsOnWifi ? "Aktualisieren nur im WLAN verfügbar" : "Automatische PC-Verbindung ist ausgeschaltet";
+        _headerRefreshButton.ContentDescription = _connectionRefreshButton.ContentDescription;
+        var adGuardInstalled = IsAdGuardInstalled();
+        _proxySetupButton.Text = adGuardInstalled ? "ADGUARD EINRICHTEN" : "ADGUARD NICHT INSTALLIERT";
+        SetButtonEnabled(_proxySetupButton, adGuardInstalled && !busy);
+        _adGuardProxy.Enabled = !busy && (adGuardInstalled || _adGuardProxy.Checked);
+        _adGuardProxy.Alpha = _adGuardProxy.Enabled ? 1f : .45f;
+        UpdateSaveButton();
         RenderDevices(state.Devices);
     }
 
@@ -351,6 +399,7 @@ public sealed class MainActivity : Activity
 
     private void LoadSettingsIntoForm()
     {
+        _loadingSettings = true;
         _deviceName.Text = _settings.DeviceName;
         _autoConnect.Checked = _settings.AutoConnect;
         _autoStart.Checked = _settings.AutoStart;
@@ -358,6 +407,20 @@ public sealed class MainActivity : Activity
         _gamingLimit.Text = _settings.GamingDownloadLimitMbps?.ToString("0.##", CultureInfo.CurrentCulture) ?? string.Empty;
         _sharePriority.Progress = Math.Clamp((int)Math.Round((_settings.SharePriority - 0.25) * 100), 0, 375);
         _sharePriorityValue.Text = $"Anteil: {_settings.SharePriority.ToString("0.00", CultureInfo.CurrentCulture)}×";
+        _loadingSettings = false;
+        UpdateSaveButton();
+    }
+
+    private void UpdateSaveButton()
+    {
+        if (_loadingSettings || _saveButton is null) return;
+        var dirty = _deviceName.Text?.Trim() != _settings.DeviceName
+            || _autoConnect.Checked != _settings.AutoConnect || _autoStart.Checked != _settings.AutoStart
+            || _adGuardProxy.Checked != _settings.UseAdGuardProxy
+            || (_gamingLimit.Text?.Trim() ?? "") != (_settings.GamingDownloadLimitMbps?.ToString("0.##", CultureInfo.CurrentCulture) ?? "")
+            || _sharePriority.Progress != Math.Clamp((int)Math.Round((_settings.SharePriority - .25) * 100), 0, 375);
+        _saveButton.Text = dirty ? "EINSTELLUNGEN SPEICHERN" : "EINSTELLUNGEN GESPEICHERT";
+        SetButtonEnabled(_saveButton, dirty && _pendingServiceAction is null && !_pendingVpnStart);
     }
 
     private void SaveSettings()
@@ -394,6 +457,7 @@ public sealed class MainActivity : Activity
         {
             MobileSettingsStore.Save(this, updatedSettings);
             _settings = updatedSettings;
+            LoadSettingsIntoForm();
             if (MobileState.Current.IsRunning) SendServiceAction(ActionSettingsChanged);
             Render(MobileState.Current);
             Toast.MakeText(this, "Einstellungen gespeichert", ToastLength.Short)?.Show();
@@ -407,40 +471,68 @@ public sealed class MainActivity : Activity
 
     private void TogglePause()
     {
+        if (!MobileState.Current.IsRunning || _pendingServiceAction is not null || _pendingPause.HasValue) return;
         var pause = !MobileState.Current.IsPaused;
+        _pendingPause = pause;
+        Render(MobileState.Current);
         var intent = CreateServiceIntent(ActionPause);
         intent.PutExtra("Pause", pause);
         StartAndroidService(intent);
     }
 
+    private bool CanRefresh(MobileSnapshot state) => state.IsRunning && state.IsOnWifi && _settings.AutoConnect
+        && _pendingServiceAction is null && !_pendingVpnStart;
+
+    private void RefreshConnection()
+    {
+        if (!CanRefresh(MobileState.Current)) return;
+        if (StartAndroidService(CreateServiceIntent(ActionRefresh)))
+            Toast.MakeText(this, "PC-Suche im WLAN angefordert", ToastLength.Short)?.Show();
+    }
+
     private void RequestStop()
     {
+        if (!MobileState.Current.IsRunning || _pendingServiceAction is not null || _stopConfirmationShowing) return;
         if (!_settings.UseAdGuardProxy)
         {
-            SendServiceAction(ActionStop);
+            StopProtectionService();
             return;
         }
 
         var dialog = new AlertDialog.Builder(this);
         dialog.SetTitle("AdGuard-Proxy stoppen?");
         dialog.SetMessage("DYNEX fordert AdGuard auf, den Proxy auszuschalten. Falls AdGuard die Anfrage nicht annimmt (zum Beispiel nach einer Passwortänderung), musst du dort den Proxy ausschalten, damit das Internet weiter funktioniert. Mit Pause bleibt die Verbindung bestehen und das Downloadlimit entfällt.");
-        dialog.SetPositiveButton("DYNEX stoppen", (_, _) => SendServiceAction(ActionStop));
+        dialog.SetPositiveButton("DYNEX stoppen", (_, _) => StopProtectionService());
         dialog.SetNegativeButton("Abbrechen", (_, _) => { });
-        dialog.Show();
+        _stopConfirmationShowing = true;
+        var confirmation = dialog.Create()!;
+        confirmation.DismissEvent += (_, _) => _stopConfirmationShowing = false;
+        confirmation.Show();
     }
 
-    private void RequestVpnAndStart()
+    private void StopProtectionService()
     {
+        if (!MobileState.Current.IsRunning || _pendingServiceAction is not null) return;
+        _pendingServiceAction = ActionStop;
+        Render(MobileState.Current);
+        SendServiceAction(ActionStop);
+    }
+
+    private void RequestVpnAndStart(bool reconnect = false)
+    {
+        if (_pendingServiceAction is not null || _pendingVpnStart || (MobileState.Current.IsRunning && !reconnect)) return;
         if (_settings.UseAdGuardProxy && !AdGuardIntegration.HasSavedPassword(this))
         {
             ShowAdGuardWizard();
             return;
         }
         if (!_settings.UseAdGuardProxy && BlockForOtherVpn()) return;
+        _pendingVpnStart = true;
+        _pendingServiceAction = ActionStart;
+        Render(MobileState.Current);
         if (OperatingSystem.IsAndroidVersionAtLeast(33) &&
             CheckSelfPermission(global::Android.Manifest.Permission.PostNotifications) != Permission.Granted)
         {
-            _pendingVpnStart = true;
             RequestPermissions(new[] { global::Android.Manifest.Permission.PostNotifications }, NotificationPermissionRequest);
             return;
         }
@@ -453,7 +545,6 @@ public sealed class MainActivity : Activity
         base.OnRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != NotificationPermissionRequest) return;
         var continueStart = _pendingVpnStart;
-        _pendingVpnStart = false;
         if (continueStart) RequestVpnConsent();
     }
 
@@ -464,7 +555,7 @@ public sealed class MainActivity : Activity
             StartProtectionService();
             return;
         }
-        if (BlockForOtherVpn()) return;
+        if (BlockForOtherVpn()) { ClearPendingActions(); return; }
         if (VpnCompatibility.OwnVpnActive) { StartProtectionService(); return; }
         var prepare = global::Android.Net.VpnService.Prepare(this);
         if (prepare is null)
@@ -478,15 +569,28 @@ public sealed class MainActivity : Activity
     protected override void OnActivityResult(int requestCode, Result resultCode, Intent? data)
     {
         base.OnActivityResult(requestCode, resultCode, data);
-        if (requestCode == VpnConsentRequest && resultCode == Result.Ok)
-            StartProtectionService();
+        if (requestCode != VpnConsentRequest) return;
+        if (resultCode == Result.Ok) StartProtectionService();
+        else
+        {
+            ClearPendingActions();
+            Toast.MakeText(this, "VPN-Freigabe abgebrochen · DYNEX bleibt ausgeschaltet", ToastLength.Long)?.Show();
+        }
     }
 
     private void StartProtectionService()
     {
-        if (!_settings.UseAdGuardProxy && BlockForOtherVpn()) return;
-        MobileSettingsStore.Save(this, _settings);
-        StartAndroidService(CreateServiceIntent(ActionStart), foreground: true);
+        if (!_settings.UseAdGuardProxy && BlockForOtherVpn()) { ClearPendingActions(); return; }
+        try { MobileSettingsStore.Save(this, _settings); }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Error("DYNEX", "Start-Einstellungen konnten nicht gespeichert werden: " + ex.GetType().Name);
+            ClearPendingActions();
+            Toast.MakeText(this, "DYNEX konnte die Einstellungen nicht speichern", ToastLength.Long)?.Show();
+            return;
+        }
+        _pendingVpnStart = false;
+        if (!StartAndroidService(CreateServiceIntent(ActionStart), foreground: true)) return;
         if (_settings.UseAdGuardProxy && _showAdGuardWizardStatusAfterStart)
         {
             _showAdGuardWizardStatusAfterStart = false;
@@ -508,7 +612,7 @@ public sealed class MainActivity : Activity
 
     private void ShowFirstRunAdGuardWizardIfNeeded()
     {
-        if (IsFinishing || IsDestroyed) return;
+        if (IsFinishing || IsDestroyed || !IsAdGuardInstalled()) return;
         using var preferences = GetSharedPreferences(FirstRunWizardPreferences, FileCreationMode.Private)!;
         if (preferences.GetBoolean(AdGuardWizardShownKey, false)) return;
         using var edit = preferences.Edit()!;
@@ -517,6 +621,16 @@ public sealed class MainActivity : Activity
             global::Android.Util.Log.Warn("DYNEX", "Der Status des erstmalig angezeigten AdGuard-Assistenten konnte nicht gespeichert werden.");
         }
         ShowAdGuardWizard();
+    }
+
+    private bool IsAdGuardInstalled()
+    {
+        try { using var intent = PackageManager?.GetLaunchIntentForPackage(AdGuardAutomationPackage); return intent is not null; }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn("DYNEX", "AdGuard-App konnte nicht geprüft werden: " + ex.GetType().Name);
+            return false;
+        }
     }
 
     private void ShowAdGuardWizard()
@@ -584,6 +698,7 @@ public sealed class MainActivity : Activity
                 {
                     using var launchIntent = PackageManager?.GetLaunchIntentForPackage(AdGuardAutomationPackage);
                     if (launchIntent is not null) StartActivity(launchIntent);
+                    else Toast.MakeText(this, "AdGuard ist nicht verfügbar", ToastLength.Long)?.Show();
                 }
                 catch (Exception ex)
                 {
@@ -625,7 +740,10 @@ public sealed class MainActivity : Activity
         dialog.Show();
         dialog.Window?.AddFlags(WindowManagerFlags.Secure);
         _adGuardWizardPassword = password;
-        dialog.GetButton((int)DialogButtonType.Positive)!.Click += (_, _) =>
+        var connectButton = dialog.GetButton((int)DialogButtonType.Positive)!;
+        SetButtonEnabled(connectButton, false);
+        password.TextChanged += (_, _) => SetButtonEnabled(connectButton, !string.IsNullOrWhiteSpace(password.Text));
+        connectButton.Click += (_, _) =>
         {
             var cleartext = password.Text ?? string.Empty;
             try
@@ -637,7 +755,7 @@ public sealed class MainActivity : Activity
                 LoadSettingsIntoForm();
                 dialog.Dismiss();
                 _showAdGuardWizardStatusAfterStart = true;
-                RequestVpnAndStart();
+                RequestVpnAndStart(reconnect: true);
             }
             catch (Exception ex)
             {
@@ -664,6 +782,7 @@ public sealed class MainActivity : Activity
             {
                 using var launchIntent = PackageManager?.GetLaunchIntentForPackage(AdGuardAutomationPackage);
                 if (launchIntent is not null) StartActivity(launchIntent);
+                else Toast.MakeText(this, "AdGuard ist nicht verfügbar", ToastLength.Long)?.Show();
             }
             catch (Exception ex)
             {
@@ -714,12 +833,30 @@ public sealed class MainActivity : Activity
         return intent;
     }
 
-    private void StartAndroidService(Intent intent, bool foreground = false)
+    private bool StartAndroidService(Intent intent, bool foreground = false)
     {
-        if (foreground && Build.VERSION.SdkInt >= BuildVersionCodes.O)
-            StartForegroundService(intent);
-        else
-            StartService(intent);
+        try
+        {
+            var started = foreground && Build.VERSION.SdkInt >= BuildVersionCodes.O
+                ? StartForegroundService(intent) : StartService(intent);
+            if (started is null) throw new InvalidOperationException("DYNEX-Dienst nicht verfügbar.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Error("DYNEX", "Dienstaktion fehlgeschlagen: " + ex.GetType().Name);
+            ClearPendingActions();
+            Toast.MakeText(this, "Aktion konnte nicht ausgeführt werden. Bitte erneut versuchen.", ToastLength.Long)?.Show();
+            return false;
+        }
+    }
+
+    private void ClearPendingActions()
+    {
+        _pendingVpnStart = false;
+        _pendingServiceAction = null;
+        _pendingPause = null;
+        Render(MobileState.Current);
     }
 
     private void OnMobileStateChanged()
@@ -727,7 +864,13 @@ public sealed class MainActivity : Activity
         if (IsFinishing || IsDestroyed) return;
         RunOnUiThread(() =>
         {
-            if (!IsFinishing && !IsDestroyed) Render(MobileState.Current);
+            if (IsFinishing || IsDestroyed) return;
+            var state = MobileState.Current;
+            if (_pendingServiceAction == ActionStart && !_pendingVpnStart
+                || _pendingServiceAction == ActionStop && !state.IsRunning)
+                _pendingServiceAction = null;
+            if (!state.IsRunning || state.IsPaused == _pendingPause) _pendingPause = null;
+            Render(state);
         });
     }
 
@@ -735,6 +878,13 @@ public sealed class MainActivity : Activity
     {
         _content.RemoveAllViews();
         _content.AddView(settings ? _settingsPage : _overview);
+        _scroll.ScrollTo(0, 0);
+        _overviewTab.Enabled = settings;
+        _settingsTab.Enabled = !settings;
+        _overviewTab.SetTextColor(settings ? _muted : _accentBright);
+        _settingsTab.SetTextColor(settings ? _accentBright : _muted);
+        _overviewTab.Selected = !settings;
+        _settingsTab.Selected = settings;
     }
 
     private LinearLayout Card()
@@ -802,6 +952,12 @@ public sealed class MainActivity : Activity
         if (primary) button.SetBackgroundResource(Resource.Drawable.dynex_accent_button);
         else button.Background = Rounded(_surfaceRaised, _line, 3);
         return button;
+    }
+
+    private static void SetButtonEnabled(Button button, bool enabled)
+    {
+        button.Enabled = enabled;
+        button.Alpha = enabled ? 1f : .4f;
     }
 
     private GradientDrawable Rounded(Color fill, Color stroke, int radiusDp)

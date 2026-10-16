@@ -13,6 +13,7 @@ public sealed record DynexSettings
     public IReadOnlyList<IPEndPoint> DirectPeers { get; init; } = Array.Empty<IPEndPoint>();
     public double LineMbps { get; init; } = 200;
     public bool CapacityMeasured { get; init; } = true;
+    public double? UploadCapacityMbps { get; init; }
     public double HeadroomPercent { get; init; } = 15;
     public double GamingReserveMbps { get; init; } = 12;
     public double? ManualDownloadLimitMbps { get; init; }
@@ -33,7 +34,8 @@ public sealed record DynexSettings
         if (!double.IsFinite(LineMbps) || LineMbps is < 1 or > 100000 ||
             !double.IsFinite(HeadroomPercent) || HeadroomPercent is < 0 or > 90 ||
             !double.IsFinite(GamingReserveMbps) || GamingReserveMbps is < 0 or > 100000 ||
-            ManualDownloadLimitMbps is { } m && (!double.IsFinite(m) || m is < 0.1 or > 100000))
+            ManualDownloadLimitMbps is { } m && (!double.IsFinite(m) || m is < 0.1 or > 100000) ||
+            UploadCapacityMbps is { } upload && (!double.IsFinite(upload) || upload is < .1 or > 100000))
             throw new ArgumentException("Bandbreiteneinstellungen sind ungültig.");
         if (PeerTtl < TimeSpan.FromSeconds(1) || PeerTtl > TimeSpan.FromSeconds(30) ||
             HeartbeatInterval < TimeSpan.FromMilliseconds(100) || HeartbeatInterval >= PeerTtl)
@@ -73,15 +75,18 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
 /// Fresh status publications advertise this directly; never re-advertise the negotiated minimum.
 /// Otherwise a departed slow participant's value would circulate indefinitely.
 /// </summary>
-public sealed record DownloadBudgetProposal(double LineMbps, double HeadroomPercent, double GamingReserveMbps)
+public sealed record DownloadBudgetProposal(double LineMbps, double HeadroomPercent, double GamingReserveMbps,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    double? UploadCapacityMbps = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsValid => double.IsFinite(LineMbps) && LineMbps is >= 1 and <= 100000 &&
         double.IsFinite(HeadroomPercent) && HeadroomPercent is >= 0 and <= 90 &&
-        double.IsFinite(GamingReserveMbps) && GamingReserveMbps is >= 0 and <= 100000;
+        double.IsFinite(GamingReserveMbps) && GamingReserveMbps is >= 0 and <= 100000 &&
+        (UploadCapacityMbps is null || double.IsFinite(UploadCapacityMbps.Value) && UploadCapacityMbps is >= .1 and <= 100000);
 
     internal static DownloadBudgetProposal FromSettings(DynexSettings settings) =>
-        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps);
+        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps, settings.UploadCapacityMbps);
 
     internal double Remaining(int gamingCount) => Math.Max(0, LineMbps * (1 - HeadroomPercent / 100) - gamingCount * GamingReserveMbps);
 }
@@ -99,7 +104,8 @@ public sealed record ProbeStats(DateTimeOffset TimestampUtc, double? ExternalLat
 public sealed record LimitDecision(double? DownloadLimitMbps, string Reason, bool GamingActive,
     double? IdleBaselineMs, bool AdaptiveReduced, DateTimeOffset? IdleBaselineAtUtc = null,
     double? SharedDownloadBudgetMbps = null, int ParticipantCount = 1, int GamingCount = 0,
-    double? SharedCapacityMbps = null, bool SharedBudgetComplete = false, double? ShareWeightTotal = null, double LocalShareWeight = 1);
+    double? SharedCapacityMbps = null, bool SharedBudgetComplete = false, double? ShareWeightTotal = null, double LocalShareWeight = 1,
+    double? SharedUploadCapacityMbps = null, double? SharedUploadBudgetMbps = null);
 
 internal static class LanAddress
 {

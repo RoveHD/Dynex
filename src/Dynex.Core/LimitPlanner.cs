@@ -36,15 +36,21 @@ public sealed class LimitPlanner
         var gamers = live.Count(p => p.IsGaming) + (localGaming ? 1 : 0);
         var active = gamers > 0;
         var participants = live.Length + 1;
-        var localProposal = DownloadBudgetProposal.FromSettings(_settings);
         var proposals = live.Select(p => p.BudgetProposal).Where(p => p is { IsValid: true })
-            .Cast<DownloadBudgetProposal>().Append(localProposal).ToArray();
+            .Cast<DownloadBudgetProposal>().ToList();
+        // Consumers use authenticated PC proposals without treating their own
+        // numerical defaults as a measurement or circulating a negotiated value.
+        if (_settings.CapacityMeasured) proposals.Add(DownloadBudgetProposal.FromSettings(_settings));
         // All converged participants see the same original proposals, independent of a leader.
         // Minimize the complete reserve-adjusted proposals, not only the raw line speeds:
         // different headroom and per-gamer settings must not produce different shared pools.
-        var capacity = proposals.Min(p => p.LineMbps);
-        double? pool = active ? proposals.Min(p => p.Remaining(gamers)) : null;
-        var complete = proposals.Length == participants && (pool is null || pool / participants >= 0.1);
+        double? capacity = proposals.Count == 0 ? null : proposals.Min(p => p.LineMbps);
+        double? pool = active && proposals.Count > 0 ? proposals.Min(p => p.Remaining(gamers)) : null;
+        var complete = proposals.Count == participants && (pool is null || pool / participants >= 0.1);
+        var uploadProposals = proposals.Where(p => p.UploadCapacityMbps.HasValue).ToArray();
+        double? uploadCapacity = uploadProposals.Length == 0 ? null : uploadProposals.Min(p => p.UploadCapacityMbps!.Value);
+        double? uploadPool = active && uploadProposals.Length > 0
+            ? uploadProposals.Min(p => p.UploadCapacityMbps!.Value * (1 - p.HeadroomPercent / 100)) : null;
         // Gaming exempts game packets in the packet policy, not every download on that PC.
         // Every live PC can download in the background, so every PC shares this budget.
         // Priorities apply only when every live peer announces one; a peer without it (older
@@ -77,13 +83,15 @@ public sealed class LimitPlanner
             limit = limit is { } auto ? Math.Min(auto, manual) : manual;
         var reason = automatic is not null
             ? (_factor < 0.999 ? "Große Downloads begrenzt · Spiele frei · Latenzreserve erhöht" : "Große Downloads begrenzt · Spiele frei · LAN-Budget geteilt")
+            : active && capacity is null ? "Gaming erkannt · keine bestätigte Kapazität · kein automatisches Limit"
             : "Kein Gaming aktiv · automatische Begrenzung frei";
         if (_settings.ManualDownloadLimitMbps is not null) reason += " · manuelles Limit";
         if (active && !complete) reason += pool / participants < 0.1
             ? " · gemeinsames Budget unter technischem Mindestlimit"
             : " · gemeinsames Budget noch nicht mit allen PCs abgestimmt";
         return new(limit is { } value ? Math.Round(value, 2) : null, reason, active, _baseline, _factor < 0.999,
-            _baseline is null ? null : _baselineAt, pool, participants, gamers, capacity, complete, totalWeight, localWeight);
+            _baseline is null ? null : _baselineAt, pool, participants, gamers, capacity, complete, totalWeight, localWeight,
+            uploadCapacity, uploadPool);
     }
 
     private void Observe(ProbeStats? probe, DateTimeOffset now, bool gaming, double? budget, bool adjust, bool allowRecovery)

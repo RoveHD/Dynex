@@ -141,10 +141,12 @@ Check(codec.Decode(codec.Encode(wire with { UploadMbps = 0 }))?.UploadMbps == 0,
 Check(codec.Decode(codec.Encode(wire with { UploadMbps = null }))?.UploadMbps is null, "legacy heartbeat without upload decodes as unknown");
 Check(codec.Decode(codec.Encode(wire with { BudgetProposal = null }))?.BudgetProposal is null,
     "legacy PSK heartbeat without a budget proposal stays compatible and explicitly unknown");
-foreach (var invalidBudget in new[] { new DownloadBudgetProposal(0, 15, 12), new(200, 91, 12), new(200, 15, -1) })
+foreach (var invalidBudget in new[] { new DownloadBudgetProposal(0, 15, 12), new(200, 91, 12), new(200, 15, -1), new(200, 15, 12, -1) })
     Check(codec.Decode(codec.Encode(wire with { BudgetProposal = invalidBudget })) is null,
         "PSK rejects authenticated invalid shared-budget capacity or reserve settings");
 Check(codec.Decode(codec.Encode(wire with { DeviceName = "bad\nname" })) is null, "authenticated control characters in names are rejected");
+Check(codec.Decode(codec.Encode(wire with { BudgetProposal = new(500, 20, 10, 40) }))?.BudgetProposal?.UploadCapacityMbps == 40,
+    "PSK encrypted status carries optional original upload capacity");
 var unicode = wire with { DeviceName = new string('界', 80), Game = new string('界', 80) };
 Check(codec.Decode(codec.Encode(unicode)) == unicode, "maximum-length Unicode names fit the bounded encrypted heartbeat");
 var fullFeedback = unicode with { IdleBaselineMs = 20, LatencyTargetId = new string('x', 256), LatencySampleSequence = 1,
@@ -292,6 +294,7 @@ ShareWeightTests.Run(Check);
 SessionTrackerTests.Run(Check);
 await RouterTrafficTests.Run(Check);
 UploadLimitTests.Run(Check);
+CapacitySharingTests.Run(Check);
 ComfortTests.Run(Check);
 IsolationTests.Run(Check);
 await PeerConnectionTests.Run(Check);

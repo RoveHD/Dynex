@@ -65,4 +65,5 @@ public sealed record RuntimeSnapshot(
     Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null,
     double? UploadLimitMbps = null, string? PingAlert = null, IReadOnlyList<ProgramTraffic>? TopPrograms = null,
     string? ScheduleReason = null, bool WaitingForGameTraffic = false, bool ObservingGameTraffic = false,
-    bool ApplicationRulesActive = false);
+    bool ApplicationRulesActive = false, double? SharedUploadCapacityMbps = null,
+    bool CapacityFromPeer = false);

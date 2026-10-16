@@ -20,6 +20,12 @@ PeerAdvertisement Peer(bool gaming = true, double line = 200, double headroom = 
 MobileLimitDecision Plan(params PeerAdvertisement[] peers) => MobileLimitPolicy.Plan(handset, peers, now: now);
 
 var pc = Peer();
+var uploadPc = pc with { BudgetProposal = new(200, 15, 12, 40) };
+Check(Plan(uploadPc).SharedUploadCapacityMbps == 40 && Plan(pc).SharedUploadCapacityMbps is null,
+    "handset displays authenticated PC upload capacity while legacy unknown upload remains null");
+Check(Plan(uploadPc, Peer(false) with { BudgetProposal = new(500, 20, 10, 20) }).SharedUploadCapacityMbps == 20 &&
+    Plan(uploadPc with { LastSeenUtc = now.AddSeconds(-11) }).SharedUploadCapacityMbps is null,
+    "handset derives conservative upload metadata only from fresh remote original proposals");
 var one = Plan(pc);
 Near(one.DownloadLimitMbps, 79, "one gaming PC shares 158 Mbps remaining pool with the additional handset");
 Check(one is { GamingActive: true, ParticipantCount: 2, GamingCount: 1, SharedBudgetComplete: true, SharedCapacityMbps: 200, SharedDownloadBudgetMbps: 158 },
