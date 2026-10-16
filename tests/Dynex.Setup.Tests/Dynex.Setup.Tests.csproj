@@ -11,5 +11,6 @@
     <Compile Include="../../src/Dynex.Desktop/InstallerFirewall.cs" Link="InstallerFirewall.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerSystem.cs" Link="InstallerSystem.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerUserCleanup.cs" Link="InstallerUserCleanup.cs" />
+    <Compile Include="../../src/Dynex.Desktop/StartupObjects.cs" Link="StartupObjects.cs" />
   </ItemGroup>
 </Project>

@@ -1,5 +1,29 @@
 # DYNEX 1.0.6 · Prüfstatus
 
+## Navigation, Darstellung und unsichtbare Desktop-Tests (15.10.2026)
+
+Die Oberfläche besitzt eine linke Navigation, getrennte Seiten für Übersicht und verbundene PCs, einen Zahnradknopf und sechs Einstellungsbereiche. Unter Darstellung lassen sich Klick-Sounds und kurze Seitenübergänge separat abschalten. Die Auswahl wird sofort als Vorschau angewendet und erst mit „Einstellungen speichern“ dauerhaft übernommen. Testprofile bleiben immer stumm.
+
+Der Release-Build in `artifacts/qa-redesign-build` bestand mit null Warnungen und Fehlern. Der vollständige WPF-Smoke in `artifacts/qa-redesign-final` bestand auf einem separaten, nie aktivierten Windows-Desktop: sieben Fenstergrößen von 900×650 bis 2560×1440, Erhalt ungespeicherter Eingaben, Zahnradnavigation zum letzten Bereich, Speichern/Laden beider Feedback-Einstellungen, Abbruch schneller Animationen ohne verbleibende Verschiebung, PC-Seitenwechsel, beide Status-/Verbindungsbuttons, Programmsuche, Ping-Hover und verschlüsselte Peer-Telemetrie. Kleine und große Ansichten wurden zusätzlich als gerenderte Bilder kontrolliert. Peer-Messwerte sind ausdrücklich beschriftete Testdaten; kein physischer Zwei-PC- oder Treibertest. Die Lautsprecherwiedergabe wurde nicht geprüft.
+
+`scripts/test-desktop.ps1 -ExePath <absolute-exe> -Mode Smoke -OutputDirectory <absolute-output>` startet diese Tests unsichtbar und protokolliert stdout/stderr. Es schaltet den Desktop nicht um und beendet bei Zeitüberschreitung ausschließlich den selbst gestarteten Prozess. `-Mode NegativeStartup` prüfte zusätzlich eine ungültige Testinstanz-GUID: erwarteter Exitcode 1 und Fehlerprotokoll, kein Dialog. Protokoll: `artifacts/qa-redesign-negative`. Dafür war Windows-Zugriff außerhalb der Sandbox nötig; ein verweigerter Desktopzugriff wird als Fehler gemeldet.
+
+## Automatische PC-Verbindung, Firewall und Startfehler (15.10.2026)
+
+Der Netzwerkfix ergänzt begrenzte Unicast-Erkennung im privaten lokalen Netz, sofort gespeicherte Moduswechsel, getrennte Ping-/DYNEX-Diagnose sowie gezielte Firewallregeln für beide UDP-Richtungen. Eine reproduzierte Zugriffssperre auf einen benannten Start-Mutex wird ohne unnötige Schreibrechte behandelt; Datei-Startfehler enthalten den betroffenen Pfad und erhalten die vorhandenen Daten.
+
+Geprüft: Core-Suite im eingefrorenen Paketstand 280/280 bestanden, einschließlich UDP-Regressionen zu Port-unreachable und doppelter Geräteidentität. Setup-Suite 127 Prüfungen erfolgreich, inklusive Upgrade von einer alten Inboundregel auf beide Regeln, idempotenter Entfernung und unveränderten fremden Regeln. Beide Firewallregel-Konfigurationen wurden zusätzlich an echten, **nicht registrierten** Windows-COM-Objekten geprüft; keine Live-Regeln oder Treiber verändert. Desktop-Release-Build ohne Warnungen/Fehler.
+
+`Dynex.Runtime.Tests --network-only`: 14 Prüfungen bestanden (Moduswechsel, Erhalt fremder Einstellungen, ungültige Ziele, verweigerter Speichervorgang, Ping-Auswahl/-Abbruch und Startdatei-Zugriffsfehler). Im vorherigen vollen Lauf bestanden 159 Prüfungen; ein neuer Fall scheiterte an privaten LAN-Adressen im isolierten Loopbackprofil. Die Testisolierung wurde korrigiert und der betroffene Bereich danach erfolgreich gezielt geprüft; dieser Eintrag behauptet keinen erneut vollständig grünen Runtime-Lauf.
+
+`DYNEX.exe --smoke-test <Ausgabeordner> --network-only` bestand auf einem separaten, unsichtbaren Windows-Desktop. Tatsächliche Checkbox-/Button-Aktionen, Speichern der direkten Gegenadresse, Fehlerfeedback und Erhalt ungespeicherter anderer Eingaben wurden geprüft. Netzwerkansicht bei 900×650, 1440×940 und 1920×1080 gerendert; im kleinsten Fenster wurden alle Felder nach einer Größenkorrektur sichtbar bestätigt. Protokolle/Bilder: `artifacts/network-focused-tests.log`, `artifacts/qa-network-auto-connect`. Die beiden physischen Nutzer-PCs, deren Repeater und eine echte Installer-Firewalleinrichtung wurden hier nicht Ende zu Ende geprüft.
+
+## Suchbare Programmauswahl und hinzugefügte Programme (15.10.2026)
+
+Der Desktop-Release-Build bestand ohne Warnungen oder Fehler. Der gezielte isolierte WPF-Test `DYNEX.exe --smoke-test <Ausgabeordner> --process-picker-only` prüfte Suche nach Namensbestandteilen ohne Beachtung der Groß-/Kleinschreibung, fehlende Treffer, Leeren und Aktualisieren der Suche, explizite Auswahl, Duplikatschutz, Hinzufügen/Entfernen, Leerzustand und Speichern/erneutes Laden einer nichtleeren sowie leeren Liste. Navigation erhält ungespeicherte Einträge. Die Spiele-Seite wurde bei 900×650 und 1440×940 gerendert und visuell geprüft; Protokolle und Bilder: `artifacts/qa-process-list-search-focused`. Zusätzlich lief die vorhandene GameDetection-Suite erfolgreich. Die UI-Prüfung lief auf einem separaten Windows-Desktop mit isoliertem Profil; kein Spiel wurde gestartet.
+
+Der ebenfalls gestartete vollständige Oberflächentest brach vorher auf Einstellungen/Allgemein bei 1920×1080 mit 3,40 Einheiten vertikalem Scrollbedarf ab (`artifacts/qa-process-list-search/result.txt`). Der gezielte Test ersetzt keine vollständige Abnahme der anderen Einstellungsseiten.
+
 ## Verbindungsdiagnose, Limitgrund, Update-Absicherung (1.0.6)
 
 Am 15.10.2026 in einer Linux-Umgebung (.NET-SDK 10, Ziel net9.0) ausgeführt und bestanden: **180 Core-Prüfungen** (davon 25 neu), **111 Update-Prüfungen** (davon 17 neu), 59 Adaptive- und 19 Speedtest-Prüfungen. Neu geprüft sind die Ursachenauswahl mit nächstem Schritt, signierte Versionsangabe im AutoLAN-Handshake (inklusive Altformat ohne Version und Abweisung ungültiger Angaben), echte Loopback-Verbindung zweier AutoLAN-Dienste mit Versionsabweichung, Ablauf und automatischer Wiederverbindung nach Neustart des Gegenübers, Zählung zukünftiger Protokollversionen, Limitgrund-Texte sowie Signatur-Richtlinie (gleicher Herausgeber, unsigniert, fremder Herausgeber, ungültige Signatur), erneute Prüfung direkt vor der Übergabe und das Überspringen einer zurückgerollten Version.
@@ -84,7 +108,7 @@ Am 14.10.2026 bestanden 438 automatisierte Prüfungen: 40 Setup-, 141 Core-, 86 
 
 Die Shaper-Prüfungen führen die echte Dispose-Logik mit simulierten nativen IOCTL-Antworten aus: Fehler 87 bei einem alten Adapterhandle gilt nur dann als freigegeben, wenn eine vollständige neue Adapterliste dessen Verschwinden bestätigt. Vorhandene Handles, unvollständige Listen und andere Fehler bleiben Fehler. Ein neu erschienener Adapter wird dabei nicht verändert. Ein echter Windows-Adapterwechsel wurde nicht ausgelöst.
 
-Der Desktop-Release-Build bestand ohne Warnungen oder Fehler. Der WPF-Smoke unter `artifacts/qa-ui-1.0.2` bestand für Übersicht und alle Einstellungsseiten bei sieben Größen von 900×650 bis 2560×1440. Die neuen Netzwerkfehler-Ansichten wurden bei 900×650 visuell kontrolliert: vollständiger Hinweis, Navigation zu den Netzwerkeinstellungen und Windows-Netzwerkknopf passen ohne Seitenscrollen. Die Runtime-Suite prüft den konkreten Netzwerk-Wartegrund statt der irreführenden Spielpausenmeldung. Protokolle: `artifacts/runtime-tests-1.0.2.log`, `artifacts/autolan-repair-core-tests.log` und `artifacts/qa-ui-1.0.2/pages-result.txt`.
+Der Desktop-Release-Build bestand ohne Warnungen oder Fehler. Der WPF-Smoke unter `artifacts/qa-ui-1.0.2` bestand für Übersicht und alle Einstellungsseiten bei sieben Größen von 900×650 bis 2560×1440. Die neuen Netzwerkfehler-Ansichten wurden bei 900×650 visuell kontrolliert: vollständiger Hinweis, Navigation zu den Netzwerkeinstellungen und Windows-Netzwerkknopf passen ohne Seitenscrollen. Die Runtime-Suite prüft den konkreten Netzwerk-Wartegrund statt der irreführenden Spielpausenmeldung. Protokolle: `artifacts/runtime-tests-1.0.2.log` und `artifacts/qa-ui-1.0.2/pages-result.txt`.
 
 ## Downloadlimit nur bei Spiel im Fokus (1.0.1)
 
@@ -208,3 +232,13 @@ neue normale Starts verhindert. Der Produktionsfilter wird dabei nicht veränder
 
 Diese Version bringt keine neue physische Mehr-PC-, Discord- oder Anti-Cheat-Abnahme.
 DYNEX-Installer bleiben unsigniert; SHA-256 ist keine Herausgebersignatur.
+
+## Geräte, Programmregeln, Netzprofile und Verbrauch (lokaler Teststand 1.0.10)
+
+Die fünf Erweiterungen und ihre Bedienwege sind in [desktop-features.md](desktop-features.md) dokumentiert. Die finalen Regressionen bestanden: 280 Core-, 298 Shaper-, 188 Runtime-, 39 Geräte-/Probe-, 10 Geräte-Runtime- und 47 Programmregel-Prüfungen. Die Runtime-Suite enthält 29 Prüfungen für Netzwerkprofile und Messwertzuordnung. Die Verbrauchstests bestanden ebenfalls, einschließlich DST/Tagesgrenzen, Messlücken, laufender Zeitblöcke, großer gespeicherter Werte und beschädigter Daten.
+
+Die Prüfungen verwenden isolierte Profile, dynamische Loopback-Ports und simulierte Paketgeräte. Der echte Kernel-Netzwerkfilter wurde dabei nicht aktiviert. Der Feature-UI-Smoke bedient Hinzufügen/Speichern/Entfernen, Alias/Sperre, Profilnamen und Tages-/Wochenauswahl sowie Datumsauswahl mit Rückkehr zu Heute und rendert alle fünf neuen Fenster in Normal- und Mindestgröße auf einem unsichtbaren Windows-Desktop. Belege liegen lokal unter `artifacts/qa-features-dates-final` sowie in `artifacts/features-{core,shaper}-tests.log`, `artifacts/features-runtime-final.log` und `artifacts/features-devices-final.log`.
+
+Noch offen bleiben eine physische Zwei-PC-Abnahme über die tatsächlich verwendeten Repeater/Router und die Durchsatzprüfung der Programmregeln am echten Filter. Verbrauchswerte sind Schätzungen mit ausgewiesenen Lücken; der lokale Test-Installer wird durch diese Prüfungen weder installiert noch veröffentlicht.
+
+Der vollständige MainWindow-Smoke bestand ebenfalls (Exitcode 0): alle Seiten von 900×650 bis 2560×1440, Live-Pinganzeige, verschlüsselter Loopback-Peer-Verkehr, Ablauf/Trennung und Shutdown. Belege: artifacts/qa-main-features-complete/result.txt und pages-result.txt. Dabei wurde eine echte Überlappung am Diagrammrand in der kompakten Ansicht behoben; die kompakte Ansicht erhält nun ausreichend Zeichenhöhe.

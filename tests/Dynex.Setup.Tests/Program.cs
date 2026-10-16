@@ -11,8 +11,28 @@ if (args is ["--probe-boot"])
 
 if (args is ["--probe-firewall"])
 {
-    try { Console.WriteLine("Read-only firewall state: " + InstallerFirewall.IsConfigured()); }
+    object? temporaryRule = null;
+    try
+    {
+        Console.WriteLine("Read-only firewall state: " + InstallerFirewall.IsConfigured());
+        // Validate COM defaults and setters without adding a rule to Windows.
+        foreach (var direction in new[] { 1, 2 })
+        {
+            temporaryRule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", throwOnError: true)!);
+            InstallerFirewall.ConfigureDiscoveryRule(temporaryRule!, InstallerFirewall.ApplicationPath, direction);
+            if (!InstallerFirewall.Matches(temporaryRule!, InstallerFirewall.ApplicationPath, direction))
+                throw new IOException("Unregistrierte COM-Firewallregel entspricht nicht der erwarteten Heimnetzfreigabe, Richtung " + direction);
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(temporaryRule!);
+            temporaryRule = null;
+        }
+        Console.WriteLine("Unregistered inbound/outbound COM rule configuration: verified; no firewall rule added.");
+    }
     catch (Exception error) { Console.Error.WriteLine(error); Environment.ExitCode = 1; }
+    finally
+    {
+        if (temporaryRule is not null && System.Runtime.InteropServices.Marshal.IsComObject(temporaryRule))
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(temporaryRule);
+    }
     return;
 }
 
@@ -25,6 +45,7 @@ void Check(bool value, string name)
 }
 
 var calls = 0;
+StartupChecks.Run(Check);
 var result = await InstallerPrerequisites.RunAsync(() => true, () => true, () => { calls++; return Task.FromResult(0); }, () => true);
 Check(result.ExitCode == 0 && calls == 0, "existing prerequisites skip download, UAC and machine mutations");
 
@@ -72,6 +93,32 @@ Check(await InstallerPrerequisites.ExecuteAsync(["--setup-prerequisites", "--set
     "arbitrary absolute result destination is rejected before work");
 Check(await InstallerPrerequisites.ExecuteAsync(["--setup-machine", "a", "b"]) == 2, "machine CLI rejects extra arguments before elevation or mutations");
 Check(await InstallerPrerequisites.ExecuteAsync(["--remove-machine-firewall", "unexpected"]) == 2, "removal CLI rejects arguments before mutations");
+Check(await InstallerPrerequisites.ExecuteAsync(["--setup-machine-firewall", "unexpected"]) == 2, "independent firewall CLI rejects arguments before mutations");
+
+var firewallFallbackCalls = 0;
+var fullSetupCalls = 0;
+try
+{
+    await InstallerPrerequisites.InstallMachineAsync(false,
+        () => throw new HttpRequestException("isolated filter download unavailable"),
+        _ => { fullSetupCalls++; return Task.FromResult(0); },
+        () => { firewallFallbackCalls++; return Task.FromResult(0); });
+    throw new Exception("download failure became success");
+}
+catch (IOException error)
+{
+    Check(error.Message.Contains("Firewallfreigabe") && error.Message.Contains("wurde eingerichtet") &&
+        error.Message.Contains("isolated filter download unavailable") && firewallFallbackCalls == 1 && fullSetupCalls == 0,
+        "failed filter download still configures LAN and reports the incomplete filter honestly");
+}
+var cancelledFallback = false;
+try
+{
+    await InstallerPrerequisites.InstallMachineAsync(false, () => throw new HttpRequestException("download unavailable"),
+        _ => Task.FromResult(0), () => Task.FromResult(1602));
+}
+catch (OperationCanceledException) { cancelledFallback = true; }
+Check(cancelledFallback, "cancelled independent firewall setup never claims working LAN");
 
 var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DYNEX One", "DYNEX.exe");
 Check(InstallerFirewall.RuleName(path) == InstallerFirewall.RuleName(path.ToUpperInvariant()), "own firewall identity is stable across path casing");
@@ -79,6 +126,27 @@ Check(InstallerFirewall.RuleName(path) != InstallerFirewall.RuleName(System.IO.P
     "separate installation paths do not share firewall ownership");
 
 var block = new InstallerFirewall.RuleInfo("DYNEX deny", path, true, 1, 2, 0, 17, "39274", "*");
+var configuredRule = new FakeFirewallRule();
+InstallerFirewall.ConfigureDiscoveryRule(configuredRule, path);
+Check(InstallerFirewall.Matches(configuredRule, path) && configuredRule.Name == InstallerFirewall.RuleName(path),
+    "actual setup configuration creates an enabled exact-app inbound private UDP39274 LocalSubnet rule without edge traversal");
+configuredRule.Profiles = 7;
+Check(!InstallerFirewall.Matches(configuredRule, path), "public/domain expansion cannot pass private-LAN verification");
+configuredRule.Profiles = 2; configuredRule.ApplicationName = path + ".other";
+Check(!InstallerFirewall.Matches(configuredRule, path), "another executable cannot pass firewall ownership verification");
+InstallerFirewall.ConfigureDiscoveryRule(configuredRule, path);
+configuredRule.RemotePorts = "443";
+Check(!InstallerFirewall.Matches(configuredRule, path), "modified remote ports cannot confirm a nonfunctional discovery allow rule");
+configuredRule.RemotePorts = "*"; configuredRule.LocalAddresses = "127.0.0.1";
+Check(!InstallerFirewall.Matches(configuredRule, path), "loopback-only local address cannot confirm LAN firewall setup");
+configuredRule.LocalAddresses = "*"; configuredRule.InterfaceTypes = "Wireless";
+Check(!InstallerFirewall.Matches(configuredRule, path), "wireless-only restriction cannot confirm discovery for Ethernet PCs");
+configuredRule.InterfaceTypes = "All"; configuredRule.Interfaces = new[] { "Old adapter" };
+Check(!InstallerFirewall.Matches(configuredRule, path), "restriction to an old adapter cannot confirm firewall setup");
+configuredRule.Interfaces = null; configuredRule.ServiceName = "*";
+Check(!InstallerFirewall.Matches(configuredRule, path), "Windows-service-only restriction cannot confirm the desktop application's rule");
+configuredRule.ServiceName = ""; configuredRule.Interfaces = Array.Empty<string>();
+Check(InstallerFirewall.Matches(configuredRule, path), "unrestricted empty COM interface array remains valid");
 Check(InstallerFirewall.BlocksDiscovery(block, path), "active exact-app private UDP block overrides the allow rule");
 Check(InstallerFirewall.BlocksDiscovery(block with { Protocol = 256, Profiles = int.MaxValue, LocalPorts = "", RemotePorts = "" }, path),
     "Windows app block for any protocol and all profiles is detected");
@@ -90,7 +158,11 @@ Check(!InstallerFirewall.BlocksDiscovery(block with { ApplicationName = "" }, pa
 Check(!InstallerFirewall.BlocksDiscovery(block with { ApplicationName = path + ".other" }, path), "other applications are not treated as DYNEX-owned blocks");
 Check(!InstallerFirewall.BlocksDiscovery(block with { Enabled = false }, path), "disabled block rule does not block setup");
 Check(!InstallerFirewall.BlocksDiscovery(block with { Action = 1 }, path), "allow rule does not block setup");
-Check(!InstallerFirewall.BlocksDiscovery(block with { Direction = 2 }, path), "outbound rule is not misreported as an inbound Windows-access block");
+Check(InstallerFirewall.BlocksDiscovery(block with { Direction = 2 }, path), "explicit outbound discovery block is detected for the exact app");
+Check(!InstallerFirewall.BlocksDiscovery(block with { Direction = 2, LocalPorts = "80" }, path) &&
+    !InstallerFirewall.BlocksDiscovery(block with { Direction = 2, RemotePorts = "443" }, path),
+    "unrelated outgoing source or destination ports do not block UDP39274 discovery");
+Check(!InstallerFirewall.BlocksDiscovery(block with { Direction = 3 }, path), "invalid rule direction cannot become a discovery blocker");
 Check(!InstallerFirewall.BlocksDiscovery(block with { Profiles = 5 }, path), "public and domain blocks are preserved without blocking private discovery setup");
 Check(!InstallerFirewall.BlocksDiscovery(block with { Protocol = 6 }, path), "TCP-only block does not block UDP discovery");
 Check(!InstallerFirewall.BlocksDiscovery(block with { LocalPorts = "80,443" }, path), "unrelated local ports do not block discovery setup");
@@ -99,6 +171,23 @@ var diagnosed = false;
 try { InstallerFirewall.ThrowIfBlocked([block], path); }
 catch (IOException error) { diagnosed = error.Message.Contains(block.Name) && error.Message.Contains("Windows-Firewall") && error.Message.Contains("nicht automatisch geändert"); }
 Check(diagnosed, "blocking rule produces a concrete diagnosis and preserves existing security policy");
+diagnosed = false;
+try { InstallerFirewall.ThrowIfBlocked([block with { Direction = 2 }], path); }
+catch (IOException error) { diagnosed = error.Message.Contains("ausgehend") && error.Message.Contains(block.Name); }
+Check(diagnosed, "outgoing app block diagnosis names the rule and correct direction");
+
+var privatePolicy = InstallerFirewall.ReadPrivatePolicy(new FakePrivatePolicy());
+Check(privatePolicy is { Enabled: true, BlockAllInboundTraffic: false, DefaultOutboundAction: 1 },
+    "private firewall policy reads indexed profile 2 without mixing public or domain settings");
+InstallerFirewall.ThrowIfPolicyBlocks(privatePolicy);
+diagnosed = false;
+try { InstallerFirewall.ThrowIfPolicyBlocks(privatePolicy with { BlockAllInboundTraffic = true }); }
+catch (IOException error) { diagnosed = error.Message.Contains("Alle eingehenden") && error.Message.Contains("ignoriert") && error.Message.Contains("nicht automatisch geändert"); }
+Check(diagnosed, "block-all-inbound policy explains that Windows ignores the DYNEX allow rule");
+InstallerFirewall.ThrowIfPolicyBlocks(privatePolicy with { DefaultOutboundAction = 0 });
+Check(true, "default outbound block permits setup because DYNEX creates its own narrow outgoing exception");
+InstallerFirewall.ThrowIfPolicyBlocks(privatePolicy with { Enabled = false, BlockAllInboundTraffic = true, DefaultOutboundAction = 0 });
+Check(true, "disabled firewall does not falsely apply dormant block-all or outbound-default policy");
 var blockedInstallCalls = 0;
 bool BlockingFirewall() { InstallerFirewall.ThrowIfBlocked([block], path); return true; }
 result = await InstallerPrerequisites.RunAsync(() => true, BlockingFirewall,
@@ -132,9 +221,37 @@ catch (System.Runtime.InteropServices.COMException) { unrelated = true; }
 Check(unrelated, "unrelated COM lookup error cannot masquerade as a missing rule");
 
 await UninstallChecks.RunAsync(Check);
+FirewallRulesChecks.Run(Check);
 Console.WriteLine($"PASS: {checks} setup checks; no download, elevation, driver installation or firewall mutation performed.");
 
 public sealed class MissingRules(Exception error)
 {
     public object Item(string name) => throw error;
+}
+
+public sealed class FakeFirewallRule
+{
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string ApplicationName { get; set; } = "";
+    public string LocalPorts { get; set; } = "";
+    public string RemotePorts { get; set; } = "*";
+    public string LocalAddresses { get; set; } = "*";
+    public string RemoteAddresses { get; set; } = "";
+    public string InterfaceTypes { get; set; } = "All";
+    public object? Interfaces { get; set; }
+    public string ServiceName { get; set; } = "";
+    public int Protocol { get; set; }
+    public int Direction { get; set; }
+    public int Profiles { get; set; }
+    public int Action { get; set; }
+    public bool Enabled { get; set; }
+    public bool EdgeTraversal { get; set; }
+}
+
+public sealed class FakePrivatePolicy
+{
+    public bool[] FirewallEnabled { get; } = [false, false, true];
+    public bool[] BlockAllInboundTraffic { get; } = [true, true, false];
+    public int[] DefaultOutboundAction { get; } = [0, 0, 1];
 }

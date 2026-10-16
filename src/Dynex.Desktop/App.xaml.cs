@@ -13,6 +13,7 @@ public partial class App : System.Windows.Application
     private MainWindow? _updateWindow;
     protected override async void OnStartup(StartupEventArgs e)
     {
+        var startupStep = "Windows-Startschutz und laufende DYNEX-Instanz prüfen";
         base.OnStartup(e);
         AppDomain.CurrentDomain.UnhandledException += (_, args) => { if (args.ExceptionObject is Exception error) CrashLog.Write(error, "AppDomain"); };
         DispatcherUnhandledException += (_, args) => CrashLog.Write(args.Exception, "UI");
@@ -26,7 +27,7 @@ public partial class App : System.Windows.Application
                 Shutdown(UpdateSelfTest.Run(e.Args.Skip(1).FirstOrDefault()));
                 return;
             }
-            if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--remove-setup-firewall" or "--remove-machine-firewall"
+            if (e.Args.Length > 0 && e.Args[0] is "--setup-prerequisites" or "--setup-machine" or "--setup-machine-firewall" or "--remove-setup-firewall" or "--remove-machine-firewall"
                 or "--uninstall-system" or "--uninstall-machine" or "--cleanup-removed-installation" or "--cleanup-machine" or "--remove-user-data")
             {
                 // This process is launched by NSIS before the first normal app
@@ -41,6 +42,7 @@ public partial class App : System.Windows.Application
                 return;
             }
             if (DesktopLifecycle.ProfilePath is null) Dynex.Native.ProcessEfficiency.UseBackgroundMode();
+            startupStep = "Lokale Einstellungen und Geräteidentität laden";
             _runtime = new DynexRuntime(DesktopLifecycle.ProfilePath);
             string? startupWarning = DesktopLifecycle.ProfilePath is null && CrashLog.TakeUnseen() is not null
                 ? "DYNEX wurde zuletzt unerwartet beendet. Ein lokaler Bericht liegt bei; „Diagnose exportieren“ enthält ihn." : null;
@@ -58,9 +60,11 @@ public partial class App : System.Windows.Application
                 if (_updates.RolledBackVersion is { } failed)
                     startupWarning = $"Das Update auf Version {failed} ist fehlgeschlagen. DYNEX hat die vorherige Version {DynexRuntime.AppVersion} wiederhergestellt; Einstellungen bleiben erhalten.";
             }
+            startupStep = "Netzwerkdienste starten";
             await _runtime.StartAsync();
             Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
             // The first-run guide is for real installations; isolated test profiles keep their fixed layout.
+            startupStep = "Oberfläche öffnen";
             var window = new MainWindow(_runtime, _updates, showSetupGuide: DesktopLifecycle.ProfilePath is null);
             if (startupWarning is not null) window.ErrorText.Text = startupWarning;
             MainWindow = window;
@@ -103,13 +107,17 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
+            var unattended = e.Args.Any(arg => arg is "--smoke-test" or "--test-instance" or "--verify-live");
+            if (unattended) DesktopLifecycle.ReportStartupFailure(e.Args, ex, startupStep);
+            else CrashLog.Write(ex, "Start: " + startupStep);
             if (_runtime is not null)
             {
                 try { await _runtime.StopAsync(); await _runtime.DisposeAsync(); }
                 catch { /* startup error is the visible failure */ }
             }
-            System.Windows.MessageBox.Show($"DYNEX konnte nicht gestartet werden.\n\n{ex.Message}", "DYNEX", MessageBoxButton.OK, MessageBoxImage.Error);
-            Shutdown(DesktopLifecycle.ExitCode);
+            if (!unattended)
+                System.Windows.MessageBox.Show($"DYNEX konnte nicht gestartet werden.\n\nSchritt: {startupStep}\n{ex.Message}\n\nLokale Fehlerberichte: {CrashLog.DirectoryPath}", "DYNEX", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(DesktopLifecycle.ExitCode == 0 ? 1 : DesktopLifecycle.ExitCode);
         }
     }
 

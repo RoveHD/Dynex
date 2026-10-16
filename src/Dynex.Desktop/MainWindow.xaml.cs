@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -19,6 +20,8 @@ public partial class MainWindow : Window
 {
     private readonly DynexRuntime _runtime;
     private readonly GitHubUpdateService? _updates;
+    private readonly UiFeedback _feedback;
+    private string _selectedSettingsSection = "general";
     private readonly Forms.NotifyIcon _tray;
     private readonly Icon _trayIcon;
     private readonly Stream? _trayIconStream;
@@ -26,10 +29,17 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _revealed;
     private bool _loading = true;
+    private string? _settingsNetworkProfileId;
     private bool _settingUp;
     private bool _refreshingProcesses;
+    private bool _processesLoaded;
+    private string? _processLoadError;
+    private IReadOnlyList<string> _runningProcessNames = Array.Empty<string>();
+    private readonly ObservableCollection<string> _configuredProcesses = [];
     private bool _savingAutoUpdate;
     private bool _checkingNetwork;
+    private bool _savingConnectionMode;
+    private bool _refreshingStatus;
     private int _pendingUiActions;
     private bool _updateRestartInProgress;
     public event Action? UpdateRestartSafetyChanged;
@@ -50,8 +60,16 @@ public partial class MainWindow : Window
         _guideAllowed = showSetupGuide && runtime.Settings.CapacityMeasuredAtUtc is null;
         InitializeComponent();
         DeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
+        OverviewDeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
         _runtime = runtime;
         _updates = updates;
+        _feedback = new UiFeedback(this, silent: DesktopLifecycle.ProfilePath is not null);
+        ConfiguredProcessesList.ItemsSource = _configuredProcesses;
+        _configuredProcesses.CollectionChanged += (_, _) =>
+        {
+            NoConfiguredProcessesText.Visibility = _configuredProcesses.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            NotifyUpdateRestartSafety();
+        };
         Icon trayIcon;
         Stream? iconStream = null;
         var ownsTrayIcon = false;
@@ -92,6 +110,7 @@ public partial class MainWindow : Window
         SettingsPage.AddHandler(System.Windows.Controls.Primitives.Selector.SelectionChangedEvent, new SelectionChangedEventHandler((_, _) => NotifyUpdateRestartSafety()));
         CheckUpdatesButton.IsEnabled = _updates is not null;
         RenderUpdateStatus();
+        SidebarVersionText.Text = $"VERSION {DynexRuntime.AppVersion}";
         if (_runtime.Snapshot is { } current) RenderSnapshot(current);
         ShowOverview();
         ApplyResponsiveScale();
@@ -129,10 +148,10 @@ public partial class MainWindow : Window
             QualityLogText.Text = _runtime.QualityEventCount == 0
                 ? "Bisher keine Ausfälle oder Pingspitzen aufgezeichnet."
                 : $"{_runtime.QualityEventCount} Störungen aufgezeichnet (Ausfälle bei funktionierendem Router und deutliche Pingspitzen).";
-            var guide = _runtime.RouterGuideFor();
-            RouterGuideTitle.Text = guide.Router;
-            RouterGuideSteps.Text = string.Join("\n", guide.Steps.Select((step, i) => $"{i + 1}. {step}"));
         }
+        var guide = _runtime.RouterGuideFor();
+        RouterGuideTitle.Text = guide.Router;
+        RouterGuideSteps.Text = string.Join("\n", guide.Steps.Select((step, i) => $"{i + 1}. {step}"));
         if (s is null) return;
         var lines = new List<string>();
         if (s.TopPrograms is { Count: > 0 } top)
@@ -171,6 +190,9 @@ public partial class MainWindow : Window
     // Charts, device lists and texts are rendered once when the window becomes visible again.
     private void Runtime_Updated(RuntimeSnapshot snapshot) => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
     {
+        NetworkProfileText.Text = _runtime.NetworkProfileStatus;
+        if (_settingsNetworkProfileId != _runtime.Settings.ActiveNetworkProfileId)
+            ErrorText.Text = "Netzwerk gewechselt: " + _runtime.ActiveNetworkName + ". Gespeicherte Netzwerkeinstellungen sind aktiv; vor dem Speichern die Einstellungen neu laden.";
         if (IsVisible && WindowState != WindowState.Minimized) { _pendingSnapshot = null; RenderSnapshot(snapshot); }
         else { _pendingSnapshot = snapshot; UpdateTray(snapshot); }
         if (_updates?.Status.UpdateReady == true) NotifyUpdateRestartSafety();
@@ -184,9 +206,14 @@ public partial class MainWindow : Window
     private void LoadSettings(UserSettings s)
     {
         _loading = true;
+        _settingsNetworkProfileId = s.ActiveNetworkProfileId;
+        NetworkProfileText.Text = _runtime.NetworkProfileStatus;
         RenderCapacity();
         AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
         NotificationsCheck.IsChecked = s.Notifications;
+        UiSoundsCheck.IsChecked = s.UiSounds;
+        UiAnimationsCheck.IsChecked = s.UiAnimations;
+        ApplyFeedbackPreferences();
         PingAlarmCheck.IsChecked = s.PingAlarm;
         EarlyGamesBox.Text = s.EarlyLimitGames;
         NightFreeCheck.IsChecked = s.NightFree;
@@ -195,7 +222,9 @@ public partial class MainWindow : Window
         WeekendProfileCombo.SelectedIndex = s.WeekendProfile switch { "Turnier" => 1, "Standard" => 2, "Entspannt" => 3, _ => 0 };
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         BetaUpdatesCheck.IsChecked = s.BetaUpdates;
-        DriverCheck.IsChecked = s.DriverEnabled; ProcessesBox.Text = s.GameProcesses; PeersBox.Text = s.DirectPeers;
+        DriverCheck.IsChecked = s.DriverEnabled; PeersBox.Text = s.DirectPeers;
+        _configuredProcesses.Clear();
+        foreach (var process in SettingsStore.Split(s.GameProcesses)) _configuredProcesses.Add(process);
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         UploadLimitCheck.IsChecked = s.UploadLimitEnabled;
@@ -214,17 +243,20 @@ public partial class MainWindow : Window
             var current = _runtime.Settings;
             var next = current with
             {
+                ActiveNetworkProfileId = _settingsNetworkProfileId,
                 AutoConnectLan = AutoConnectCheck.IsChecked == true,
                 AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
                 Notifications = NotificationsCheck.IsChecked == true,
+                UiSounds = UiSoundsCheck.IsChecked == true,
+                UiAnimations = UiAnimationsCheck.IsChecked == true,
                 UploadLimitEnabled = UploadLimitCheck.IsChecked == true,
                 PingAlarm = PingAlarmCheck.IsChecked == true,
                 EarlyLimitGames = EarlyGamesBox.Text.Trim(),
                 NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
                 WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                 ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
-                GameProcesses = ProcessesBox.Text.Trim(), DirectPeers = PeersBox.Text.Trim(),
+                GameProcesses = ConfiguredProcessesText, DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
             await _runtime.SaveSettingsAsync(next);
@@ -232,6 +264,15 @@ public partial class MainWindow : Window
             ErrorText.Text = "Einstellungen gespeichert.";
         });
     }
+
+    private void DeviceManager_Click(object sender, RoutedEventArgs e) => new DeviceManagerWindow(_runtime) { Owner = this }.ShowDialog();
+    private void ReloadSettings_Click(object sender, RoutedEventArgs e) { LoadSettings(_runtime.Settings); ErrorText.Text = "Gespeicherte Einstellungen geladen."; }
+    private void PeerConnectionTest_Click(object sender, RoutedEventArgs e) => new ConnectionTestWindow(_runtime) { Owner = this }.ShowDialog();
+    private void UsageHistory_Click(object sender, RoutedEventArgs e) => _runtime.ShowUsageHistory(this);
+    private void NetworkProfiles_Click(object sender, RoutedEventArgs e) => new NetworkProfilesWindow(_runtime) { Owner = this }.ShowDialog();
+    private void ApplicationRules_Click(object sender, RoutedEventArgs e) => new ApplicationRulesWindow(
+        () => _runtime.Settings.ApplicationRules,
+        rules => _runtime.SaveSettingsAsync(_runtime.Settings with { ApplicationRules = rules })) { Owner = this }.ShowDialog();
 
     private async void BetaUpdatesCheck_Changed(object sender, RoutedEventArgs e)
     {
@@ -248,6 +289,31 @@ public partial class MainWindow : Window
         BetaUpdatesCheck.IsChecked = _runtime.Settings.BetaUpdates;
         _loading = false;
         NotifyUpdateRestartSafety();
+    }
+    private async void AutoConnectCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _savingConnectionMode) return;
+        var enabled = AutoConnectCheck.IsChecked == true;
+        _savingConnectionMode = true;
+        ConnectionModeControls.IsEnabled = false;
+        try
+        {
+            await RunUiAction(async () =>
+            {
+                EnsureNetworkEditContext();
+                await _runtime.SaveNetworkSettingsAsync(autoConnectLan: enabled);
+                ErrorText.Text = enabled
+                    ? "Automatische Erkennung gespeichert. DYNEX sucht und verbindet PCs im privaten Heimnetz."
+                    : "Manuelle Gruppe gespeichert. Verbunden werden PCs mit demselben Gruppencode.";
+            });
+        }
+        finally
+        {
+            AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
+            ConnectionModeControls.IsEnabled = true;
+            _savingConnectionMode = false;
+            NotifyUpdateRestartSafety();
+        }
     }
     private async void ExportSettings_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
@@ -311,6 +377,7 @@ public partial class MainWindow : Window
     private void RenderUpdateStatus()
     {
         if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(RenderUpdateStatus)); return; }
+        InstalledVersionText.Text = $"Installierte Version: {DynexRuntime.AppVersion}";
         if (_updates is null)
         {
             UpdateStatusText.Text = _runtime.Settings.AutoUpdate
@@ -332,7 +399,7 @@ public partial class MainWindow : Window
     }
 
     public bool IsUpdateRestartSafe => !_allowClose && !_loading && !_savingAutoUpdate && !_settingUp &&
-        !_checkingNetwork && !_updateRestartInProgress && _pendingUiActions == 0 &&
+        !_checkingNetwork && !_refreshingStatus && !_updateRestartInProgress && _pendingUiActions == 0 &&
         !_runtime.IsSpeedTestRunning && _runtime.Settings.AutoUpdate && AutoUpdateCheck.IsChecked == true && !HasUnsavedSettings;
 
     private bool HasUnsavedSettings
@@ -343,10 +410,11 @@ public partial class MainWindow : Window
             return AutoConnectCheck.IsChecked != saved.AutoConnectLan || AutoStartCheck.IsChecked != saved.AutoStart ||
                 DriverCheck.IsChecked != saved.DriverEnabled || NotificationsCheck.IsChecked != saved.Notifications ||
                 PingAlarmCheck.IsChecked != saved.PingAlarm || UploadLimitCheck.IsChecked != saved.UploadLimitEnabled ||
+                UiSoundsCheck.IsChecked != saved.UiSounds || UiAnimationsCheck.IsChecked != saved.UiAnimations ||
                 NightFreeCheck.IsChecked != saved.NightFree || AutoUpdateCheck.IsChecked != saved.AutoUpdate ||
                 BetaUpdatesCheck.IsChecked != saved.BetaUpdates ||
                 EarlyGamesBox.Text.Trim() != saved.EarlyLimitGames || NightFromBox.Text.Trim() != saved.NightFrom ||
-                NightToBox.Text.Trim() != saved.NightTo || ProcessesBox.Text.Trim() != saved.GameProcesses ||
+                NightToBox.Text.Trim() != saved.NightTo || !_configuredProcesses.SequenceEqual(SettingsStore.Split(saved.GameProcesses)) ||
                 PeersBox.Text.Trim() != saved.DirectPeers || RouterBox.Text.Trim() != saved.RouterTarget ||
                 ExternalBox.Text.Trim() != saved.ExternalTarget ||
                 ((WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != saved.WeekendProfile ||
@@ -372,6 +440,30 @@ public partial class MainWindow : Window
 
     private async void RunningProcesses_DropDownOpened(object sender, EventArgs e) => await RefreshRunningProcessesAsync();
     private async void RefreshProcesses_Click(object sender, RoutedEventArgs e) => await RefreshRunningProcessesAsync();
+    private async void ProcessSearch_GotKeyboardFocus(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
+    {
+        if (!_processesLoaded) await RefreshRunningProcessesAsync();
+    }
+    private void ProcessSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_loading && RunningProcessesBox is not null) ApplyRunningProcessFilter();
+    }
+    private void ApplyRunningProcessFilter(string? selected = null)
+    {
+        selected ??= RunningProcessesBox.SelectedItem as string;
+        var query = ProcessSearchBox.Text.Trim();
+        var matches = _runningProcessNames.Where(name => name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
+        RunningProcessesBox.ItemsSource = matches;
+        RunningProcessesBox.SelectedItem = matches.FirstOrDefault(name => string.Equals(name, selected, StringComparison.OrdinalIgnoreCase));
+        AddProcessButton.IsEnabled = !_refreshingProcesses && RunningProcessesBox.SelectedItem is string;
+        ProcessPickerHint.Text = _processLoadError is { } error ? "Programmliste konnte nicht geladen werden: " + error
+            : _refreshingProcesses ? "Laufende Programme werden geladen …"
+            : !_processesLoaded ? "Suche oder Auswahl öffnen, um laufende Programme zu laden."
+            : _runningProcessNames.Count == 0 ? "Keine auswählbaren Programme gefunden. Spiel starten und Liste aktualisieren."
+            : matches.Length == 0 ? "Kein laufendes Programm passt zur Suche. Suchbegriff ändern oder Liste aktualisieren."
+            : query.Length > 0 ? $"{matches.Length} von {_runningProcessNames.Count} Programmen · auswählen und hinzufügen."
+            : $"{matches.Length} laufende Programme · auswählen und hinzufügen. Bekannte Launcher und Hilfsprozesse sind ausgeblendet.";
+    }
     internal async Task RefreshRunningProcessesAsync()
     {
         if (_refreshingProcesses) return;
@@ -384,22 +476,21 @@ public partial class MainWindow : Window
         {
             var names = await Task.Run(GameDetector.GetRunningProcessNames);
             if (_allowClose) return;
-            RunningProcessesBox.ItemsSource = names;
-            RunningProcessesBox.SelectedItem = names.FirstOrDefault(name => string.Equals(name, selected, StringComparison.OrdinalIgnoreCase));
-            ProcessPickerHint.Text = names.Count == 0
-                ? "Keine auswählbaren Programme gefunden. Spiel starten und Liste aktualisieren oder den Namen unten eingeben."
-                : $"{names.Count} laufende Programme · auswählen und hinzufügen. Bekannte Launcher und Hilfsprozesse sind ausgeblendet.";
+            _runningProcessNames = names;
+            _processesLoaded = true;
+            _processLoadError = null;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            RunningProcessesBox.ItemsSource = Array.Empty<string>();
-            ProcessPickerHint.Text = "Programmliste konnte nicht geladen werden: " + ex.Message;
+            _runningProcessNames = Array.Empty<string>();
+            _processesLoaded = false;
+            _processLoadError = ex.Message;
         }
         finally
         {
             _refreshingProcesses = false;
             RefreshProcessesButton.IsEnabled = true;
-            AddProcessButton.IsEnabled = RunningProcessesBox.SelectedItem is string;
+            if (!_allowClose) ApplyRunningProcessFilter(selected);
         }
     }
     private void RunningProcesses_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -412,14 +503,22 @@ public partial class MainWindow : Window
         if (_refreshingProcesses || RunningProcessesBox.SelectedItem is not string selected) return;
         try
         {
-            var updated = GameDetector.AppendConfiguredProcess(ProcessesBox.Text, selected);
-            var added = updated != ProcessesBox.Text;
-            ProcessesBox.Text = updated;
+            var existing = ConfiguredProcessesText;
+            var updated = GameDetector.AppendConfiguredProcess(existing, selected);
+            var added = updated != existing;
+            if (added) _configuredProcesses.Add(SettingsStore.Split(updated)[^1]);
             ProcessPickerHint.Text = added
                 ? $"{selected} hinzugefügt. Mit „Einstellungen speichern“ übernehmen."
                 : $"{selected} ist bereits eingetragen.";
         }
         catch (ArgumentException ex) { ProcessPickerHint.Text = ex.Message; }
+    }
+
+    private string ConfiguredProcessesText => string.Join("; ", _configuredProcesses);
+    private void RemoveProcess_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { Tag: string name } && _configuredProcesses.Remove(name))
+            ProcessPickerHint.Text = $"{name} entfernt. Mit „Einstellungen speichern“ übernehmen.";
     }
 
     private async void SpeedTest_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
@@ -440,6 +539,9 @@ public partial class MainWindow : Window
         var waiting = _runtime.IsSpeedTestWaiting;
         CapacityBox.Text = settings.CapacityMeasuredAtUtc.HasValue
             ? settings.CapacityMbps.ToString("0.##", CultureInfo.CurrentCulture) : "—";
+        // Display the measured capacity as a placeholder without saving it as a manual limit.
+        ManualUploadBox.Tag = settings.CapacityMeasuredAtUtc.HasValue && settings.UploadCapacityMbps is { } measuredUpload
+            ? measuredUpload.ToString("0.##", CultureInfo.CurrentCulture) : "—";
         CapacityBox.Opacity = settings.CapacityMeasuredAtUtc.HasValue ? 1 : 0.6;
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
@@ -453,25 +555,30 @@ public partial class MainWindow : Window
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}" +
               (settings.UploadCapacityMbps is { } upload ? $" · Upload {upload:0.#} Mbit/s. " : ". ")
             : "Noch nicht gemessen. ";
-        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
+        var detail = running || waiting ? _runtime.SpeedTestMessage : measured +
             (string.IsNullOrEmpty(_runtime.SpeedTestMessage)
                 ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits benötigen eine erfolgreiche Messung."
                 : _runtime.SpeedTestMessage);
+        SpeedTestHint.Text = running || waiting ? _runtime.SpeedTestMessage : measured +
+            (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Einmal automatisch, danach manuell." : _runtime.SpeedTestMessage);
         if (!running && !waiting && Dynex.Core.Bufferbloat.Rate(settings.IdleLatencyMs, settings.LoadedLatencyMs) is { } bloat)
         {
-            SpeedTestHint.Text += "\n" + bloat.Summary + (bloat.Recommendation is { } tip ? "\n" + tip : "");
-            SpeedTestHint.ToolTip = SpeedTestHint.Text;
+            SpeedTestHint.Text += "\n" + bloat.Summary;
+            detail += "\n" + bloat.Summary + (bloat.Recommendation is { } tip ? "\n" + tip : "");
         }
+        SpeedTestHint.ToolTip = detail;
     }
 
     private async void ManualLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        EnsureNetworkEditContext();
         var value = Number(ManualLimitBox.Text, "Downloadlimit");
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = value });
-        ErrorText.Text = "Obergrenze gespeichert. Gilt nur bei einem Spiel im Fokus.";
+        ErrorText.Text = "Obergrenze gespeichert. Gilt bei bestätigtem Spiel-Netzwerkverkehr.";
     });
     private async void ClearLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        EnsureNetworkEditContext();
         ManualLimitBox.Clear();
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = null });
         ErrorText.Text = "Manuelles Limit aufgehoben.";
@@ -481,6 +588,7 @@ public partial class MainWindow : Window
         if (_loading || ProfileCombo.SelectedItem is not ComboBoxItem { Tag: string profile } item) return;
         await RunUiAction(async () =>
         {
+            EnsureNetworkEditContext();
             await _runtime.ApplyProfileAsync(profile);
             ErrorText.Text = $"Profil {item.Content} aktiv.";
         });
@@ -509,6 +617,7 @@ public partial class MainWindow : Window
             !double.TryParse(item.Tag?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var priority)) return;
         await RunUiAction(async () =>
         {
+            EnsureNetworkEditContext();
             await _runtime.SaveSettingsAsync(_runtime.Settings with { SharePriority = priority });
             ErrorText.Text = $"Priorität gespeichert: {item.Content}.";
         });
@@ -518,7 +627,41 @@ public partial class MainWindow : Window
         if (_loading || ModeCombo.SelectedItem is not ComboBoxItem item || Enum.TryParse<GamingMode>(item.Tag?.ToString(), out var mode) is false) return;
         await RunUiAction(async () => await _runtime.SaveSettingsAsync(_runtime.Settings with { Mode = mode }));
     }
-    private async void Refresh_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () => await _runtime.SaveSettingsAsync(_runtime.Settings));
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        if (_refreshingStatus || _updateRestartInProgress || _allowClose) return;
+        _refreshingStatus = true;
+        RefreshStatusButton.IsEnabled = false;
+        RefreshStatusButton.Content = "Wird aktualisiert …";
+        StatusRefreshText.Text = "Aktuelle Messwerte werden abgefragt …";
+        StatusRefreshText.Visibility = Visibility.Visible;
+        try
+        {
+            await RunUiAction(async () =>
+            {
+                try
+                {
+                    var snapshot = await _runtime.RefreshStatusAsync();
+                    RenderSnapshot(snapshot);
+                    StatusRefreshText.Text = $"Status aktualisiert um {DateTime.Now:HH:mm:ss} Uhr.";
+                }
+                catch (Exception ex)
+                {
+                    StatusRefreshText.Text = ex is OperationCanceledException
+                        ? "Aktualisierung unterbrochen. Bitte erneut aktualisieren."
+                        : $"Status konnte nicht aktualisiert werden: {ex.Message}";
+                    throw;
+                }
+            });
+        }
+        finally
+        {
+            _refreshingStatus = false;
+            RefreshStatusButton.IsEnabled = true;
+            RefreshStatusButton.Content = "Status aktualisieren";
+            NotifyUpdateRestartSafety();
+        }
+    }
     private async void Setup_Click(object sender, RoutedEventArgs e)
     {
         if (_settingUp) return;
@@ -552,6 +695,7 @@ public partial class MainWindow : Window
     }
     private async void RevealCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        EnsureNetworkEditContext();
         if (!_revealed)
         {
             PairingBox.Text = await _runtime.ActivatePairingCodeAsync();
@@ -563,6 +707,7 @@ public partial class MainWindow : Window
     });
     private async void CopyCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        EnsureNetworkEditContext();
         var code = await _runtime.ActivatePairingCodeAsync();
         AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
         Forms.Clipboard.SetText(code); ErrorText.Text = "Manuelle Gruppe aktiviert und Code kopiert. Auf dem anderen PC importieren.";
@@ -576,6 +721,7 @@ public partial class MainWindow : Window
     });
     private async void ImportCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
+        EnsureNetworkEditContext();
         if (string.IsNullOrWhiteSpace(PairingBox.Text)) throw new InvalidOperationException("Bitte zuerst einen Gruppencode einfügen.");
         await _runtime.ImportPairingCodeAsync(PairingBox.Text.Trim());
         PairingBox.Clear(); _revealed = false;
@@ -599,21 +745,51 @@ public partial class MainWindow : Window
         finally { _pendingUiActions--; NotifyUpdateRestartSafety(); }
     }
 
+    private void EnsureNetworkEditContext()
+    {
+        if (_settingsNetworkProfileId != _runtime.Settings.ActiveNetworkProfileId)
+            throw new InvalidOperationException("Das Netzwerk hat gewechselt. Mit ‚Neu laden‘ die passenden Einstellungen laden, bevor du sie änderst.");
+    }
+
     private async void NetworkHelp_Click(object sender, RoutedEventArgs e)
     {
         ShowSettings("network");
-        if (_checkingNetwork) return;
+        if (_checkingNetwork || _savingConnectionMode || _updateRestartInProgress || _allowClose) return;
         _checkingNetwork = true;
+        CheckConnectionButton.IsEnabled = NetworkHelpButton.IsEnabled = false;
+        CheckConnectionButton.Content = "Prüfung läuft …";
+        NetworkCheckStatusText.Text = "Heimnetz, Firewallfreigabe und PC-Verbindung werden geprüft …";
+        NetworkCheckStatusText.Visibility = Visibility.Visible;
         try
         {
             await RunUiAction(async () =>
             {
-                var result = await _runtime.CheckNetworkAsync();
-                ErrorText.Text = result.FirewallMessage;
-                ErrorText.ToolTip = result.FirewallMessage;
+                try
+                {
+                    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                EnsureNetworkEditContext();
+                await _runtime.SaveNetworkSettingsAsync(directPeers: PeersBox.Text.Trim());
+                    var result = await _runtime.CheckNetworkAsync(deadline.Token, requestDiscovery: true);
+                    var snapshot = await _runtime.RefreshStatusAsync(deadline.Token);
+                    RenderSnapshot(snapshot);
+                    NetworkCheckStatusText.Text = $"Geprüft um {DateTime.Now:HH:mm:ss} Uhr. {result.Summary}";
+                }
+                catch (Exception ex)
+                {
+                    NetworkCheckStatusText.Text = ex is OperationCanceledException
+                        ? "Verbindungsprüfung unterbrochen oder Zeitlimit erreicht. Bitte erneut prüfen."
+                        : $"Verbindungsprüfung fehlgeschlagen: {ex.Message}";
+                    throw;
+                }
             });
         }
-        finally { _checkingNetwork = false; NotifyUpdateRestartSafety(); }
+        finally
+        {
+            _checkingNetwork = false;
+            CheckConnectionButton.IsEnabled = NetworkHelpButton.IsEnabled = true;
+            CheckConnectionButton.Content = "Verbindung prüfen";
+            NotifyUpdateRestartSafety();
+        }
     }
     private async void WindowsNetwork_Click(object sender, RoutedEventArgs e) => await RunUiAction(() =>
     {
@@ -626,8 +802,10 @@ public partial class MainWindow : Window
         UpdateTray(s);
         RenderCapacity();
         HeaderState.Text = s.State.ToUpperInvariant(); DetailText.Text = s.Detail;
-        GameText.Text = _runtime.Settings.Mode == GamingMode.Off ? "Fokus-Erkennung ausgeschaltet"
-            : s.IsGaming ? $"Spiel im Fokus · {s.Game}"
+        GameText.Text = s.WaitingForGameTraffic && s.ObservingGameTraffic ? $"Kein Spielverkehr · {s.Game}"
+            : s.WaitingForGameTraffic ? $"Spielverkehr wird geprüft · {s.Game}"
+            : s.IsGaming ? $"Spiel nutzt Netzwerk · {s.Game}"
+            : _runtime.Settings.Mode == GamingMode.Off ? "Fokus-Erkennung ausgeschaltet"
             : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
@@ -648,21 +826,39 @@ public partial class MainWindow : Window
         LimitReasonText.Text = string.IsNullOrEmpty(s.LimitReason) ? "Für große Downloads" : s.LimitReason;
         LimitReasonText.ToolTip = $"Aktuell: {(s.DownloadMbps is { } now ? $"{now:0.0} Mbit/s" : "—")} · Aktives Limit: {(s.LimitMbps is { } active ? $"{active:0.0} Mbit/s" : "keins")}\nGrund: {LimitReasonText.Text}";
         var installed = PacketFilterSetup.IsInstalled;
-        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
-        DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
+        var observingWithoutGameTraffic = s.ObservingGameTraffic && !s.IsGaming && !s.QosActive && !s.DriverActive;
+        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : observingWithoutGameTraffic ? "BEOBACHTET" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
+        DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet. Keine Begrenzung ohne Spielverkehr." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
         DriverDetail.ToolTip = s.DriverState;
         ProtectionStatusText.Text = (s.DriverActive, s.QosActive) switch
         {
             (true, true) => "NETZWERKSCHUTZ · PRIORISIERUNG UND DOWNLOADLIMIT AKTIV",
             (true, false) => "NETZWERKSCHUTZ · DOWNLOADLIMIT AKTIV",
             (false, true) => "NETZWERKSCHUTZ · PRIORISIERUNG AKTIV",
+            _ when observingWithoutGameTraffic => "NETZWERKSCHUTZ · SPIELVERKEHR WIRD BEOBACHTET",
             _ when s.ProtectionIdle => "NETZWERKSCHUTZ · INAKTIV",
             _ => "NETZWERKSCHUTZ · NOCH NICHT AKTIV"
         };
+        if (s.ApplicationRulesActive)
+        {
+            DriverText.Text = "PROGRAMMREGELN AKTIV";
+            DriverDetail.Text = "Eigene Download- und Uploadlimits für Programme sind bestätigt.";
+            ProtectionStatusText.Text = "NETZWERKSCHUTZ · PROGRAMMREGELN AKTIV";
+        }
         if (s.QosActive)
         {
             QosStatusText.Text = "Priorisierung aktiv";
             QosDetailText.Text = $"Spiele: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete";
+        }
+        else if (s.ApplicationRulesActive)
+        {
+            QosStatusText.Text = "Programmregeln aktiv";
+            QosDetailText.Text = "Die eingestellten Programme teilen sich je Regel ein eigenes Bandbreitenlimit.";
+        }
+        else if (observingWithoutGameTraffic)
+        {
+            QosStatusText.Text = "BEOBACHTET";
+            QosDetailText.Text = "Spielverkehr wird beobachtet. Keine Begrenzung ohne Spielverkehr.";
         }
         else if (s.ProtectionIdle)
         {
@@ -684,14 +880,21 @@ public partial class MainWindow : Window
         SetupButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
         SetupButton.IsEnabled = s.DriverAvailable && !_settingUp;
         if (!_settingUp) SetupHint.Text = !s.DriverAvailable ? "Das Download-Modul fehlt. DYNEX bitte vollständig installieren." : installed
-            ? "Nur aktiv, wenn auf einem deiner DYNEX-PCs ein Spiel im Fokus ist. Ohne Gaming bleibt der Netzwerkfilter inaktiv."
+            ? "Schutz greift bei bestätigtem Spiel-Netzwerkverkehr. Prozesse werden ab Fokus oder Spielstart beobachtet; ohne Spielverkehr gibt es kein Limit."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
         ScheduleStatusText.Text = s.ScheduleReason ?? "Gerade gilt kein Zeitplan.";
         RenderAnalysis(s);
         _deviceSnapshot = s.Devices;
         RenderDevicePage();
+        OverviewDeviceGrid.ItemsSource = _deviceSnapshot;
+        OverviewDeviceCount.Text = $"{s.Devices.Count} {(s.Devices.Count == 1 ? "GERÄT" : "GERÄTE")}";
+        OverviewDevicesEmpty.Visibility = s.Devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
+        var otherPcs = Math.Max(0, s.Devices.Count - 1);
+        DashboardPeersText.Text = otherPcs == 0
+            ? "Hier siehst du deinen PC. Weitere verbundene PCs erscheinen direkt in dieser Übersicht."
+            : $"{otherPcs} weitere {(otherPcs == 1 ? "PC ist" : "PCs sind")} hier live sichtbar. Details und weitere Geräte gibt es in der PC-Ansicht.";
         NetworkStatus.ToolTip = s.NetworkStatus;
         NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 || s.Connection is { IsProblem: true } ? Visibility.Visible : Visibility.Collapsed;
         NetworkHelpText.Text = (s.NetworkProblem is { } problem && s.Connection is { IsProblem: true } step ? $"{problem} Nächster Schritt: {step.NextStep}" : s.NetworkProblem)
@@ -703,7 +906,7 @@ public partial class MainWindow : Window
             : NetworkHelpText.Text;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
             ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
-            : "Sobald ein Spiel im Fokus ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
+            : "Sobald Spiel-Netzwerkverkehr bestätigt ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
         CoordinationText.Text = s.SharedDownloadBudgetMbps.HasValue
             ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} PCs bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
                 (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen PCs prüfen." :
@@ -725,7 +928,7 @@ public partial class MainWindow : Window
 
     private void RenderDevicePage()
     {
-        const int pageSize = 3;
+        const int pageSize = 8;
         var pageCount = Math.Max(1, (int)Math.Ceiling(_deviceSnapshot.Count / (double)pageSize));
         _devicePage = Math.Clamp(_devicePage, 0, pageCount - 1);
         DeviceGrid.ItemsSource = _deviceSnapshot.Skip(_devicePage * pageSize).Take(pageSize).ToArray();
@@ -750,44 +953,78 @@ public partial class MainWindow : Window
 
     internal void ShowOverview()
     {
+        var changed = OverviewPage.Visibility != Visibility.Visible;
         OverviewPage.Visibility = Visibility.Visible;
         SettingsPage.Visibility = Visibility.Collapsed;
-        OverviewNavButton.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
-        OverviewNavButton.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
-        SettingsNavButton.ClearValue(Control.BackgroundProperty);
-        SettingsNavButton.ClearValue(Control.BorderBrushProperty);
+        DevicesPage.Visibility = Visibility.Collapsed;
+        UpdateNavigation("overview");
+        PageTitle.Text = "Übersicht";
+        if (changed && IsLoaded) _feedback.Transition(OverviewPage);
+    }
+
+    internal void ShowDevices()
+    {
+        var changed = DevicesPage.Visibility != Visibility.Visible;
+        OverviewPage.Visibility = SettingsPage.Visibility = Visibility.Collapsed;
+        DevicesPage.Visibility = Visibility.Visible;
+        UpdateNavigation("devices");
+        PageTitle.Text = "Verbundene PCs";
+        RenderDevicePage();
+        if (changed && IsLoaded) _feedback.Transition(DevicesPage);
+    }
+
+    private void UpdateNavigation(string page)
+    {
+        SetNavigationState(OverviewNavButton, page == "overview");
+        SetNavigationState(DevicesNavButton, page == "devices");
+        SetNavigationState(AnalysisNavButton, page == "analysis");
+        SetNavigationState(SettingsNavButton, page == "settings");
+        SetNavigationState(SidebarSettingsButton, page == "settings");
+        SettingsSectionsNav.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsMenuLabel.Visibility = page == "settings" && SidebarColumn.Width.Value > 100 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SetNavigationState(System.Windows.Controls.Button button, bool selected)
+    {
+        button.Background = (System.Windows.Media.Brush)FindResource(selected ? "SelectedSurface" : "Bg");
+        button.BorderBrush = selected ? (System.Windows.Media.Brush)FindResource("Accent") : System.Windows.Media.Brushes.Transparent;
+        button.Foreground = selected ? System.Windows.Media.Brushes.White : (System.Windows.Media.Brush)FindResource("Muted");
+    }
+
+    private void FeedbackPreference_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        ApplyFeedbackPreferences();
+        NotifyUpdateRestartSafety();
+    }
+
+    private void ApplyFeedbackPreferences()
+    {
+        _feedback.SoundsEnabled = UiSoundsCheck.IsChecked == true;
+        _feedback.AnimationsEnabled = UiAnimationsCheck.IsChecked == true && DesktopLifecycle.ProfilePath is null;
     }
 
     internal void ShowSettings(string section = "general")
     {
         section = section.Trim().ToLowerInvariant();
-        if (section is not ("general" or "games" or "network" or "schedule" or "analysis" or "updates"))
+        if (section is not ("general" or "games" or "network" or "schedule" or "analysis" or "updates" or "appearance"))
             throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
+        var changed = SettingsPage.Visibility != Visibility.Visible || !Equals(SettingsPage.Tag, section);
+        SettingsPage.Tag = section;
+        if (section != "analysis") _selectedSettingsSection = section;
         OverviewPage.Visibility = Visibility.Collapsed;
+        DevicesPage.Visibility = Visibility.Collapsed;
         SettingsPage.Visibility = Visibility.Visible;
-        OverviewNavButton.ClearValue(Control.BackgroundProperty);
-        OverviewNavButton.ClearValue(Control.BorderBrushProperty);
-        SettingsNavButton.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
-        SettingsNavButton.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
+        UpdateNavigation(section == "analysis" ? "analysis" : "settings");
         GeneralSettingsSection.Visibility = Visibility.Collapsed;
         GamesSettingsSection.Visibility = Visibility.Collapsed;
         NetworkSettingsSection.Visibility = Visibility.Collapsed;
         UpdatesSettingsSection.Visibility = Visibility.Collapsed;
         ScheduleSettingsSection.Visibility = Visibility.Collapsed;
         AnalysisSettingsSection.Visibility = Visibility.Collapsed;
+        AppearanceSettingsSection.Visibility = Visibility.Collapsed;
         foreach (var button in SettingsSectionsNav.Children.OfType<System.Windows.Controls.Button>())
-        {
-            if (Equals(button.Tag, section))
-            {
-                button.Background = (System.Windows.Media.Brush)FindResource("DeepRed");
-                button.BorderBrush = (System.Windows.Media.Brush)FindResource("DeepRed");
-            }
-            else
-            {
-                button.ClearValue(Control.BackgroundProperty);
-                button.ClearValue(Control.BorderBrushProperty);
-            }
-        }
+            SetNavigationState(button, Equals(button.Tag, section));
         switch (section)
         {
             case "general": GeneralSettingsSection.Visibility = Visibility.Visible; break;
@@ -796,12 +1033,27 @@ public partial class MainWindow : Window
             case "updates": UpdatesSettingsSection.Visibility = Visibility.Visible; break;
             case "schedule": ScheduleSettingsSection.Visibility = Visibility.Visible; break;
             case "analysis": AnalysisSettingsSection.Visibility = Visibility.Visible; RenderAnalysis(_runtime.Snapshot); break;
+            case "appearance": AppearanceSettingsSection.Visibility = Visibility.Visible; break;
             default: throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
         }
+        (SettingsHeading.Text, SettingsDescription.Text) = section switch
+        {
+            "games" => ("Spiele", "Erkennung, laufende Programme und Netzwerkverkehr."),
+            "network" => ("Netzwerk", "Deine PCs verbinden und die Verbindung prüfen."),
+            "schedule" => ("Zeitplan", "Freie Downloads in der Nacht und passende Wochenendprofile."),
+            "analysis" => ("Analyse", "Verlauf, Störungen und Hinweise zu deinem Router."),
+            "updates" => ("Updates", "Installierte Version und automatische Aktualisierungen."),
+            "appearance" => ("Darstellung", "Klick-Sounds und Bewegung nach deinem Geschmack."),
+            _ => ("Allgemein", "Internetanschluss, Priorisierung und Downloadlimits.")
+        };
+        PageTitle.Text = section == "analysis" ? "Analyse" : $"Einstellungen · {SettingsHeading.Text}";
+        SettingsActionBar.Visibility = section == "analysis" ? Visibility.Collapsed : Visibility.Visible;
+        if (changed && IsLoaded) _feedback.Transition(SettingsPage);
     }
 
     private void OverviewNav_Click(object sender, RoutedEventArgs e) => ShowOverview();
-    private void SettingsNav_Click(object sender, RoutedEventArgs e) => ShowSettings();
+    private void SettingsNav_Click(object sender, RoutedEventArgs e) => ShowSettings(_selectedSettingsSection);
+    private void DevicesNav_Click(object sender, RoutedEventArgs e) => ShowDevices();
     private void SettingsSection_Click(object sender, RoutedEventArgs e)
     {
         if (sender is System.Windows.Controls.Button { Tag: string section }) ShowSettings(section);
@@ -940,8 +1192,13 @@ public partial class MainWindow : Window
         if (!IsInitialized) return;
         var width = ActualWidth > 0 ? ActualWidth : Width;
         var height = ActualHeight > 0 ? ActualHeight : Height;
+        var compactDashboard = height < 800;
+        var expandedNavigation = width >= 1200;
+        SidebarColumn.Width = new GridLength(expandedNavigation ? 196 : 68);
         var scale = Math.Clamp(Math.Min(width / 1440, height / 940), 1, 1.33);
         var resources = System.Windows.Application.Current.Resources;
+        resources["NavigationLabelVisibility"] = expandedNavigation ? Visibility.Visible : Visibility.Collapsed;
+        SettingsMenuLabel.Visibility = SettingsSectionsNav.Visibility == Visibility.Visible && expandedNavigation ? Visibility.Visible : Visibility.Collapsed;
         resources["UiSmallFontSize"] = 12 * scale;
         resources["UiBodyFontSize"] = 14 * scale;
         resources["UiSectionFontSize"] = 16 * scale;
@@ -949,15 +1206,26 @@ public partial class MainWindow : Window
         resources["UiHeroFontSize"] = 32 * scale;
         // Keep headers and live values readable as the rest of the dashboard grows.
         // The device-name column keeps the remaining space and its existing minimum.
-        var columnWidths = new[] { 0d, 125, 105, 130, 125, 115 };
-        for (var column = 1; column < DeviceGrid.Columns.Count && column < columnWidths.Length; column++)
-            DeviceGrid.Columns[column].Width = new DataGridLength(columnWidths[column] * scale);
+        var columnWeights = new[] { 2.2, 1.35, 1.3, 1.5, 1.35, 1.35, 1.15 };
+        var columnMinimums = new[] { 100d, 84, 70, 84, 100, 96, 74 };
+        for (var column = 0; column < DeviceGrid.Columns.Count; column++)
+        {
+            DeviceGrid.Columns[column].MinWidth = columnMinimums[column];
+            DeviceGrid.Columns[column].Width = new DataGridLength(columnWeights[column], DataGridLengthUnitType.Star);
+        }
         StatusGrid.Columns = 4;
-        MetricsRow.Height = new GridLength(88 * scale);
-        DevicesRow.Height = new GridLength(202 * scale);
-        DeviceGrid.RowHeight = 29 * scale;
-        DeviceGrid.ColumnHeaderHeight = 27 * scale;
-        PingLayout.ColumnDefinitions[0].Width = new GridLength(1.7, GridUnitType.Star);
+        MetricsRow.Height = new GridLength((compactDashboard ? 100 : 116) * scale);
+        DeviceGrid.RowHeight = 38 * scale;
+        DeviceGrid.ColumnHeaderHeight = 34 * scale;
+        OverviewDevicesRow.Height = new GridLength((compactDashboard ? 158 : 190) * scale);
+        OverviewDeviceGrid.RowHeight = 27 * scale;
+        OverviewDeviceGrid.ColumnHeaderHeight = 25 * scale;
+        DashboardHomePanel.Visibility = compactDashboard ? Visibility.Collapsed : Visibility.Visible;
+        ChartPanel.Padding = compactDashboard ? new Thickness(18, 8, 18, 8) : new Thickness(18, 16, 18, 16);
+        HistoryHoverText.Margin = compactDashboard ? new Thickness(0, 1, 0, 2) : new Thickness(0, 3, 0, 4);
+        HistoryCompare.Margin = compactDashboard ? new Thickness(0, 2, 0, 0) : new Thickness(0, 5, 0, 0);
+        PingPanel.Padding = compactDashboard ? new Thickness(18, 5, 18, 5) : new Thickness(18, 12, 18, 12);
+        PingLayout.ColumnDefinitions[0].Width = new GridLength(1.9, GridUnitType.Star);
         PingLayout.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
         DrawHistory(_lastHistory);
     }

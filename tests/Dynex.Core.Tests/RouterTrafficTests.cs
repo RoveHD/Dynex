@@ -8,15 +8,33 @@ internal static class RouterTrafficTests
     {
         var router = IPAddress.Parse("192.168.178.1");
         var ok = "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nLOCATION: http://192.168.178.1:49000/igddesc.xml\r\nST: x\r\n\r\n";
-        check(RouterTrafficMonitor.ParseSsdpLocation(ok, router)?.ToString() == "http://192.168.178.1:49000/igddesc.xml", "SSDP location from the answering router is accepted");
-        check(RouterTrafficMonitor.ParseSsdpLocation(ok, IPAddress.Parse("192.168.178.9")) is null, "location pointing at another host is rejected");
-        check(RouterTrafficMonitor.ParseSsdpLocation(ok.Replace("192.168.178.1:49000", "8.8.8.8"), IPAddress.Parse("8.8.8.8")) is null, "public router addresses are rejected");
-        check(RouterTrafficMonitor.ParseSsdpLocation(ok.Replace("http://", "https://"), router) is null, "only plain LAN HTTP descriptions are read");
+        check(RouterTrafficMonitor.ParseSsdpLocation(ok, router, router)?.ToString() == "http://192.168.178.1:49000/igddesc.xml", "SSDP location from the active gateway is accepted");
+        var other = IPAddress.Parse("192.168.178.9");
+        check(RouterTrafficMonitor.ParseSsdpLocation(ok, other, other) is null, "location pointing at another host is rejected");
+        check(RouterTrafficMonitor.ParseSsdpLocation(ok.Replace("192.168.178.1:49000", "8.8.8.8"), IPAddress.Parse("8.8.8.8"), IPAddress.Parse("8.8.8.8")) is null, "public router addresses are rejected");
+        check(RouterTrafficMonitor.ParseSsdpLocation(ok.Replace("http://", "https://"), router, router) is null, "only plain LAN HTTP descriptions are read");
+        var switchResponse = ok.Replace("192.168.178.1", "192.168.178.9");
+        check(RouterTrafficMonitor.ParseSsdpLocation(switchResponse, other, router) is null,
+            "a switch or AP advertising an IGD at its own address is not the active Internet gateway");
+        check(RouterTrafficMonitor.ParseSsdpLocation(switchResponse, other, null) is null,
+            "an unknown gateway never falls back to the first SSDP responder");
+        var discovered = new[] { (switchResponse, other), (ok, router) }
+            .Select(r => RouterTrafficMonitor.ParseSsdpLocation(r.Item1, r.Item2, router)).FirstOrDefault(uri => uri is not null);
+        check(discovered?.Host == router.ToString(), "a switch replying first does not hide a later gateway response");
+        check(RouterTrafficMonitor.SelectGateway([router, router, IPAddress.IPv6Any])?.Equals(router) == true,
+            "a single distinct IPv4 gateway is selected");
+        check(RouterTrafficMonitor.SelectGateway([]) is null && RouterTrafficMonitor.SelectGateway([IPAddress.Any]) is null &&
+            RouterTrafficMonitor.SelectGateway([IPAddress.Parse("8.8.8.8")]) is null,
+            "missing, unspecified and non-LAN gateways remain unknown");
+        check(RouterTrafficMonitor.SelectGateway([other, router]) is null && RouterTrafficMonitor.SelectGateway([router, other]) is null,
+            "multiple gateways are ambiguous regardless of enumeration order");
         var description = """<?xml version="1.0"?><root><device><friendlyName>FRITZ!Box 7590</friendlyName><manufacturer>AVM</manufacturer><modelName>FRITZ!Box 7590</modelName><serviceList><service><serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType><controlURL>/igdupnp/control/WANCommonIFC1</controlURL></service></serviceList></device></root>""";
         var location = new Uri("http://192.168.178.1:49000/igddesc.xml");
         check(RouterTrafficMonitor.ParseControlUrl(description, location)?.ToString() == "http://192.168.178.1:49000/igdupnp/control/WANCommonIFC1" &&
             RouterTrafficMonitor.ParseFriendlyName(description) == "FRITZ!Box 7590", "IGD description yields control URL and router name");
         check(RouterTrafficMonitor.ParseControlUrl(description.Replace("/igdupnp/control/WANCommonIFC1", "http://10.0.0.5/x"), location) is null, "control URL on another host is rejected");
+        check(RouterTrafficMonitor.ParseControlUrl(description.Replace("WANCommonInterfaceConfig", "SwitchPower"), location) is null,
+            "a generic UPnP device without WAN counters cannot become the router");
         try { RouterTrafficMonitor.ParseControlUrl("<!DOCTYPE x [<!ENTITY e \"a\">]><root>&e;</root>", location); check(false, "DTD accepted"); }
         catch (System.Xml.XmlException) { check(true, "DTDs in router XML are rejected"); }
         check(RouterTrafficMonitor.ParseCounter("<s:Envelope xmlns:s=\"x\"><s:Body><u:R xmlns:u=\"y\"><NewTotalBytesReceived>123456</NewTotalBytesReceived></u:R></s:Body></s:Envelope>", "NewTotalBytesReceived") == 123456,
@@ -27,7 +45,13 @@ internal static class RouterTrafficTests
         // End to end against a fake router.
         long received = 0, sent = 0;
         var handler = new FakeRouter(description, () => (received, sent));
-        using var monitor = new RouterTrafficMonitor(new HttpClient(handler), true, _ => Task.FromResult<(Uri, IPAddress)?>((location, router)));
+        RouterTrafficMonitor.RouterRoute? route = new(IPAddress.Parse("192.168.178.20"), router);
+        var discoveries = 0;
+        using var monitor = new RouterTrafficMonitor(new HttpClient(handler), true, (_, _) =>
+        {
+            discoveries++;
+            return Task.FromResult<(Uri, IPAddress)?>((location, router));
+        }, () => route);
         check(await monitor.SampleAsync(CancellationToken.None) is null, "first reading establishes the counter baseline");
         await Task.Delay(600);
         received += 6_000_000; sent += 600_000;
@@ -35,13 +59,30 @@ internal static class RouterTrafficTests
         check(sample is { RouterName: "FRITZ!Box 7590", Manufacturer: "AVM" } && sample.DownloadMbps > 40 && sample.DownloadMbps < 90 && sample.UploadMbps < sample.DownloadMbps,
             "second reading reports whole-home download/upload rates");
         check(handler.Actions.Contains("GetTotalBytesReceived") && handler.Actions.Contains("GetTotalBytesSent"), "only read-only counter actions are invoked");
+        route = null;
+        check(await monitor.SampleAsync(CancellationToken.None) is null && discoveries == 1,
+            "losing the active route clears cached router data without discovering unrelated devices");
+        route = new(IPAddress.Parse("192.168.178.21"), router);
+        check(await monitor.SampleAsync(CancellationToken.None) is null && discoveries == 2,
+            "a changed interface rediscovers immediately and starts a new counter baseline");
+        route = route with { Gateway = other };
+        var requestsBefore = handler.Requests;
+        check(await monitor.SampleAsync(CancellationToken.None) is null && handler.Requests == requestsBefore && discoveries == 3,
+            "a cached router or injected discovery on the previous gateway is rejected before HTTP access");
+        route = route with { Gateway = router };
+        await monitor.SampleAsync(CancellationToken.None);
+        monitor.Reset();
+        check(await monitor.SampleAsync(CancellationToken.None) is null && discoveries == 5,
+            "explicit refresh resets discovery cooldown and counter history");
     }
 
     private sealed class FakeRouter(string description, Func<(long Received, long Sent)> counters) : HttpMessageHandler
     {
         public readonly List<string> Actions = [];
+        public int Requests { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
+            Requests++;
             if (request.Method == HttpMethod.Get)
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(description, Encoding.UTF8, "text/xml") });
             var action = request.Headers.GetValues("SOAPAction").Single().Split('#')[1].TrimEnd('"');

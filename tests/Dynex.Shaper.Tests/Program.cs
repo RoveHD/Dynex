@@ -431,6 +431,7 @@ Check(NdisPacketDevice.GetIpOffset(ethernet.AsSpan(0, 15)) == -1, "truncated VLA
 ethernet[12] = 8; ethernet[13] = 6;
 Check(NdisPacketDevice.GetIpOffset(ethernet) == -1, "ARP bypasses");
 await QosChecks.Run(Check);
+await GameTrafficChecks.Run(Check);
 Console.WriteLine($"{passed} checks passed; no kernel filter opened.");
 
 static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)

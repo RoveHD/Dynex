@@ -86,6 +86,9 @@ jobs:
             Write-Warning 'Kein Signaturzertifikat hinterlegt: Release wird unsigniert gebaut.'
             ./scripts/build.ps1 -Version ${{ steps.version.outputs.value }}
           }
+      - name: Installer start and exclusion checks
+        shell: pwsh
+        run: ./tests/installer-update-smoke.ps1 -PayloadRoot "artifacts/publish-${{ steps.version.outputs.value }}" -ExpectedVersion "${{ steps.version.outputs.value }}" -NsisPath "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
       - name: Remove certificate
         if: always()
         shell: pwsh

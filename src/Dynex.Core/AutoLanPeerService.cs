@@ -6,7 +6,7 @@ using System.Net.Sockets;
 namespace Dynex.Core;
 
 /// <summary>Automatic first-contact trust confined to on-link Windows private networks.</summary>
-public sealed class AutoLanPeerService : IPeerService
+public sealed partial class AutoLanPeerService : IPeerService
 {
     private static readonly IPAddress Multicast = IPAddress.Parse("239.255.39.74");
     private readonly DynexSettings _settings;
@@ -28,6 +28,8 @@ public sealed class AutoLanPeerService : IPeerService
     private Task[] _tasks = [];
     private long _sequence, _sampleSequence, _rateTick;
     private int _rateCount, _networkChanged;
+    private int _discoveryRequested;
+    private long _lastDiscoveryRequest, _discoveryProbes, _clockSkew, _identityConflicts;
     private bool _subscribed;
     private volatile bool _disposed;
     private string? _networkStatus;
@@ -36,7 +38,7 @@ public sealed class AutoLanPeerService : IPeerService
     private State _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
 
     public event Action? PeersChanged;
-    public string? NetworkStatus => Volatile.Read(ref _networkStatus);
+    public string? NetworkStatus => !_deviceNetworkEnabled ? "Netzwerk gesperrt: Lokale Geräteliste konnte nicht sicher gelesen werden." : Volatile.Read(ref _networkStatus);
 
     public AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64)
         : this(settings, signingPrivateKeyBase64, AutoLanNetworkScope.Read) { }
@@ -50,6 +52,7 @@ public sealed class AutoLanPeerService : IPeerService
         _settings = settings with { DirectPeers = settings.DirectPeers.Select(p => new IPEndPoint(p.Address, p.Port)).ToArray() };
         _privateKey = signingPrivateKeyBase64;
         _readScope = readScope;
+        _connectionProbe = new(settings, signingPrivateKeyBase64, IsExcluded);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -63,6 +66,7 @@ public sealed class AutoLanPeerService : IPeerService
             try
             {
                 socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                PeerService.SuppressUdpConnectionReset(socket);
                 socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.PacketInformation, true);
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 1);
@@ -77,7 +81,7 @@ public sealed class AutoLanPeerService : IPeerService
                 _stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 if (!_settings.LoopbackOnly)
                 { NetworkChange.NetworkAddressChanged += OnNetworkChanged; _subscribed = true; }
-                _tasks = [ReceiveLoopAsync(socket, _stop.Token), HeartbeatLoopAsync(socket, _stop.Token)];
+                _tasks = [ReceiveLoopAsync(socket, _stop.Token), HeartbeatLoopAsync(socket, _stop.Token), DiscoveryLoopAsync(socket, _stop.Token)];
             }
             catch
             {
@@ -127,12 +131,16 @@ public sealed class AutoLanPeerService : IPeerService
                 Interlocked.Read(ref _sent), Interlocked.Read(ref _received), Interlocked.Read(ref _accepted),
                 Interlocked.Read(ref _handshakes), Interlocked.Read(ref _rejected), Interlocked.Read(ref _scopeRejected),
                 Interlocked.Read(ref _otherMode), last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last), _peers.Count,
-                _channels.Values.Select(c => c.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self),
+                _channels.Where(c => !IsExcluded(c.Key)).Select(c => c.Value.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self),
+                AuthenticatedClockSkewDatagrams: Interlocked.Read(ref _clockSkew), DiscoveryProbeDatagrams: Interlocked.Read(ref _discoveryProbes),
+                ConflictingIdentityDatagrams: Interlocked.Read(ref _identityConflicts),
                 LocalVersion: _settings.AppVersion, RemoteVersions: versions, UnsupportedProtocolDatagrams: Interlocked.Read(ref _unsupported),
                 LostPeerName: _peers.Count == 0 ? _lost?.Name : null, LostPeerAtUtc: _peers.Count == 0 ? _lost?.At : null,
                 ReceiveError: Volatile.Read(ref _receiveError)?.Replace("AutoLAN-Empfang: ", ""));
         }
     }
+
+    public void RequestDiscovery() => Interlocked.Exchange(ref _discoveryRequested, 1);
 
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken token)
     {
@@ -152,6 +160,9 @@ public sealed class AutoLanPeerService : IPeerService
                     Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     if (!SourceAllowed(source.Address, received.PacketInformation.Interface))
                     { Interlocked.Increment(ref _scopeRejected); continue; }
+                    if (!_deviceNetworkEnabled) continue;
+                    if (ConnectionProbe.IsProbe(bytes.AsSpan(0, length)))
+                    { await _connectionProbe!.ReceiveAsync(bytes[..length], source, (packet, target, probeToken) => SendAsync(socket, packet, target, probeToken), token).ConfigureAwait(false); continue; }
                     if (length >= 4 && bytes.AsSpan(0, 4).SequenceEqual("DYNX"u8))
                     { Interlocked.Increment(ref _otherMode); continue; }
                     // A future wire protocol uses a new version byte; explain it instead of only rejecting it.
@@ -174,8 +185,9 @@ public sealed class AutoLanPeerService : IPeerService
                         {
                             if (length < AutoLanCrypto.StatusHeader + 16) continue;
                             var id = new Guid(bytes.AsSpan(6, 16));
-                            if (!_channels.TryGetValue(id, out var session)) continue;
-                            var wire = _crypto!.Decrypt(session.Crypto, bytes.AsSpan(0, length), now);
+                            if (IsExcluded(id) || !_channels.TryGetValue(id, out var session)) continue;
+                            var wire = _crypto!.Decrypt(session.Crypto, bytes.AsSpan(0, length), now, out var clockSkew);
+                            if (clockSkew) Interlocked.Increment(ref _clockSkew);
                             if (wire is null) continue;
                             session.LastActivity = tick;
                             // Only authenticated ciphertext can update a device's observed address.
@@ -184,7 +196,7 @@ public sealed class AutoLanPeerService : IPeerService
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
                                 UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal,
-                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram), tick);
+                                AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram, RemotePort: source.Port), tick);
                             _names[id] = wire.DeviceName;
                             if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
                             Interlocked.Decrement(ref _rejected);
@@ -193,10 +205,16 @@ public sealed class AutoLanPeerService : IPeerService
                         }
                         else if (bytes[5] is 1 or 2)
                         {
-                            var hello = AutoLanCrypto.Verify(bytes.AsSpan(0, length), now);
-                            if (hello is null) continue;
+                            var hello = AutoLanCrypto.Verify(bytes.AsSpan(0, length), now, out var clockSkew);
+                            if (clockSkew) Interlocked.Increment(ref _clockSkew);
+                            if (hello is null || IsExcluded(hello.DeviceId)) continue;
                             if (hello.DeviceId == _settings.DeviceId)
-                            { Interlocked.Decrement(ref _rejected); Interlocked.Increment(ref _self); continue; }
+                            {
+                                Interlocked.Decrement(ref _rejected);
+                                if (hello.SessionId == _crypto!.Local.SessionId) Interlocked.Increment(ref _self);
+                                else Interlocked.Increment(ref _identityConflicts);
+                                continue;
+                            }
                             var key = (hello.DeviceId, hello.SessionId);
                             if (_sessions.TryGetValue(key, out var history) && history.Retired) continue;
                             // Signed, so the announced version is attributable even before a session exists.
@@ -262,6 +280,7 @@ public sealed class AutoLanPeerService : IPeerService
         {
             do
             {
+                if (!_deviceNetworkEnabled) continue;
                 // Revalidate profile policy each heartbeat: changing a connection to Public must
                 // close AutoLAN scope even when Windows keeps the same IP address.
                 RefreshScope(socket, Interlocked.Exchange(ref _networkChanged, 0) != 0);
@@ -281,7 +300,7 @@ public sealed class AutoLanPeerService : IPeerService
                         throughputIsFresh ? local.Upload : null,
                         throughputIsFresh && _settings.CapacityMeasured ? DownloadBudgetProposal.FromSettings(_settings) : null, _settings.ShareWeight,
                         throughputIsFresh ? local.TopProgram : null);
-                    foreach (var session in _channels.Values)
+                    foreach (var session in _channels.Where(c => !IsExcluded(c.Key)).Select(c => c.Value))
                         if (EndpointAllowed(session.Endpoint.Address)) statuses.Add((_crypto.Encrypt(session.Crypto, wire), session.Endpoint));
                 }
                 foreach (var endpoint in _settings.DirectPeers)
@@ -299,6 +318,58 @@ public sealed class AutoLanPeerService : IPeerService
                 }
                 foreach (var (packet, endpoint) in statuses) await SendAsync(socket, packet, endpoint, token).ConfigureAwait(false);
                 if (expired) Notify();
+            } while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+    }
+
+    private async Task DiscoveryLoopAsync(Socket socket, CancellationToken token)
+    {
+        if (_settings.LoopbackOnly) return; // Tests never probe the user's LAN.
+        var sweep = new AutoLanDiscovery();
+        var neighbors = new Queue<IPAddress>();
+        AutoLanBinding[] previous = [];
+        long neighborsAt = 0;
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        try
+        {
+            do
+            {
+                if (!_deviceNetworkEnabled) continue;
+                var bindings = Volatile.Read(ref _bindings);
+                var tick = Stopwatch.GetTimestamp();
+                var requested = Interlocked.Exchange(ref _discoveryRequested, 0) != 0 &&
+                    (_lastDiscoveryRequest == 0 || Stopwatch.GetElapsedTime(_lastDiscoveryRequest, tick) >= TimeSpan.FromSeconds(10));
+                var changed = !previous.SequenceEqual(bindings);
+                if (changed || requested || neighborsAt == 0 || Stopwatch.GetElapsedTime(neighborsAt, tick) >= TimeSpan.FromSeconds(30))
+                {
+                    if (changed || requested) sweep.Reset(bindings);
+                    previous = bindings;
+                    neighbors = new(AutoLanDiscovery.ReadNeighbors(bindings));
+                    neighborsAt = tick;
+                    if (requested) _lastDiscoveryRequest = tick;
+                }
+                // Eight datagrams per 250 ms globally, shared by all adapters and cache hits.
+                // Probing a closed UDP port is expected and must not mark discovery unhealthy.
+                var targets = new List<IPAddress>(8);
+                while (neighbors.Count > 0 && targets.Count < 4) targets.Add(neighbors.Dequeue());
+                targets.AddRange(sweep.Next(bindings, 8 - targets.Count));
+                if (targets.Count == 0) continue;
+                byte[] hello;
+                lock (_gate) hello = _crypto!.Hello(DateTimeOffset.UtcNow);
+                foreach (var address in targets.Distinct())
+                {
+                    // A profile/address change may close scope while this batch is being sent.
+                    if (!_deviceNetworkEnabled || !EndpointAllowed(address)) continue;
+                    try
+                    {
+                        await socket.SendToAsync(hello.AsMemory(), SocketFlags.None, new IPEndPoint(address, _settings.Port), token).ConfigureAwait(false);
+                        Interlocked.Increment(ref _sent);
+                        Interlocked.Increment(ref _discoveryProbes);
+                    }
+                    catch (SocketException) { /* Broadcast and authenticated heartbeats report transport failures. */ }
+                }
             } while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -364,6 +435,7 @@ public sealed class AutoLanPeerService : IPeerService
     {
         try
         {
+            if (!_deviceNetworkEnabled) return;
             await socket.SendToAsync(bytes.AsMemory(), SocketFlags.None, target, token).ConfigureAwait(false);
             Interlocked.Increment(ref _sent);
         }

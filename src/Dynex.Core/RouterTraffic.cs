@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 using System.Xml;
@@ -19,16 +20,28 @@ public sealed class RouterTrafficMonitor : IDisposable
     private const string Service = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1";
     private readonly HttpClient _http;
     private readonly bool _ownsClient;
-    private readonly Func<CancellationToken, Task<(Uri Location, IPAddress Source)?>> _discover;
+    private readonly Func<RouterRoute, CancellationToken, Task<(Uri Location, IPAddress Source)?>> _discover;
+    private readonly Func<RouterRoute?> _getRoute;
+    private RouterRoute? _route;
     private (Uri Control, string Name, string? Manufacturer, string? Model)? _router;
     private long _nextDiscoveryTick;
     private (long Received, long Sent, long Tick)? _last;
 
-    public RouterTrafficMonitor() : this(new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(2) }, true, DiscoverAsync) { }
+    public RouterTrafficMonitor() : this(new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(2) }, true, DiscoverAsync, GetActiveRoute) { }
 
-    internal RouterTrafficMonitor(HttpClient http, bool ownsClient, Func<CancellationToken, Task<(Uri Location, IPAddress Source)?>> discover)
+    internal RouterTrafficMonitor(HttpClient http, bool ownsClient,
+        Func<RouterRoute, CancellationToken, Task<(Uri Location, IPAddress Source)?>> discover, Func<RouterRoute?> getRoute)
     {
-        _http = http; _ownsClient = ownsClient; _discover = discover;
+        _http = http; _ownsClient = ownsClient; _discover = discover; _getRoute = getRoute;
+    }
+
+    /// <summary>Invalidate router identity and counter history. Call only after any pending sample has finished.</summary>
+    public void Reset()
+    {
+        _router = null;
+        _last = null;
+        _route = null;
+        _nextDiscoveryTick = 0;
     }
 
     /// <summary>Null until two counter readings exist, or when no supporting router answers.</summary>
@@ -36,11 +49,20 @@ public sealed class RouterTrafficMonitor : IDisposable
     {
         try
         {
+            var route = _getRoute();
+            if (route != _route)
+            {
+                Reset();
+                _route = route;
+            }
+            // A UPnP responder is not evidence of the Internet route: switches/APs can advertise IGD too.
+            if (route is null) return null;
             if (_router is null)
             {
                 if (Stopwatch.GetTimestamp() < _nextDiscoveryTick) return null;
                 _nextDiscoveryTick = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 300; // Retry discovery every 5 minutes.
-                if (await _discover(token).ConfigureAwait(false) is not { } found) return null;
+                if (await _discover(route, token).ConfigureAwait(false) is not { } found ||
+                    !found.Source.Equals(route.Gateway) || !IsRouterLocation(found.Location, found.Source)) return null;
                 var description = await GetBoundedAsync(found.Location, token).ConfigureAwait(false);
                 if (ParseControlUrl(description, found.Location) is not { } control) return null;
                 _router = (control, ParseFriendlyName(description) ?? found.Location.Host,
@@ -111,16 +133,44 @@ public sealed class RouterTrafficMonitor : IDisposable
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    internal static Uri? ParseSsdpLocation(string response, IPAddress source)
+    internal static Uri? ParseSsdpLocation(string response, IPAddress source, IPAddress? gateway)
     {
+        if (gateway is null || !source.Equals(gateway)) return null;
         foreach (var line in response.Split("\r\n"))
         {
             if (!line.StartsWith("LOCATION:", StringComparison.OrdinalIgnoreCase)) continue;
             // Only plain HTTP on the private address that actually answered; never follow a redirect elsewhere.
-            return Uri.TryCreate(line[9..].Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttp &&
-                IPAddress.TryParse(uri.Host, out var host) && host.Equals(source) && LanAddress.IsAllowed(host, false) ? uri : null;
+            return Uri.TryCreate(line[9..].Trim(), UriKind.Absolute, out var uri) && IsRouterLocation(uri, source) ? uri : null;
         }
         return null;
+    }
+
+    private static bool IsRouterLocation(Uri uri, IPAddress source) => uri.Scheme == Uri.UriSchemeHttp &&
+        IPAddress.TryParse(uri.Host, out var host) && host.Equals(source) && LanAddress.IsAllowed(host, false);
+
+    internal sealed record RouterRoute(IPAddress Local, IPAddress Gateway);
+
+    internal static IPAddress? SelectGateway(IEnumerable<IPAddress> addresses)
+    {
+        var gateways = addresses.Where(a => a.AddressFamily == AddressFamily.InterNetwork && !a.Equals(IPAddress.Any)).Distinct().ToArray();
+        return gateways.Length == 1 && LanAddress.IsAllowed(gateways[0], false) ? gateways[0] : null;
+    }
+
+    private static RouterRoute? GetActiveRoute()
+    {
+        try
+        {
+            // Let the OS choose the outgoing interface. UDP connect does not send a datagram.
+            // Never fall back to the first adapter: that can be an unused LAN or VPN interface.
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.Connect(new IPEndPoint(IPAddress.Parse("1.1.1.1"), 443));
+            if (socket.LocalEndPoint is not IPEndPoint local) return null;
+            var adapter = NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n =>
+                n.OperationalStatus == OperationalStatus.Up && n.GetIPProperties().UnicastAddresses.Any(a => a.Address.Equals(local.Address)));
+            var gateway = adapter is null ? null : SelectGateway(adapter.GetIPProperties().GatewayAddresses.Select(g => g.Address));
+            return gateway is null ? null : new(local.Address, gateway);
+        }
+        catch (Exception ex) when (ex is SocketException or NetworkInformationException) { return null; }
     }
 
     private static XmlDocument? Load(string xml)
@@ -186,9 +236,9 @@ public sealed class RouterTrafficMonitor : IDisposable
         catch (SocketException) { return null; }
     }
 
-    private static async Task<(Uri Location, IPAddress Source)?> DiscoverAsync(CancellationToken token)
+    private static async Task<(Uri Location, IPAddress Source)?> DiscoverAsync(RouterRoute route, CancellationToken token)
     {
-        using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+        using var udp = new UdpClient(new IPEndPoint(route.Local, 0));
         var search = Encoding.ASCII.GetBytes("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n" +
             "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n");
         await udp.SendAsync(search, new IPEndPoint(IPAddress.Parse("239.255.255.250"), 1900), token).ConfigureAwait(false);
@@ -200,7 +250,7 @@ public sealed class RouterTrafficMonitor : IDisposable
             {
                 var result = await udp.ReceiveAsync(timeout.Token).ConfigureAwait(false);
                 if (result.Buffer.Length > 4096) continue;
-                if (ParseSsdpLocation(Encoding.ASCII.GetString(result.Buffer), result.RemoteEndPoint.Address) is { } location)
+                if (ParseSsdpLocation(Encoding.ASCII.GetString(result.Buffer), result.RemoteEndPoint.Address, route.Gateway) is { } location)
                     return (location, result.RemoteEndPoint.Address);
             }
         }

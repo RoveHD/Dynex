@@ -18,7 +18,11 @@ internal sealed class SettingsStore
     {
         var path = Path.Combine(directory, "settings.json");
         if (!File.Exists(path)) return new();
-        var settings = Normalize(JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(path)) ?? throw new InvalidDataException("Leere Einstellungsdatei."));
+        string json;
+        try { json = File.ReadAllText(path); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { throw FileFailure(error, "Einstellungen lesen", path); }
+        var settings = Normalize(JsonSerializer.Deserialize<UserSettings>(json) ?? throw new InvalidDataException("Leere Einstellungsdatei."));
         Validate(settings);
         return settings;
     }
@@ -33,7 +37,11 @@ internal sealed class SettingsStore
         var path = Path.Combine(directory, "identity.dpapi");
         if (File.Exists(path))
         {
-            var stored = JsonSerializer.Deserialize<Identity>(Dpapi.Transform(File.ReadAllBytes(path), false)) ?? throw new InvalidDataException("Ungültige Geräteidentität.");
+            byte[] protectedIdentity;
+            try { protectedIdentity = File.ReadAllBytes(path); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { throw FileFailure(error, "Geräteidentität lesen", path); }
+            var stored = JsonSerializer.Deserialize<Identity>(Dpapi.Transform(protectedIdentity, false)) ?? throw new InvalidDataException("Ungültige Geräteidentität.");
             if (stored.SigningPrivateKeyBase64 is null)
             {
                 stored = stored with { SigningPrivateKeyBase64 = AutoLanIdentity.GenerateSigningKey() };
@@ -49,14 +57,26 @@ internal sealed class SettingsStore
     public void SaveIdentity(Identity identity) => AtomicWrite("identity.dpapi", Dpapi.Transform(JsonSerializer.SerializeToUtf8Bytes(identity), true));
     private void AtomicWrite(string name, byte[] data)
     {
-        Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, name);
         var temp = path + ".tmp";
-        using (var file = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None)) { file.Write(data); file.Flush(true); }
-        File.Move(temp, path, true);
+        try
+        {
+            Directory.CreateDirectory(directory);
+            using (var file = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None)) { file.Write(data); file.Flush(true); }
+            File.Move(temp, path, true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { throw FileFailure(error, "Lokale Daten speichern", path); }
+    }
+    private static Exception FileFailure(Exception error, string operation, string path)
+    {
+        var message = $"{operation} fehlgeschlagen: {path}. {error.Message}";
+        return error is UnauthorizedAccessException ? new UnauthorizedAccessException(message, error) : new IOException(message, error);
     }
     public static void Validate(UserSettings value)
     {
+        ApplicationRules.Validate(value.ApplicationRules);
+        NetworkProfiles.Validate(value);
         if (string.IsNullOrWhiteSpace(value.DeviceName) || value.DeviceName.Length > 64 || value.DeviceName.Any(char.IsControl)) throw new ArgumentException("Gerätename: 1–64 sichtbare Zeichen.");
         Range(value.CapacityMbps, 1, 10000, "Anschlussgeschwindigkeit");
         Range(value.BackgroundPercent, 10, 95, "Downloadbudget (%)");
@@ -98,13 +118,13 @@ internal sealed class SettingsStore
     {
         if (!double.IsFinite(n) || n < min || n > max) throw new ArgumentException($"{field}: Wert zwischen {min} und {max} erforderlich.");
     }
-    internal static UserSettings Normalize(UserSettings value) => value with
+    internal static UserSettings Normalize(UserSettings value) => NetworkProfiles.Capture(value with
     {
         DeviceName = Environment.MachineName,
-        BackgroundPercent = 65,
+        ApplicationRules = ApplicationRules.Normalize(value.ApplicationRules),
         ReservePerGamerMbps = Math.Min(10, value.CapacityMbps * 0.05),
         Adaptive = true
-    };
+    });
     internal sealed record Identity(Guid DeviceId, string GroupKey, string? SigningPrivateKeyBase64 = null);
 
     private static class Dpapi

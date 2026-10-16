@@ -2,13 +2,13 @@ namespace Dynex.Core;
 
 public sealed record RouterGuideText(string Router, IReadOnlyList<string> Steps);
 
-/// <summary>Step-by-step router settings that reduce lag under load, chosen from the UPnP router identity.</summary>
+/// <summary>Step-by-step router settings chosen from the UPnP identity verified against the active gateway.</summary>
 public static class RouterGuide
 {
     public static RouterGuideText For(string? manufacturer, string? model, string? friendlyName)
     {
         var id = $"{manufacturer} {model} {friendlyName}".ToLowerInvariant();
-        var name = string.Join(" ", new[] { manufacturer, model }.Where(s => !string.IsNullOrWhiteSpace(s))) is { Length: > 0 } n ? n : friendlyName ?? "Unbekannter Router";
+        var name = string.Join(" ", new[] { manufacturer, model }.Where(s => !string.IsNullOrWhiteSpace(s))) is { Length: > 0 } n ? n : friendlyName ?? "Internetrouter nicht erkannt";
         if (id.Contains("fritz") || id.Contains("avm"))
             return new(name, [
                 "http://fritz.box öffnen und anmelden.",

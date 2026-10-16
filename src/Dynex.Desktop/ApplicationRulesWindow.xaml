@@ -1,0 +1,47 @@
+<Window x:Class="Dynex.Desktop.ApplicationRulesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Programmregeln" Width="820" Height="690" MinWidth="660" MinHeight="650"
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource Bg}" Foreground="#F2F2F4">
+  <Grid Margin="24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Margin="0,0,0,18">
+      <TextBlock Text="PROGRAMMREGELN" Foreground="{DynamicResource Accent}" FontSize="12" FontWeight="Bold"/>
+      <TextBlock Text="Bandbreite je Programm" FontSize="24" FontWeight="SemiBold" Margin="0,5,0,8"/>
+      <TextBlock Text="Gelten auch ohne Spiel. Alle Prozesse desselben Namens teilen ein Limit. Leere Richtung bleibt frei." Foreground="{DynamicResource Muted}"/>
+    </StackPanel>
+    <DataGrid x:Name="RulesList" Grid.Row="1" SelectionChanged="Rule_Selected" Background="{DynamicResource Panel}" Foreground="#F2F2F4" RowBackground="{DynamicResource Panel}" AlternatingRowBackground="#1C222C" BorderBrush="{DynamicResource Line}" MinHeight="90" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" SelectionMode="Single">
+      <DataGrid.Columns>
+        <DataGridTextColumn Header="Programm" Binding="{Binding ProcessName}" Width="1.5*"/>
+        <DataGridTextColumn Header="Download · Mbit/s" Binding="{Binding DownloadMbps}" Width="*"/>
+        <DataGridTextColumn Header="Upload · Mbit/s" Binding="{Binding UploadMbps}" Width="*"/>
+        <DataGridCheckBoxColumn Header="Aktiv" Binding="{Binding Enabled}" Width="75"/>
+      </DataGrid.Columns>
+    </DataGrid>
+    <StackPanel Grid.Row="2" Margin="0,16,0,0">
+      <TextBlock Text="Programmname (zum Beispiel Steam.exe)" Margin="0,0,0,6"/>
+      <DockPanel>
+        <Button DockPanel.Dock="Right" Content="Programme laden" Click="Refresh_Click" Margin="8,0,0,0"/>
+        <ComboBox x:Name="ProcessBox" IsEditable="True" IsTextSearchEnabled="True" VerticalContentAlignment="Center"/>
+      </DockPanel>
+      <Grid Margin="0,12,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel Margin="0,0,12,0"><TextBlock Text="Download · Mbit/s" Margin="0,0,0,5"/><TextBox x:Name="DownloadBox"/></StackPanel>
+        <StackPanel Grid.Column="1" Margin="0,0,12,0"><TextBlock Text="Upload · Mbit/s" Margin="0,0,0,5"/><TextBox x:Name="UploadBox"/></StackPanel>
+        <CheckBox x:Name="EnabledBox" Grid.Column="2" Content="Aktiviert" IsChecked="True" VerticalAlignment="Bottom" Margin="0,0,0,10"/>
+      </Grid>
+      <WrapPanel>
+        <Button x:Name="ApplyButton" Content="Hinzufügen / Übernehmen" Click="Apply_Click" Margin="0,0,8,6"/>
+        <Button Content="Neue Regel" Click="New_Click" Margin="0,0,8,6"/>
+        <Button x:Name="RemoveButton" Content="Entfernen" IsEnabled="False" Click="Remove_Click" Margin="0,0,0,6"/>
+      </WrapPanel>
+    </StackPanel>
+    <StackPanel Grid.Row="3" Margin="0,12,0,12">
+      <TextBlock Text="Explizite Regeln gelten auch für Spiele und Sprachchat; ein aktives Gesamtlimit gilt zusätzlich. Pause und freie Nachtzeit setzen Regeln aus. Downloadbegrenzung wirkt erst am PC: kurze Bursts, VPN/Proxys sowie unbekannte Socket-Zuordnung können Grenzen verursachen." Foreground="{DynamicResource Muted}" FontSize="12"/>
+      <TextBlock x:Name="InfoText" Margin="0,8,0,0" Text="Auswählen → Hinzufügen / Übernehmen → Einstellungen speichern."/>
+    </StackPanel>
+    <DockPanel Grid.Row="4">
+      <Button x:Name="SaveButton" Content="Einstellungen speichern" DockPanel.Dock="Right" Click="Save_Click"/>
+      <TextBlock x:Name="CountText" VerticalAlignment="Center" Foreground="{DynamicResource Muted}"/>
+    </DockPanel>
+  </Grid>
+</Window>

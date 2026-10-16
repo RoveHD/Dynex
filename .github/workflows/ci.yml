@@ -43,7 +43,7 @@ jobs:
       matrix:
         # Traffic and Live need a real network filter/router and stay manual.
         # Update and SpeedTest also run here: Authenticode checks only exist on Windows.
-        suite: [Runtime, Setup, UserCleanup, GameDetection, Bulk, Shaper, Update, SpeedTest]
+        suite: [Runtime, Setup, UserCleanup, GameDetection, Bulk, Shaper, Update, SpeedTest, Devices, DeviceRuntime, ApplicationRules, UsageHistory]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -68,6 +68,12 @@ jobs:
       - name: Build
         shell: pwsh
         run: ./scripts/build.ps1
+      - name: Installer start and exclusion checks
+        shell: pwsh
+        run: |
+          $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          ./tests/installer-update-smoke.ps1 -PayloadRoot "artifacts/publish-$version" -ExpectedVersion $version -NsisPath "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: dynex-unsigned-${{ github.sha }}

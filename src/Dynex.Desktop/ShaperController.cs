@@ -11,9 +11,11 @@ namespace Dynex.Desktop;
 
 /// <summary>Busiest program on this PC as counted (read-only) by the helper.</summary>
 public sealed record ProgramTraffic(string Name, double DownMbps, double UpMbps);
+public sealed record GameTrafficIdentity(int ProcessId, long StartedAtUtcTicks);
 
 internal sealed class ShaperController : IAsyncDisposable
 {
+    private const int MaximumStatusLineLength = 32768;
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint processId);
@@ -27,15 +29,31 @@ internal sealed class ShaperController : IAsyncDisposable
     private readonly SemaphoreSlim stopGate = new(1);
     private int stopping;
     private bool captureRequested, shutdownConfirmed;
+    private bool observationRequested;
     private bool startAttempted, captureReleased;
     private long nextCommandId, pendingReleaseId;
     private string? releaseFailure;
     private ShaperStatus status = new(false, null, "Downloadbegrenzung ausgeschaltet");
     private long lastStatus;
+    private Dictionary<GameTrafficIdentity, long> activeGameExpirations = [];
     public bool IsAvailable => File.Exists(Path.Combine(AppContext.BaseDirectory, "shaper", "Dynex.Shaper.exe"));
     public bool CaptureReleased { get { lock (sync) return releaseFailure is null && (!captureRequested || captureReleased); } }
     internal bool StartAttempted { get { lock (sync) return startAttempted; } }
-    public ShaperStatus Status { get { lock (sync) return (status.Active || status.QosActive) && Stopwatch.GetElapsedTime(lastStatus).TotalSeconds > 6 ? new(false, null, "Netzwerkpriorisierung antwortet nicht mehr") : status; } }
+    public ShaperStatus Status
+    {
+        get
+        {
+            lock (sync)
+            {
+                if ((status.Active || status.QosActive || status.ObservingGameTraffic || status.ApplicationRulesActive || observationRequested) &&
+                    Stopwatch.GetElapsedTime(lastStatus).TotalSeconds > 6)
+                    return new(false, null, "Netzwerkpriorisierung antwortet nicht mehr");
+                if (status.ActiveGameProcesses is null) return status;
+                var now = Stopwatch.GetTimestamp();
+                return status with { ActiveGameProcesses = activeGameExpirations.Where(pair => pair.Value > now).Select(pair => pair.Key).ToArray() };
+            }
+        }
+    }
     public async Task StartAsync()
     {
         lock (sync) if (releaseFailure is not null) { Set(new(false, null, releaseFailure)); return; }
@@ -83,13 +101,18 @@ internal sealed class ShaperController : IAsyncDisposable
         }
     }
     public async Task ApplyAsync(double? mbps, CancellationToken token, IReadOnlyList<GameDetectionResult>? games = null, bool qosEnabled = false,
-        Func<bool>? protectionStillNeeded = null, double? uploadMbps = null)
+        Func<bool>? protectionStillNeeded = null, double? uploadMbps = null, bool observeGameTraffic = false,
+        Func<bool>? observationStillNeeded = null, IReadOnlyList<ApplicationRule>? appRules = null,
+        Func<bool>? applicationRulesStillNeeded = null)
     {
-        if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue) && !StartAttempted) await StartAsync();
+        var rules = ApplicationRules.Normalize(appRules).Where(r => r.Enabled).ToArray();
+        if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue || observeGameTraffic || rules.Length != 0) && !StartAttempted) await StartAsync();
         // UAC/connection setup can take seconds. Recheck live foreground/peer
         // state before activating capture instead of using the pre-prompt state.
         if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue) && protectionStillNeeded?.Invoke() == false)
         { mbps = null; qosEnabled = false; uploadMbps = null; }
+        if (observeGameTraffic && observationStillNeeded?.Invoke() == false) observeGameTraffic = false;
+        if (rules.Length != 0 && applicationRulesStillNeeded?.Invoke() == false) rules = [];
         if (writer == null || Volatile.Read(ref stopping) != 0) return;
         var protectedProcesses = (games ?? []).Where(g => g.IsRunning && g.ProcessId > 0).Take(128)
             .Select(g => new { processId = g.ProcessId, startedAtUtcTicks = g.ProcessStartedAt?.UtcTicks }).ToArray();
@@ -105,7 +128,8 @@ internal sealed class ShaperController : IAsyncDisposable
                 lock (sync)
                 {
                     commandId = ++nextCommandId;
-                    if (mbps.HasValue || qosEnabled || uploadMbps.HasValue)
+                    observationRequested = observeGameTraffic;
+                    if (mbps.HasValue || qosEnabled || uploadMbps.HasValue || observeGameTraffic || rules.Length != 0)
                     { captureRequested = true; captureReleased = false; pendingReleaseId = 0; }
                     else if (captureRequested && !captureReleased)
                     {
@@ -115,7 +139,9 @@ internal sealed class ShaperController : IAsyncDisposable
                         else commandId = pendingReleaseId;
                     }
                 }
-                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled, commandId }).AsMemory(), timeout.Token);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled,
+                    observeGameTraffic, applicationRules = rules.Select(r => new { processName = r.ProcessName,
+                        downloadMbps = r.DownloadMbps, uploadMbps = r.UploadMbps }), commandId }).AsMemory(), timeout.Token);
             }
             finally { writeGate.Release(); }
         }
@@ -127,15 +153,19 @@ internal sealed class ShaperController : IAsyncDisposable
     private async Task ReadStatusAsync(Stream stream, CancellationToken token)
     {
         using var input = new StreamReader(stream, Encoding.UTF8, false, 1024, true);
+        var lineBuffer = new char[MaximumStatusLineLength + 1];
         try
         {
-            while (await input.ReadLineAsync(token) is string line)
+            while (await ReadStatusLineAsync(input, lineBuffer, token) is string line)
             {
-                if (line.Length > 8192) throw new IOException("Ungültige Helferantwort.");
                 using var json = JsonDocument.Parse(line);
                 var root = json.RootElement;
                 var active = root.TryGetProperty("active", out var activeValue) && activeValue.GetBoolean();
                 var qosActive = root.TryGetProperty("qosActive", out var qosValue) && qosValue.GetBoolean();
+                var appActive = root.TryGetProperty("applicationRulesActive", out var appValue) && appValue.GetBoolean();
+                var observationSupported = root.TryGetProperty("observingGameTraffic", out var observingValue);
+                var observing = observationSupported && observingValue.GetBoolean();
+                var expirations = ReadActiveGames(root, observing);
                 var gamePackets = ReadCounter(root, "gamePriorityPackets");
                 var voicePackets = ReadCounter(root, "voicePriorityPackets");
                 var limit = root.TryGetProperty("mbps", out var rate) && rate.ValueKind == JsonValueKind.Number ? rate.GetDouble() : (double?)null;
@@ -150,13 +180,17 @@ internal sealed class ShaperController : IAsyncDisposable
                             programs.Add(new(name, item.GetProperty("downMbps").GetDouble(), item.GetProperty("upMbps").GetDouble()));
                 var next = new ShaperStatus(active, active ? limit : null, error ?? (active
                     ? qosActive ? "Große Downloads begrenzt · Spiele und Sprachchat priorisiert." : "Große Downloads begrenzt · Spiele und Sprachchat frei."
-                    : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt." : "Bereit. Downloads sind momentan nicht begrenzt."),
-                    qosActive, gamePackets, voicePackets, uploadLimit, programs);
+                    : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt."
+                    : appActive ? "Programmregeln aktiv · Limits je Programm werden durchgesetzt."
+                    : observing ? "Spielverkehr wird beobachtet · Downloads sind momentan nicht begrenzt."
+                    : "Bereit. Downloads sind momentan nicht begrenzt."),
+                    qosActive, gamePackets, voicePackets, uploadLimit, programs, observing,
+                    observing ? expirations.Keys.ToArray() : null, appActive);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
                         releaseFailure ??= cleanup.GetString();
-                    if (pendingReleaseId != 0 && !active && !qosActive && !uploadActive && limit is null &&
+                    if (pendingReleaseId != 0 && !active && !qosActive && !uploadActive && !observing && !appActive && limit is null &&
                         root.TryGetProperty("commandId", out var acknowledged) && acknowledged.TryGetInt64(out var acknowledgedId) &&
                         acknowledgedId == pendingReleaseId &&
                         root.TryGetProperty("captureReleased", out var capture) && capture.ValueKind == JsonValueKind.True &&
@@ -164,12 +198,15 @@ internal sealed class ShaperController : IAsyncDisposable
                     { captureReleased = true; pendingReleaseId = 0; }
                     // An old inactive status is not an acknowledgement of this
                     // shutdown. Require the helper's explicit final frame.
-                    if (!active && !qosActive && !uploadActive && limit is null && root.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True &&
+                    if (!active && !qosActive && !uploadActive && !observing && !appActive && limit is null && root.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True &&
                         root.TryGetProperty("releaseError", out var released) && released.ValueKind == JsonValueKind.Null)
                         shutdownConfirmed = true;
                     // Publish the new status together with the release flags. Otherwise a snapshot taken
                     // in between sees "capture released" next to the previous "QoS active" status.
+                    if (observationRequested && !observationSupported && error is null)
+                        next = next with { Message = "Spielverkehr-Beobachtung wird vom Helfer nicht unterstützt. DYNEX bitte aktualisieren." };
                     status = releaseFailure is null ? next : new(false, null, releaseFailure);
+                    activeGameExpirations = releaseFailure is null ? expirations : [];
                     lastStatus = Stopwatch.GetTimestamp();
                 }
             }
@@ -182,17 +219,49 @@ internal sealed class ShaperController : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or ObjectDisposedException)
         { Set(new(false, null, "Helferstatus ungültig: " + ex.Message)); cancellation?.Cancel(); pipe?.Dispose(); }
     }
+    private static async Task<string?> ReadStatusLineAsync(StreamReader input, char[] buffer, CancellationToken token)
+    {
+        var count = 0;
+        while (await input.ReadAsync(buffer.AsMemory(count, 1), token) != 0)
+        {
+            if (buffer[count] == '\n') return new string(buffer, 0, count).TrimEnd('\r');
+            if (++count > MaximumStatusLineLength) throw new IOException("Ungültige Helferantwort: Größenlimit überschritten.");
+        }
+        if (count != 0) throw new EndOfStreamException("Unvollständige Helferantwort.");
+        return null;
+    }
     private static long ReadCounter(JsonElement root, string name)
     {
         if (!root.TryGetProperty(name, out var value)) return 0;
         if (!value.TryGetInt64(out var count) || count < 0) throw new JsonException("Ungültiger Priorisierungszähler.");
         return count;
     }
+    private static Dictionary<GameTrafficIdentity, long> ReadActiveGames(JsonElement root, bool observing)
+    {
+        var result = new Dictionary<GameTrafficIdentity, long>();
+        if (!observing) return result;
+        if (!root.TryGetProperty("activeGameProcesses", out var games) || games.ValueKind != JsonValueKind.Array || games.GetArrayLength() > 128)
+            throw new JsonException("Ungültige Spielverkehr-Identitäten.");
+        var now = Stopwatch.GetTimestamp();
+        foreach (var game in games.EnumerateArray())
+        {
+            if (!game.TryGetProperty("processId", out var pid) || !pid.TryGetInt32(out var processId) || processId <= 0 ||
+                !game.TryGetProperty("startedAtUtcTicks", out var start) || !start.TryGetInt64(out var ticks) || ticks <= 0 || ticks > DateTime.MaxValue.Ticks ||
+                !game.TryGetProperty("ageSeconds", out var ageValue) || !ageValue.TryGetDouble(out var age) || !double.IsFinite(age) || age < 0)
+                throw new JsonException("Ungültige Spielverkehr-Identität.");
+            if (age >= 10) continue;
+            var identity = new GameTrafficIdentity(processId, ticks);
+            if (!result.TryAdd(identity, now + (long)((10 - age) * Stopwatch.Frequency)))
+                throw new JsonException("Doppelte Spielverkehr-Identität.");
+        }
+        return result;
+    }
     private void Set(ShaperStatus value)
     {
         lock (sync)
         {
             status = releaseFailure is null ? value : new(false, null, releaseFailure);
+            activeGameExpirations.Clear();
             lastStatus = Stopwatch.GetTimestamp();
         }
     }
@@ -241,6 +310,7 @@ internal sealed class ShaperController : IAsyncDisposable
                     releaseFailure ??= "Freigabe der Downloadbegrenzung nicht bestätigt: Der Helfer hat keine erfolgreiche Abschaltung bestätigt.";
                 Set(new(false, null, "Downloadbegrenzung ausgeschaltet"));
                 if (shutdownConfirmed) captureReleased = true;
+                observationRequested = false;
                 if (resetStartAttempt) startAttempted = false;
                 if (requireExit && releaseFailure is not null) throw new InvalidOperationException(releaseFailure);
             }
@@ -250,5 +320,6 @@ internal sealed class ShaperController : IAsyncDisposable
     public async ValueTask DisposeAsync() => await StopAsync();
     internal sealed record ShaperStatus(bool Active, double? Mbps, string Message,
         bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0, double? UploadMbps = null,
-        IReadOnlyList<ProgramTraffic>? TopPrograms = null);
+        IReadOnlyList<ProgramTraffic>? TopPrograms = null, bool ObservingGameTraffic = false,
+        IReadOnlyList<GameTrafficIdentity>? ActiveGameProcesses = null, bool ApplicationRulesActive = false);
 }

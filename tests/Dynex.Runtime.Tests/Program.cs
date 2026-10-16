@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Text.Json;
 using Dynex.Desktop;
 using Dynex.Core;
@@ -29,6 +29,190 @@ async Task Scenario(string name, Func<Task> run)
     }
 }
 var timeout = TimeSpan.FromSeconds(8);
+
+await Scenario("network-specific profiles and measurement isolation", () => NetworkProfileChecks.RunAsync(Check));
+if (args.Contains("--profiles-only"))
+{
+    Console.WriteLine($"Network profile checks: {checks} passed, {failures.Count} failed.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
+await Scenario("immediate network settings and direct peer probes", () => NetworkSettingsChecks.RunAsync(Check));
+await Scenario("startup file access diagnostics", () => { StartupStorageChecks.Run(Check); return Task.CompletedTask; });
+if (args.Contains("--network-only"))
+{
+    Console.WriteLine($"Network/startup checks: {checks} passed, {failures.Count} scenarios failed.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
+await Scenario("explicit refresh preserves settings, discovery and monitor history", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ => []);
+    await runtime.StartAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot?.External.Count > 0);
+    var prior = runtime.Snapshot!;
+    var settings = runtime.Settings;
+    var peer = LocalPeers(runtime);
+    var worker = Field(runtime, "worker");
+    var path = Path.Combine(profile.Path, "settings.json");
+    var saved = File.ReadAllText(path);
+    // Any accidental settings write fails rather than silently passing this regression.
+    using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+    {
+        var refreshed = await runtime.RefreshStatusAsync().WaitAsync(timeout);
+        Check(refreshed.History.Count > prior.History.Count && refreshed.External.Count > prior.External.Count &&
+            refreshed.History.Take(prior.History.Count).SequenceEqual(prior.History),
+            "explicit refresh performs a new probe and retains the existing monitor and history");
+        Check(ReferenceEquals(peer, LocalPeers(runtime)) && ReferenceEquals(worker, Field(runtime, "worker")) &&
+            ReferenceEquals(settings, runtime.Settings), "refresh retains the worker, peer session and settings instance");
+    }
+    Check(File.ReadAllText(path) == saved && new SettingsStore(profile.Path).Load() == settings,
+        "refresh does not save or alter persisted settings");
+    var check = await runtime.CheckNetworkAsync();
+    Check(check.FirewallConfigured is null && ReferenceEquals(check, Field(runtime, "networkConnection")),
+        "connection checks publish one complete immutable read-only result");
+});
+
+await Scenario("refresh queued during a probe waits for a new sequential probe", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    using var firstRelease = new ManualResetEventSlim();
+    using var secondRelease = new ManualResetEventSlim();
+    var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var calls = 0;
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ =>
+    {
+        var call = Interlocked.Increment(ref calls);
+        if (call == 1) { firstEntered.TrySetResult(); firstRelease.Wait(timeout); }
+        if (call == 2) { secondEntered.TrySetResult(); secondRelease.Wait(timeout); }
+        return [];
+    });
+    try
+    {
+        await runtime.StartAsync().WaitAsync(timeout);
+        await firstEntered.Task.WaitAsync(timeout);
+        var refreshed = runtime.RefreshStatusAsync();
+        firstRelease.Set();
+        await secondEntered.Task.WaitAsync(timeout);
+        Check(!refreshed.IsCompleted && runtime.Snapshot?.History.Count == 1,
+            "an in-flight sample cannot satisfy a newer refresh request or run probes concurrently");
+        secondRelease.Set();
+        Check((await refreshed.WaitAsync(timeout)).History.Count >= 2,
+            "the queued refresh completes with the following published full sample");
+    }
+    finally { firstRelease.Set(); secondRelease.Set(); }
+});
+
+await Scenario("stop and settings replacement settle pending refreshes", async () =>
+{
+    foreach (var save in new[] { false, true })
+    {
+        using var profile = new TestProfile(measured: true);
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) { entered.TrySetResult(); release.Wait(timeout); }
+            return [];
+        });
+        try
+        {
+            await runtime.StartAsync().WaitAsync(timeout);
+            await entered.Task.WaitAsync(timeout);
+            var refreshed = runtime.RefreshStatusAsync();
+            var transition = save ? runtime.SaveSettingsAsync(runtime.Settings with { DeviceName = "New settings" }) : runtime.StopAsync();
+            await Until(() => Field(runtime, "refreshRequests") is null);
+            release.Set();
+            await transition.WaitAsync(timeout);
+            var canceled = false;
+            try { await refreshed.WaitAsync(timeout); }
+            catch (OperationCanceledException) { canceled = true; }
+            Check(canceled, save ? "settings replacement cancels refreshes owned by the old worker" : "stop cancels queued refreshes without an endless wait");
+            if (!save)
+            {
+                var rejected = false;
+                try { await runtime.RefreshStatusAsync(); }
+                catch (InvalidOperationException) { rejected = true; }
+                Check(rejected, "refresh on a stopped runtime fails explicitly");
+                await runtime.StartAsync().WaitAsync(timeout);
+            }
+            Check((await runtime.RefreshStatusAsync().WaitAsync(timeout)).Devices.Count > 0,
+                "a replacement worker accepts fresh requests after its predecessor is gone");
+        }
+        finally { release.Set(); }
+    }
+});
+
+await Scenario("refresh remains available during a running speed test", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    var service = new ControlledSpeedTest();
+    await using var runtime = new DynexRuntime(profile.Path, service, _ => []);
+    await runtime.StartAsync().WaitAsync(timeout);
+    var measurement = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
+    var peer = LocalPeers(runtime);
+    var refreshed = await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    Check(runtime.IsSpeedTestRunning && !request.Completion.Task.IsCompleted && ReferenceEquals(peer, LocalPeers(runtime)) &&
+        refreshed.State == "Internetgeschwindigkeit wird gemessen" && refreshed.History.Count > 0,
+        "refresh gets a full live snapshot without waiting for the speed-test lifecycle gate");
+    await runtime.StopAsync().WaitAsync(timeout);
+    await measurement.WaitAsync(timeout);
+});
+
+await Scenario("refresh failures and caller cancellation settle explicitly", async () =>
+{
+    using var profile = new TestProfile(measured: true);
+    var fail = false;
+    await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ =>
+        Volatile.Read(ref fail) ? throw new InvalidOperationException("Controlled probe failure") : []);
+    await runtime.StartAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot is not null);
+    var staleRouter = new RouterTrafficSample(10, 2, "Previous router");
+    typeof(DynexRuntime).GetField("lastRouterSample", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(runtime, staleRouter);
+    typeof(DynexRuntime).GetProperty(nameof(DynexRuntime.Snapshot))!.SetValue(runtime, runtime.Snapshot! with { HomeTraffic = staleRouter });
+    Volatile.Write(ref fail, true);
+    var failed = false;
+    try { await runtime.RefreshStatusAsync().WaitAsync(timeout); }
+    catch (InvalidOperationException error) when (error.Message == "Controlled probe failure") { failed = true; }
+    Check(failed && runtime.Snapshot?.State == "Messung unterbrochen", "failed probes publish the failure and reject their refresh request");
+    Check(runtime.Snapshot?.HomeTraffic is null && Field(runtime, "lastRouterSample") is null,
+        "measurement failures clear stale router throughput and guide identity");
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+    var canceled = false;
+    try { await runtime.RefreshStatusAsync(cancellation.Token); }
+    catch (OperationCanceledException) { canceled = true; }
+    Check(canceled, "caller cancellation does not wait for or restart the worker");
+    Volatile.Write(ref fail, false);
+    Check((await runtime.RefreshStatusAsync().WaitAsync(timeout)).State != "Messung unterbrochen", "monitoring and explicit refresh recover after a failed probe");
+});
+
+await Scenario("network diagnostic subprocesses are asynchronous, bounded and cancelable", async () =>
+{
+    ProcessStartInfo Command(string text) => new("powershell.exe")
+    {
+        ArgumentList = { "-NoProfile", "-NonInteractive", "-Command", text },
+        RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+    };
+    var output = await NetworkConnectionCheck.ReadProcessOutputAsync(Command("[Console]::Write('diagnostic-output')"), timeout, default).WaitAsync(timeout);
+    Check(output == "diagnostic-output", "diagnostic process output is drained without synchronous ReadToEnd");
+    var timer = Stopwatch.StartNew();
+    output = await NetworkConnectionCheck.ReadProcessOutputAsync(Command("Start-Sleep -Seconds 30"), TimeSpan.FromMilliseconds(200), default).WaitAsync(timeout);
+    Check(output is null && timer.Elapsed < timeout, "a child that never closes stdout is killed after its deadline");
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+    var canceled = false;
+    try { await NetworkConnectionCheck.ReadProcessOutputAsync(Command("Start-Sleep -Seconds 30"), timeout, cancellation.Token).WaitAsync(timeout); }
+    catch (OperationCanceledException) { canceled = true; }
+    Check(canceled, "caller cancellation interrupts and kills a diagnostic process");
+});
 
 await Scenario("export and import activate the same private-group transport", async () =>
 {
@@ -639,6 +823,8 @@ await Scenario("attempt-marker persistence failure restores protection", async (
 });
 
 
+await Scenario("actual game packet activity controls limits", () => GameTrafficChecks.Run(Check));
+
 await Scenario("foreground focus gates manual and legacy always-on limits", async () =>
 {
     using var profile = new TestProfile(measured: true);
@@ -651,7 +837,8 @@ await Scenario("foreground focus gates manual and legacy always-on limits", asyn
     ];
     ForegroundProcess? foreground = null;
     await using var runtime = new DynexRuntime(profile.Path, service, _ => Volatile.Read(ref games),
-        () => Volatile.Read(ref foreground));
+        () => Volatile.Read(ref foreground), readGameTraffic: () => Volatile.Read(ref games)
+            .Select(g => new GameTrafficIdentity(g.ProcessId!.Value, g.ProcessStartedAt!.Value.UtcTicks)).ToArray());
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On, ManualLimitMbps = 25 });
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
@@ -692,7 +879,8 @@ await Scenario("remote focus survives local Alt-Tab and inactive peers release m
     var started = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
     ForegroundProcess? foreground = new(101, "localgame", started);
     await using var runtime = new DynexRuntime(profile.Path, service,
-        _ => [new("Local game", "localgame", 101, started, true, "test")], () => Volatile.Read(ref foreground));
+        _ => [new("Local game", "localgame", 101, started, true, "test")], () => Volatile.Read(ref foreground),
+        readGameTraffic: () => [new(101, started.UtcTicks)]);
     await runtime.SaveSettingsAsync(runtime.Settings with { ManualLimitMbps = 20 });
     var remoteSettings = CoreConfiguration(runtime) with
     {
@@ -728,8 +916,10 @@ await Scenario("focused gaming cannot bypass the successful measurement gate", a
     using var profile = new TestProfile();
     var store = new SettingsStore(profile.Path);
     store.Save(store.Load() with { AutomaticSpeedTestAttempted = true, ManualLimitMbps = 10 });
+    var started = DateTimeOffset.UtcNow.AddMinutes(-1);
     await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
-        _ => [new("Unmeasured game", "testgame", 101, null, true, "test")], () => new(101, "testgame", null));
+        _ => [new("Unmeasured game", "testgame", 101, started, true, "test")], () => new(101, "testgame", started),
+        readGameTraffic: () => [new(101, started.UtcTicks)]);
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.IsGaming == true);
     Check(runtime.PlannedDownloadLimitMbps is null && runtime.Snapshot is
@@ -763,7 +953,9 @@ await Scenario("real helper capture follows local/remote focused gaming only", a
     GameDetectionResult[] games = [];
     ForegroundProcess? foreground = new(404, "Discord", started);
     await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
-        _ => Volatile.Read(ref games), () => Volatile.Read(ref foreground), fixture.Controller);
+        _ => Volatile.Read(ref games), () => Volatile.Read(ref foreground), fixture.Controller,
+        readGameTraffic: () => Volatile.Read(ref games)
+            .Select(g => new GameTrafficIdentity(g.ProcessId!.Value, g.ProcessStartedAt!.Value.UtcTicks)).ToArray());
     await runtime.SaveSettingsAsync(runtime.Settings with { DriverEnabled = true, ManualLimitMbps = 20 });
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.ProtectionIdle == true);
@@ -824,10 +1016,12 @@ await Scenario("unmeasured focused gaming uses QoS only and still releases on Al
     var store = new SettingsStore(profile.Path);
     store.Save(store.Load() with { AutomaticSpeedTestAttempted = true, DriverEnabled = true, ManualLimitMbps = 10 });
     using var fixture = await CaptureFixture.CreateAsync();
-    ForegroundProcess? foreground = new(101, "testgame", null);
+    var started = DateTimeOffset.UtcNow.AddMinutes(-1);
+    ForegroundProcess? foreground = new(101, "testgame", started);
     await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
-        _ => [new("Unmeasured game", "testgame", 101, null, true, "test")],
-        () => Volatile.Read(ref foreground), fixture.Controller);
+        _ => [new("Unmeasured game", "testgame", 101, started, true, "test")],
+        () => Volatile.Read(ref foreground), fixture.Controller,
+        readGameTraffic: () => [new(101, started.UtcTicks)]);
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => fixture.Created == 1 && runtime.Snapshot?.QosActive == true);
     Check(runtime.Snapshot is { DriverActive: false, LimitMbps: null } && runtime.PlannedDownloadLimitMbps is null,
@@ -973,6 +1167,11 @@ sealed class CaptureFixture : IDisposable
     public Task<int> Helper { get; private set; } = null!;
     public int Created => devices.Count;
     public int Disposed => devices.Count(d => d.Disposed);
+    public void Inject(CapturedPacket packet)
+    {
+        var device = devices.FirstOrDefault(d => !d.Disposed);
+        if (device is null || !device.TryInject(packet)) packet.Dispose();
+    }
     private CaptureFixture(string name)
     {
         server = new(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -1015,5 +1214,10 @@ sealed class CaptureTestDevice : IPacketDevice
     public bool Disposed { get; private set; }
     public CapturedPacket Receive() => packets.Take();
     public void Send(CapturedPacket packet) { }
+    public bool TryInject(CapturedPacket packet)
+    {
+        try { return packets.TryAdd(packet); }
+        catch (InvalidOperationException) { return false; }
+    }
     public void Dispose() { Disposed = true; packets.CompleteAdding(); }
 }

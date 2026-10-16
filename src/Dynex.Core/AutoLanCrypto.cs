@@ -53,8 +53,11 @@ internal sealed class AutoLanCrypto : IDisposable
         return packet;
     }
 
-    internal static AutoHello? Verify(ReadOnlySpan<byte> packet, DateTimeOffset now)
+    internal static AutoHello? Verify(ReadOnlySpan<byte> packet, DateTimeOffset now) => Verify(packet, now, out _);
+
+    internal static AutoHello? Verify(ReadOnlySpan<byte> packet, DateTimeOffset now, out bool authenticatedClockSkew)
     {
+        authenticatedClockSkew = false;
         if (packet.Length is < 72 or > MaxDatagram || !packet[..4].SequenceEqual("DYNA"u8) || packet[4] != 1 || packet[5] is not (1 or 2) ||
             BinaryPrimitives.ReadUInt16BigEndian(packet.Slice(6, 2)) + 72 != packet.Length) return null;
         try
@@ -62,7 +65,6 @@ internal sealed class AutoLanCrypto : IDisposable
             var hello = JsonSerializer.Deserialize<AutoHello>(packet.Slice(8, packet.Length - 72));
             if (hello is null || hello.DeviceId == Guid.Empty || hello.SessionId == Guid.Empty ||
                 hello.SigningPublicKey?.Length != 124 || hello.ExchangePublicKey?.Length != 124 || hello.Challenge?.Length != 44 ||
-                Math.Abs((decimal)now.ToUnixTimeMilliseconds() - hello.SentAtUnixMs) > 30000 ||
                 hello.AppVersion is { } version && !IsVersion(version) ||
                 packet[5] == 1 && (hello.TargetId is not null || hello.TargetSession is not null || hello.TargetChallenge is not null || hello.TargetExchangePublicKey is not null) ||
                 packet[5] == 2 && (hello.TargetId is null || hello.TargetSession is null || hello.TargetChallenge?.Length != 44 || hello.TargetExchangePublicKey?.Length != 124)) return null;
@@ -80,6 +82,8 @@ internal sealed class AutoLanCrypto : IDisposable
             dh.ImportSubjectPublicKeyInfo(exchange, out read);
             if (read != exchange.Length || dh.ExportParameters(false).Curve.Oid.Value != "1.2.840.10045.3.1.7" ||
                 !dh.ExportSubjectPublicKeyInfo().AsSpan().SequenceEqual(exchange)) return null;
+            if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - hello.SentAtUnixMs) > 30000)
+            { authenticatedClockSkew = true; return null; }
             return hello;
         }
         catch (Exception e) when (e is CryptographicException or ArgumentException or FormatException or JsonException) { return null; }
@@ -128,15 +132,18 @@ internal sealed class AutoLanCrypto : IDisposable
         finally { CryptographicOperations.ZeroMemory(plain); }
     }
 
-    internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now)
+    internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now) => Decrypt(channel, packet, now, out _);
+
+    internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now, out bool authenticatedClockSkew)
     {
+        authenticatedClockSkew = false;
         if (packet.Length is < StatusHeader + 16 or > MaxDatagram || !packet[..4].SequenceEqual("DYNA"u8) || packet[4] != 1 || packet[5] != 3 ||
             new Guid(packet.Slice(6, 16)) != channel.Remote.DeviceId || new Guid(packet.Slice(22, 16)) != Local.DeviceId ||
             new Guid(packet.Slice(38, 16)) != channel.Remote.SessionId || new Guid(packet.Slice(54, 16)) != Local.SessionId ||
             BinaryPrimitives.ReadUInt16BigEndian(packet.Slice(98, 2)) + StatusHeader + 16 != packet.Length) return null;
         var sequence = BinaryPrimitives.ReadInt64BigEndian(packet.Slice(70, 8));
         var sent = BinaryPrimitives.ReadInt64BigEndian(packet.Slice(78, 8));
-        if (sequence <= channel.LastReceivedSequence || Math.Abs((decimal)now.ToUnixTimeMilliseconds() - sent) > 30000) return null;
+        if (sequence <= channel.LastReceivedSequence) return null;
         var plain = new byte[packet.Length - StatusHeader - 16];
         try
         {
@@ -150,6 +157,8 @@ internal sealed class AutoLanCrypto : IDisposable
                 !Valid(wire.IdleBaselineMs, 10000) || wire.LatencyTargetId?.Length > 256 || wire.LatencyTargetId?.Any(char.IsControl) == true ||
                 wire.LatencySampleSequence is <= 0 || wire.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(wire.ShareWeight) ||
                 !WireAdvertisement.ValidProgram(wire.TopProgram)) return null;
+            if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - sent) > 30000)
+            { authenticatedClockSkew = true; return null; }
             channel.LastReceivedSequence = sequence;
             return wire;
         }

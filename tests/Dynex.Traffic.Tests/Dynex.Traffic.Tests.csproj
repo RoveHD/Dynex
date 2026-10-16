@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/Dynex.Shaper/TrafficOwnership.cs" Link="TrafficOwnership.cs" />
+    <Compile Include="../../src/Dynex.Desktop/Native/ProcessTable.cs" Link="Native/ProcessTable.cs" />
   </ItemGroup>
 </Project>

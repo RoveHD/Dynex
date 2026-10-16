@@ -48,7 +48,7 @@ internal static class ComfortTests
         // Router guide
         check(RouterGuide.For("AVM", "FRITZ!Box 7590", null).Steps[1].Contains("Priorisierung"), "FRITZ!Box guide names the prioritization page");
         check(RouterGuide.For(null, null, "OpenWrt").Steps.Any(s => s.Contains("cake")), "OpenWrt guide uses SQM/cake");
-        check(RouterGuide.For(null, null, null).Router == "Unbekannter Router" && RouterGuide.For(null, null, null).Steps.Count == 3, "unknown routers get generic steps");
+        check(RouterGuide.For(null, null, null).Router == "Internetrouter nicht erkannt" && RouterGuide.For(null, null, null).Steps.Count == 3, "unidentified Internet routers are stated honestly and get generic steps");
 
         // Weekly report
         SessionSummary[] sessions = [

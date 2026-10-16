@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Dynex.Shaper/Dynex.Shaper.csproj" />
     <Compile Include="../../src/Dynex.Desktop/ShaperController.cs" Link="Desktop/ShaperController.cs" />
+    <Compile Include="../../src/Dynex.Desktop/ApplicationRules.cs" Link="Desktop/ApplicationRules.cs" />
     <Compile Include="../../src/Dynex.Desktop/PacketFilterSetup.cs" Link="Desktop/PacketFilterSetup.cs" />
     <Compile Include="../../src/Dynex.Desktop/Games/*.cs" Link="Desktop/Games/%(Filename)%(Extension)" />
   </ItemGroup>

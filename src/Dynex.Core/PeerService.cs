@@ -6,7 +6,7 @@ using System.Net.Sockets;
 namespace Dynex.Core;
 
 /// <summary>Authenticated LAN discovery. Snapshots expire on receipt age, independently of network activity.</summary>
-public sealed class PeerService : IPeerService
+public sealed partial class PeerService : IPeerService
 {
     private static readonly IPAddress MulticastAddress = IPAddress.Parse("239.255.39.74");
     private readonly DynexSettings _settings;
@@ -25,17 +25,18 @@ public sealed class PeerService : IPeerService
     private IPAddress[] _interfaces = Array.Empty<IPAddress>();
     private LocalState _local = new(false, null, null, null, null, false, null, null, null, 0, null, 0);
     private string? _networkStatus;
-    private long _sent, _received, _accepted, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _clockSkew, _self;
+    private long _sent, _received, _accepted, _rejected, _scopeRejected, _otherMode, _lastReceiveUnixMs, _clockSkew, _self, _identityConflicts;
     private volatile bool _disposed;
 
     public event Action? PeersChanged;
-    public string? NetworkStatus => Volatile.Read(ref _networkStatus);
+    public string? NetworkStatus => !_deviceNetworkEnabled ? "Netzwerk gesperrt: Lokale Geräteliste konnte nicht sicher gelesen werden." : Volatile.Read(ref _networkStatus);
 
     public PeerService(DynexSettings settings)
     {
         settings.Validate(true);
         _settings = settings with { DirectPeers = settings.DirectPeers.Select(p => new IPEndPoint(p.Address, p.Port)).ToArray() };
         _codec = new PacketCodec(settings.GroupKeyBase64);
+        _connectionProbe = new(settings, null, IsExcluded);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -49,6 +50,7 @@ public sealed class PeerService : IPeerService
             try
             {
                 socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                SuppressUdpConnectionReset(socket);
                 socket.ReceiveBufferSize = 64 * 1024;
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 1);
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, false);
@@ -110,7 +112,8 @@ public sealed class PeerService : IPeerService
                 InvalidOrRejectedDatagrams: Interlocked.Read(ref _rejected), ScopeRejectedDatagrams: Interlocked.Read(ref _scopeRejected),
                 OtherModeDatagrams: Interlocked.Read(ref _otherMode), LastReceiveUtc: last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last),
                 ConnectedPeers: _peers.Count, LearnedEndpoints: _peers.Values.Select(p => p.Endpoint).Distinct().Count(),
-                AuthenticatedClockSkewDatagrams: Interlocked.Read(ref _clockSkew), SelfDatagrams: Interlocked.Read(ref _self));
+                AuthenticatedClockSkewDatagrams: Interlocked.Read(ref _clockSkew), SelfDatagrams: Interlocked.Read(ref _self),
+                ConflictingIdentityDatagrams: Interlocked.Read(ref _identityConflicts));
         }
     }
 
@@ -156,18 +159,27 @@ public sealed class PeerService : IPeerService
                 Interlocked.Exchange(ref _lastReceiveUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 if (!LanAddress.IsAllowed(endpoint.Address, _settings.LoopbackOnly))
                 { Interlocked.Increment(ref _scopeRejected); continue; }
+                if (!_deviceNetworkEnabled) continue;
+                if (ConnectionProbe.IsProbe(bytes.AsSpan(0, result.ReceivedBytes)))
+                { await _connectionProbe!.ReceiveAsync(bytes[..result.ReceivedBytes], endpoint, (packet, target, token) => SendAsync(socket, packet, target, token), cancellationToken).ConfigureAwait(false); continue; }
                 if (result.ReceivedBytes >= 4 && bytes.AsSpan(0, 4).SequenceEqual("DYNA"u8))
                 { Interlocked.Increment(ref _otherMode); continue; }
                 var wire = _codec.Decode(bytes.AsSpan(0, result.ReceivedBytes));
                 if (wire is null) { Interlocked.Increment(ref _rejected); continue; }
-                if (wire.DeviceId == _settings.DeviceId) { Interlocked.Increment(ref _self); continue; }
                 var now = DateTimeOffset.UtcNow;
                 // Bounds checked as decimal so an authenticated extreme Int64 cannot overflow subtraction.
                 if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - wire.SentAtUnixMs) > 30000)
                 { Interlocked.Increment(ref _rejected); Interlocked.Increment(ref _clockSkew); continue; }
+                if (wire.DeviceId == _settings.DeviceId)
+                {
+                    if (wire.SessionId == _session) Interlocked.Increment(ref _self);
+                    else Interlocked.Increment(ref _identityConflicts);
+                    continue;
+                }
                 var changed = false;
                 lock (_gate)
                 {
+                    if (IsExcluded(wire.DeviceId)) continue;
                     var tick = Stopwatch.GetTimestamp();
                     ExpireLocked(tick);
                     foreach (var old in _replay.Where(kv => Elapsed(kv.Value.Tick, tick) > TimeSpan.FromMinutes(10)).Select(kv => kv.Key).ToArray())
@@ -186,7 +198,7 @@ public sealed class PeerService : IPeerService
                         wire.DownloadMbps, wire.LatencyMs, now, endpoint.Address.ToString(), wire.AppliedLimitMbps,
                         wire.Game, wire.ShaperActive, wire.IdleBaselineMs, wire.LatencyTargetId,
                         wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId, UploadMbps: wire.UploadMbps,
-                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram), wire.SessionId, tick, endpoint);
+                        BudgetProposal: wire.BudgetProposal, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram, RemotePort: endpoint.Port), wire.SessionId, tick, endpoint);
                     Interlocked.Increment(ref _accepted);
                     changed = true;
                 }
@@ -218,6 +230,7 @@ public sealed class PeerService : IPeerService
         {
             do
             {
+                if (!_deviceNetworkEnabled) continue;
                 if (Interlocked.Exchange(ref _networkChanged, 0) != 0) RefreshInterfaces(socket);
                 var state = Volatile.Read(ref _local);
                 var throughputIsFresh = state.PublishedAtTick != 0 && Stopwatch.GetElapsedTime(state.PublishedAtTick) < _settings.PeerTtl;
@@ -260,10 +273,21 @@ public sealed class PeerService : IPeerService
     {
         try
         {
+            if (!_deviceNetworkEnabled) return;
             await socket.SendToAsync(packet.AsMemory(), SocketFlags.None, endpoint, cancellationToken).ConfigureAwait(false);
             Interlocked.Increment(ref _sent);
         }
         catch (SocketException e) { if (!cancellationToken.IsCancellationRequested) SetError("LAN-Senden: " + e.Message); }
+    }
+
+    internal static void SuppressUdpConnectionReset(Socket socket)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // A discovery probe to an unused port must not abort the unrelated pending receive.
+        // SIO_UDP_CONNRESET controls only ICMP PORT_UNREACHABLE reporting for this socket.
+        try { socket.IOControl(unchecked((IOControlCode)0x9800000C), new byte[4], null); }
+        catch (SocketException e) when (e.SocketErrorCode is SocketError.OperationNotSupported or SocketError.ProtocolOption)
+        { /* Non-Microsoft socket providers can retain the receive-loop fallback. */ }
     }
 
     private bool ExpireLocked(long now)

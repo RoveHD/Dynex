@@ -136,6 +136,7 @@ internal static class UninstallChecks
         catch (OperationCanceledException) { cancelled = true; }
         check(cancelled && system.Ownership?.FilterOrigin == SetupOwnership.Pending,
             "interrupted installation leaves pending journal instead of claiming ownership");
+        check(system.FirewallEnsures == 1, "LAN firewall is installed even when packet-filter MSI is cancelled");
         system.FilterPresent = system.KnownProductPresent = true;
         result = await InstallerSystem.RemoveAsync(system, app, false);
         check(result.ExitCode == 5201 && system.Removes == 0, "pending journal with surviving driver requires confirmation, never assumes ownership");
@@ -146,10 +147,11 @@ internal static class UninstallChecks
             "filter appearing before our MSI call is not adopted as DYNEX-created");
         system = new() { InstallCode = 3010 };
         check(await InstallerSystem.InstallAsync(system, app, "verified.msi") == 3010 && system.Ownership?.FilterOrigin == SetupOwnership.Owned,
-            "setup reboot result still records confirmed ownership before firewall setup");
+            "setup reboot result retains confirmed filter ownership and independent LAN setup");
         system = new() { FirewallEnsureError = new IOException("blocked") };
         try { await InstallerSystem.InstallAsync(system, app, "verified.msi"); } catch (IOException) { }
-        check(system.Ownership?.FilterOrigin == SetupOwnership.Owned, "firewall failure after MSI cannot lose ownership of installed filter");
+        check(system.Ownership?.FilterOrigin == SetupOwnership.Pending && system.Installs == 0,
+            "firewall policy error prevents starting MSI and preserves the setup journal");
         system = Owned(app);
         await InstallerSystem.InstallAsync(system, app, null, legacyInstallation: true);
         check(system.Ownership?.FilterOrigin == SetupOwnership.Owned, "upgrade flag never downgrades confirmed DYNEX filter ownership");
@@ -201,7 +203,7 @@ internal static class UninstallChecks
         public bool KnownProductPresent { get; set; }
         public string? BootIdentity { get; set; } = "boot-one";
         public SetupOwnership? Ownership { get; set; }
-        internal int Installs, Removes, FirewallRemoves, InstallCode, RemoveCode;
+        internal int Installs, Removes, FirewallRemoves, FirewallEnsures, InstallCode, RemoveCode;
         internal bool JournalBeforeInstall, ConcurrentInstall, LeaveFilter;
         internal Exception? RemoveError, FirewallRemoveError, FirewallEnsureError;
         public SetupOwnership? ReadOwnership() => Ownership;
@@ -220,7 +222,7 @@ internal static class UninstallChecks
             if (RemoveCode is 0 or 3010 or 1605 && !LeaveFilter) FilterPresent = KnownProductPresent = false;
             return Task.FromResult(RemoveCode);
         }
-        public void EnsureFirewall(string application) { if (FirewallEnsureError is not null) throw FirewallEnsureError; }
+        public void EnsureFirewall(string application) { if (FirewallEnsureError is not null) throw FirewallEnsureError; FirewallEnsures++; }
         public void RemoveFirewall(string application) { if (FirewallRemoveError is not null) throw FirewallRemoveError; FirewallRemoves++; }
     }
 }

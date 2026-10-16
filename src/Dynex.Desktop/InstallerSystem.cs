@@ -57,6 +57,9 @@ internal static class InstallerSystem
         // Journal before MSI: an interrupted setup must not lose track of a
         // possible system change. Pending alone never proves filter ownership.
         system.WriteOwnership(ownership);
+        // PC discovery is independent of the optional packet-filter download.
+        // Keep LAN usable even when the MSI fails or needs another attempt.
+        system.EnsureFirewall(application);
         var restart = false;
         if (!system.FilterPresent && !system.KnownProductPresent)
         {
@@ -71,7 +74,6 @@ internal static class InstallerSystem
             system.WriteOwnership(ownership);
             restart = installed.ExitCode == 3010;
         }
-        system.EnsureFirewall(application);
         return restart ? 3010 : 0;
     }
 

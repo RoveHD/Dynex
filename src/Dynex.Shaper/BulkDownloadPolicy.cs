@@ -58,7 +58,7 @@ public sealed class BulkDownloadPolicy
         // The parser names the destination "local"; for outbound packets the source is this PC.
         if (packet.Direction == PacketDirection.Outbound)
             flow = new(flow.Protocol, flow.RemoteAddress, flow.RemotePort, flow.LocalAddress, flow.LocalPort);
-        if (IsLocal(flow.RemoteAddress) || flow.LocalPort is 53 or 5353 or 5355 or 39274 || flow.RemotePort is 53 or 5353 or 5355 or 39274)
+        if (IsLocal(flow.RemoteAddress, _localNetworks) || flow.LocalPort is 53 or 5353 or 5355 or 39274 || flow.RemotePort is 53 or 5353 or 5355 or 39274)
             return false;
         var snapshot = _snapshot();
         var age = _utcNow() - snapshot.CapturedAtUtc;
@@ -112,7 +112,7 @@ public sealed class BulkDownloadPolicy
         return activity.IsBulk;
     }
 
-    private bool IsLocal(IPAddress address)
+    internal static bool IsLocal(IPAddress address, IEnumerable<(IPAddress Address, int Prefix)> localNetworks)
     {
         if (IPAddress.IsLoopback(address)) return true;
         var bytes = address.GetAddressBytes();
@@ -120,7 +120,7 @@ public sealed class BulkDownloadPolicy
             bytes[0] == 172 && bytes[1] is >= 16 and <= 31 || bytes[0] == 192 && bytes[1] == 168 ||
             bytes[0] == 169 && bytes[1] == 254)) return true;
         if (bytes.Length == 16 && (address.IsIPv6LinkLocal || address.IsIPv6Multicast || (bytes[0] & 0xfe) == 0xfc)) return true;
-        foreach (var (local, prefix) in _localNetworks)
+        foreach (var (local, prefix) in localNetworks)
         {
             var other = local.GetAddressBytes();
             if (other.Length != bytes.Length || prefix <= 0 || prefix > bytes.Length * 8) continue;
@@ -132,7 +132,7 @@ public sealed class BulkDownloadPolicy
         return false;
     }
 
-    private static IEnumerable<(IPAddress Address, int Prefix)> GetLocalNetworks() => NetworkInterface.GetAllNetworkInterfaces()
+    internal static IEnumerable<(IPAddress Address, int Prefix)> GetLocalNetworks() => NetworkInterface.GetAllNetworkInterfaces()
         .Where(n => n.OperationalStatus == OperationalStatus.Up)
         .SelectMany(n => n.GetIPProperties().UnicastAddresses)
         .Where(a => a.Address.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)

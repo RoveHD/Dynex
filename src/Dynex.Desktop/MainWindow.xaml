@@ -1,92 +1,860 @@
-<Window x:Class="Dynex.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
- Icon="/Assets/dynex.ico" Title="DYNEX · Dynamic Network Experience" Width="1440" Height="940" MinWidth="900" MinHeight="650" Background="{StaticResource Bg}" Foreground="White" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" SnapsToDevicePixels="True"
- SizeChanged="Window_SizeChanged" SourceInitialized="Window_SourceInitialized" Closing="Window_Closing" StateChanged="Window_StateChanged">
- <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="56" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/></shell:WindowChrome.WindowChrome>
- <Window.Resources>
-  <Style x:Key="Card" TargetType="Border"><Setter Property="Background" Value="{StaticResource Panel}"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12"/></Style>
-  <Style x:Key="Caption" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}"/><Setter Property="Foreground" Value="{StaticResource Muted}"/></Style>
-  <Style x:Key="WrappedCheck" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="ContentTemplate"><Setter.Value><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap"/></DataTemplate></Setter.Value></Setter></Style>
-  <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Padding" Value="11,6"/></Style>
-  <Style x:Key="FieldLabel" TargetType="TextBlock" BasedOn="{StaticResource Caption}"><Setter Property="Margin" Value="0,10,0,5"/></Style>
- </Window.Resources>
- <Grid>
-  <Grid.RowDefinitions><RowDefinition Height="56"/><RowDefinition Height="42"/><RowDefinition Height="*"/><RowDefinition Height="28"/></Grid.RowDefinitions>
-  <Border Background="#0C0D11" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
-   <Grid Margin="18,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="200"/><ColumnDefinition Width="138"/></Grid.ColumnDefinitions>
-    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><Border Width="4" Height="28" Background="{StaticResource Accent}" Margin="0,0,12,0"/><StackPanel><TextBlock Text="DYNEX" FontSize="20" FontWeight="Bold"/><TextBlock Text="DYNAMIC NETWORK EXPERIENCE" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel></StackPanel>
-    <TextBlock x:Name="HeaderState" Grid.Column="1" Text="INITIALISIERUNG" Style="{StaticResource Caption}" VerticalAlignment="Center" HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="0,0,12,0"/>
-    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="—" Style="{StaticResource ChromeButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="Minimize_Click" ToolTip="Minimieren"/><Button x:Name="MaximizeButton" Content="□" Style="{StaticResource ChromeButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="Maximize_Click" ToolTip="Maximieren"/><Button Content="×" Style="{StaticResource ChromeCloseButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="CloseToTray_Click" ToolTip="Im Hintergrund weiterlaufen lassen"/></StackPanel>
-   </Grid>
-  </Border>
-  <Border Grid.Row="1" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Background="#0C0D11"><StackPanel Orientation="Horizontal" Margin="18,5,0,5"><Button x:Name="OverviewNavButton" Content="Übersicht" Click="OverviewNav_Click" Style="{StaticResource CompactButton}" FontSize="14" Padding="11,4" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}"/><Button x:Name="SettingsNavButton" Content="Einstellungen" Click="SettingsNav_Click" Style="{StaticResource CompactButton}" FontSize="14" Padding="11,4"/></StackPanel></Border>
-  <Grid Grid.Row="2" Margin="18,8">
-   <Grid x:Name="OverviewPage">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition x:Name="MetricsRow" Height="88"/><RowDefinition Height="*"/><RowDefinition x:Name="DevicesRow" Height="202"/></Grid.RowDefinitions>
-    <Grid Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="260"/></Grid.ColumnDefinitions>
-     <StackPanel><TextBlock x:Name="HeadlineText" Text="Spielen. Reden. Nebenbei laden." FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold"/><TextBlock x:Name="DetailText" Text="Dein Netzwerk wird automatisch abgestimmt." Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="ProtectionStatusText" Text="NETZWERKSCHUTZ · STATUS WIRD ERMITTELT" Style="{StaticResource Caption}" Foreground="{StaticResource Accent}" FontSize="11" Margin="0,3,0,0"/></StackPanel><StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,0,0"><TextBlock x:Name="QosStatusText" Text="Priorisierung wird geprüft" Foreground="{StaticResource Accent}" FontSize="11"/><TextBlock x:Name="QosDetailText" Text="Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap"/></StackPanel>
-    </Grid>
-    <UniformGrid x:Name="StatusGrid" Grid.Row="1" Columns="4" Margin="0,0,0,8">
-     <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0"><StackPanel><TextBlock Text="DOWNLOAD · PC" Style="{StaticResource Caption}"/><TextBlock x:Name="DownText" Text="— Mbps" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2"/><TextBlock x:Name="DownCaption" Text="Gesamter Empfang" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
-     <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0"><StackPanel><TextBlock Text="UPLOAD · PC" Style="{StaticResource Caption}"/><TextBlock x:Name="UpText" Text="— Mbps" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2"/><TextBlock x:Name="UpCaption" Text="Gesamter Versand" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/></StackPanel></Border>
-     <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0"><StackPanel><TextBlock Text="DOWNLOADBUDGET" Style="{StaticResource Caption}"/><TextBlock x:Name="LimitText" Text="Kein Limit" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2"/><TextBlock x:Name="LimitReasonText" Text="Für große Downloads" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" AutomationProperties.Name="Grund für das Downloadlimit"/></StackPanel></Border>
-     <Border Style="{StaticResource Card}" Padding="10,7"><StackPanel><TextBlock Text="NETZWERKSCHUTZ" Style="{StaticResource Caption}"/><TextBlock x:Name="DriverText" Text="WIRD GEPRÜFT" FontSize="{DynamicResource UiSectionFontSize}" FontWeight="SemiBold" Margin="0,5,0,3" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="DriverDetail" Text="Verfügbarkeit wird geprüft …" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/></StackPanel></Border>
-    </UniformGrid>
-    <Grid x:Name="PingLayout" Grid.Row="2" Margin="0,0,0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="1.7*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-     <Border x:Name="ChartPanel" Style="{StaticResource Card}" Padding="10,6" Margin="0,0,8,0"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <DockPanel LastChildFill="False"><TextBlock Text="PING-VERLAUF" FontWeight="SemiBold"/><TextBlock DockPanel.Dock="Right" Style="{StaticResource Caption}"><Run Text="ROUTER" Foreground="{StaticResource Accent}"/><Run Text=" / "/><Run Text="INTERNET" Foreground="#E2A0A7"/></TextBlock></DockPanel>
-      <TextBlock x:Name="HistoryHoverText" Grid.Row="1" Text="Mit der Maus Zeit und Messwerte ansehen" Style="{StaticResource Caption}" Margin="0,3,0,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-      <Grid x:Name="HistoryPlot" Grid.Row="2" ClipToBounds="True" MinHeight="50"><Canvas x:Name="HistoryCanvas" Background="#0B0C10" SizeChanged="HistoryCanvas_SizeChanged" MouseMove="HistoryCanvas_MouseMove" MouseLeave="HistoryCanvas_MouseLeave"/><Canvas x:Name="HistoryHoverCanvas" IsHitTestVisible="False"/></Grid>
-      <TextBlock x:Name="HistoryCompare" Grid.Row="3" Text="Noch keine Vergleichsmessungen." Style="{StaticResource Caption}" FontSize="11" Margin="0,5,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-     </Grid></Border>
-     <Border x:Name="PingPanel" Grid.Column="1" Style="{StaticResource Card}" Padding="10,6"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="VERBINDUNGSQUALITÄT" FontWeight="SemiBold"/>
-      <Grid Grid.Row="1" Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-       <StackPanel Margin="0,0,8,0"><TextBlock Text="ROUTER" Style="{StaticResource Caption}"/><TextBlock x:Name="RouterPing" Text="— ms" FontSize="{DynamicResource UiMetricFontSize}"/><TextBlock x:Name="RouterStats" Text="Schwankung —" Style="{StaticResource Caption}" FontSize="11"/><TextBlock x:Name="RouterTarget" Text="Ziel wird ermittelt" Style="{StaticResource Caption}" FontSize="11"/></StackPanel>
-       <StackPanel Grid.Column="1"><TextBlock Text="INTERNET" Style="{StaticResource Caption}"/><TextBlock x:Name="ExternalPing" Text="— ms" FontSize="{DynamicResource UiMetricFontSize}"/><TextBlock x:Name="ExternalStats" Text="Schwankung —" Style="{StaticResource Caption}" FontSize="11"/><TextBlock x:Name="ExternalTarget" Text="1.1.1.1" Style="{StaticResource Caption}" FontSize="11"/></StackPanel>
+<Window x:Class="Dynex.Desktop.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Icon="/Assets/dynex.ico" Title="DYNEX · Dynamic Network Experience" Width="1440" Height="940" MinWidth="900" MinHeight="650" Background="{StaticResource Bg}" Foreground="White" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" SnapsToDevicePixels="True" SizeChanged="Window_SizeChanged" SourceInitialized="Window_SourceInitialized" Closing="Window_Closing" StateChanged="Window_StateChanged">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="56" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+  </shell:WindowChrome.WindowChrome>
+  <Window.Resources>
+    <Style x:Key="Card" TargetType="Border">
+      <Setter Property="Background" Value="{StaticResource Panel}" />
+      <Setter Property="BorderBrush" Value="{StaticResource Line}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="12" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+    <Style x:Key="Caption" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+      <Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}" />
+      <Setter Property="Foreground" Value="{StaticResource Muted}" />
+    </Style>
+    <Style x:Key="CheckControl" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="MinHeight" Value="30" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="FocusFrame" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" Padding="4,0" SnapsToDevicePixels="True">
+              <Grid x:Name="Root">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="44" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border x:Name="Track" Width="36" Height="20" HorizontalAlignment="Left" VerticalAlignment="Center" BorderThickness="1" BorderBrush="#555862" Background="#30323A" CornerRadius="10">
+                  <Border x:Name="Thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left" VerticalAlignment="Center" Background="#D4D5D9" CornerRadius="10" />
+                </Border>
+                <ContentPresenter Grid.Column="1" VerticalAlignment="Center" RecognizesAccessKey="True" />
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Track" Property="Background" Value="{StaticResource DeepRed}" />
+                <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource Accent}" />
+                <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right" />
+                <Setter TargetName="Thumb" Property="Background" Value="White" />
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="FocusFrame" Property="Background" Value="#17191F" />
+                <Setter TargetName="FocusFrame" Property="BorderBrush" Value="#444650" />
+                <Setter TargetName="Track" Property="BorderBrush" Value="{StaticResource Accent}" />
+                <Setter Property="Foreground" Value="White" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusFrame" Property="BorderThickness" Value="1" />
+                <Setter TargetName="FocusFrame" Property="BorderBrush" Value="{StaticResource Accent}" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusFrame" Property="Opacity" Value="0.42" />
+                <Setter Property="Cursor" Value="Arrow" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="WrappedCheck" TargetType="CheckBox" BasedOn="{StaticResource CheckControl}">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="ContentTemplate">
+        <Setter.Value>
+          <DataTemplate>
+            <TextBlock Text="{Binding}" TextWrapping="Wrap" />
+          </DataTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Padding" Value="11,6" />
+    </Style>
+    <Style x:Key="FieldLabel" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+      <Setter Property="Margin" Value="0,10,0,5" />
+    </Style>
+    <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource CompactButton}">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="2,0,0,0" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="Height" Value="40" />
+      <Setter Property="Padding" Value="13,8" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="FontSize" Value="13" />
+    </Style>
+  </Window.Resources>
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="56" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="28" />
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition x:Name="SidebarColumn" Width="196" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+    <Border Grid.ColumnSpan="2" Background="#101216" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+      <Grid Margin="18,0,8,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="178" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="138" />
+        </Grid.ColumnDefinitions>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Path Data="M 0 20 L 6 20 L 11 4 L 18 30 L 24 13 L 29 20 L 36 20" Stroke="{StaticResource Accent}" StrokeThickness="2.5" Width="32" Height="28" Stretch="Uniform" Margin="0,0,10,0" />
+          <TextBlock Text="DYNEX" FontSize="19" FontWeight="Bold" VerticalAlignment="Center" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock x:Name="PageTitle" Text="Übersicht" FontSize="13" Foreground="{StaticResource Muted}" />
+          <TextBlock Text=" / " Foreground="#424751" Margin="8,0" />
+          <TextBlock x:Name="HeaderState" Text="INITIALISIERUNG" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" MaxWidth="230" />
+        </StackPanel>
+        <Button x:Name="SettingsNavButton" Grid.Column="2" Click="SettingsNav_Click" Style="{StaticResource CompactButton}" Padding="10,7" Background="Transparent" BorderBrush="Transparent" VerticalAlignment="Center" Margin="0,0,10,0" ToolTip="Einstellungen öffnen" AutomationProperties.Name="Einstellungen öffnen" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" VerticalAlignment="Center" />
+            <TextBlock Text="Einstellungen" Margin="8,0,0,0" FontSize="12" Visibility="{DynamicResource NavigationLabelVisibility}" />
+          </StackPanel>
+        </Button>
+        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button Content="—" Style="{StaticResource ChromeButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="Minimize_Click" ToolTip="Minimieren" />
+          <Button x:Name="MaximizeButton" Content="□" Style="{StaticResource ChromeButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="Maximize_Click" ToolTip="Maximieren" />
+          <Button Content="×" Style="{StaticResource ChromeCloseButtonStyle}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Click="CloseToTray_Click" ToolTip="Im Hintergrund weiterlaufen lassen" />
+        </StackPanel>
       </Grid>
-
-     </Grid></Border>
+    </Border>
+    <Border Grid.Row="1" Background="#101216" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+      <Grid Margin="8,16,8,12">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel x:Name="MainNavigation">
+          <Button x:Name="OverviewNavButton" Tag="" Style="{StaticResource NavButton}" Click="OverviewNav_Click" ToolTip="Übersicht" AutomationProperties.Name="Übersicht">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+              <TextBlock Text="Übersicht" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="DevicesNavButton" Tag="" Style="{StaticResource NavButton}" Click="DevicesNav_Click" ToolTip="Verbundene PCs" AutomationProperties.Name="Verbundene PCs">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+              <TextBlock Text="Verbundene PCs" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+            </StackPanel>
+          </Button>
+          <Button x:Name="AnalysisNavButton" Tag="analysis" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Analyse" AutomationProperties.Name="Analyse">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+              <TextBlock Text="Analyse" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+        <StackPanel Grid.Row="1" Margin="0,20,0,0">
+          <TextBlock x:Name="SettingsMenuLabel" Text="EINSTELLUNGEN" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource Muted}" Margin="16,0,0,8" Visibility="Collapsed" />
+          <StackPanel x:Name="SettingsSectionsNav" Visibility="Collapsed">
+            <Button x:Name="generalSectionButton" Tag="general" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Allgemein" AutomationProperties.Name="Allgemein">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Allgemein" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="gamesSectionButton" Tag="games" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Spiele" AutomationProperties.Name="Spiele">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Spiele" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="networkSectionButton" Tag="network" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Netzwerk" AutomationProperties.Name="Netzwerk">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Netzwerk" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="scheduleSectionButton" Tag="schedule" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Zeitplan" AutomationProperties.Name="Zeitplan">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Zeitplan" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="appearanceSectionButton" Tag="appearance" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Darstellung" AutomationProperties.Name="Darstellung">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Darstellung" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="updatesSectionButton" Tag="updates" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Updates" AutomationProperties.Name="Updates">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
+                <TextBlock Text="Updates" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              </StackPanel>
+            </Button>
+          </StackPanel>
+        </StackPanel>
+        <StackPanel Grid.Row="2">
+          <Border Height="1" Background="{StaticResource Line}" Margin="8,8" />
+          <Button x:Name="SidebarSettingsButton" Style="{StaticResource NavButton}" Click="SettingsNav_Click" ToolTip="Einstellungen">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" />
+              <TextBlock Text="Einstellungen" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+            </StackPanel>
+          </Button>
+          <TextBlock x:Name="SidebarVersionText" FontSize="10" Foreground="#737A88" Margin="16,10,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <Grid x:Name="ContentHost" Grid.Row="1" Grid.Column="1" Margin="20,18,20,12">
+      <Grid x:Name="OverviewPage">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition x:Name="MetricsRow" Height="116" />
+          <RowDefinition Height="*" />
+          <RowDefinition x:Name="OverviewDevicesRow" Height="190" />
+        </Grid.RowDefinitions>
+        <Grid Margin="0,0,0,20">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="260" />
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+            <TextBlock x:Name="HeadlineText" Text="Netzwerkübersicht" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
+            <TextBlock x:Name="DetailText" Text="Dein Netzwerk wird automatisch abgestimmt." Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="ProtectionStatusText" Text="NETZWERKSCHUTZ · STATUS WIRD ERMITTELT" Style="{StaticResource Caption}" Foreground="{StaticResource Accent}" FontSize="11" Margin="0,3,0,0" />
+            <Button x:Name="NetworkHelpButton" Content="Netzwerk prüfen" Click="NetworkHelp_Click" Visibility="Collapsed" Padding="8,2" Margin="0,8,0,0" FontSize="11" HorizontalAlignment="Left" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,0,0">
+            <TextBlock x:Name="QosStatusText" Text="Priorisierung wird geprüft" Foreground="{StaticResource Accent}" FontSize="11" />
+            <TextBlock x:Name="QosDetailText" Text="Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
+          </StackPanel>
+        </Grid>
+        <UniformGrid x:Name="StatusGrid" Grid.Row="1" Columns="4" Margin="0,0,0,16">
+          <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0">
+            <StackPanel>
+              <TextBlock Text="DOWNLOAD · PC" Style="{StaticResource Caption}" />
+              <TextBlock x:Name="DownText" Text="— Mbps" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
+              <TextBlock x:Name="DownCaption" Text="Gesamter Empfang" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0">
+            <StackPanel>
+              <TextBlock Text="UPLOAD · PC" Style="{StaticResource Caption}" />
+              <TextBlock x:Name="UpText" Text="— Mbps" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
+              <TextBlock x:Name="UpCaption" Text="Gesamter Versand" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0">
+            <StackPanel>
+              <TextBlock Text="DOWNLOADBUDGET" Style="{StaticResource Caption}" />
+              <TextBlock x:Name="LimitText" Text="Kein Limit" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
+              <TextBlock x:Name="LimitReasonText" Text="Für große Downloads" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" AutomationProperties.Name="Grund für das Downloadlimit" />
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Padding="10,7">
+            <StackPanel>
+              <TextBlock Text="NETZWERKSCHUTZ" Style="{StaticResource Caption}" />
+              <TextBlock x:Name="DriverText" Text="WIRD GEPRÜFT" FontSize="{DynamicResource UiSectionFontSize}" FontWeight="SemiBold" Margin="0,5,0,3" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+              <TextBlock x:Name="DriverDetail" Text="Verfügbarkeit wird geprüft …" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            </StackPanel>
+          </Border>
+        </UniformGrid>
+        <Grid x:Name="PingLayout" Grid.Row="2" Margin="0,0,0,8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.7*" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <Border x:Name="ChartPanel" Style="{StaticResource Card}" Padding="18,16" Margin="0,0,16,0">
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+              </Grid.RowDefinitions>
+              <DockPanel LastChildFill="False">
+                <TextBlock Text="PING-VERLAUF" FontWeight="SemiBold" />
+                <TextBlock DockPanel.Dock="Right" Style="{StaticResource Caption}">
+                  <Run Text="ROUTER" Foreground="{StaticResource Accent}" />
+                  <Run Text=" / " />
+                  <Run Text="INTERNET" Foreground="#E2A0A7" />
+                </TextBlock>
+              </DockPanel>
+              <TextBlock x:Name="HistoryHoverText" Grid.Row="1" Text="Mit der Maus Zeit und Messwerte ansehen" Style="{StaticResource Caption}" Margin="0,3,0,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+              <Grid x:Name="HistoryPlot" Grid.Row="2" ClipToBounds="True" MinHeight="50">
+                <Canvas x:Name="HistoryCanvas" Background="#0B0C10" SizeChanged="HistoryCanvas_SizeChanged" MouseMove="HistoryCanvas_MouseMove" MouseLeave="HistoryCanvas_MouseLeave" />
+                <Canvas x:Name="HistoryHoverCanvas" IsHitTestVisible="False" />
+              </Grid>
+              <TextBlock x:Name="HistoryCompare" Grid.Row="3" Text="Noch keine Vergleichsmessungen." Style="{StaticResource Caption}" FontSize="11" Margin="0,5,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            </Grid>
+          </Border>
+          <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="*" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Border x:Name="PingPanel" Style="{StaticResource Card}" Padding="18,12">
+              <Grid>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="*" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="VERBINDUNGSQUALITÄT" FontWeight="SemiBold" />
+                <Grid Grid.Row="1" Margin="0,5,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition />
+                    <ColumnDefinition />
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Margin="0,0,8,0">
+                    <TextBlock Text="ROUTER" Style="{StaticResource Caption}" />
+                    <TextBlock x:Name="RouterPing" Text="— ms" FontSize="{DynamicResource UiMetricFontSize}" />
+                    <TextBlock x:Name="RouterStats" Text="Schwankung —" Style="{StaticResource Caption}" FontSize="11" />
+                    <TextBlock x:Name="RouterTarget" Text="Ziel wird ermittelt" Style="{StaticResource Caption}" FontSize="11" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="1">
+                    <TextBlock Text="INTERNET" Style="{StaticResource Caption}" />
+                    <TextBlock x:Name="ExternalPing" Text="— ms" FontSize="{DynamicResource UiMetricFontSize}" />
+                    <TextBlock x:Name="ExternalStats" Text="Schwankung —" Style="{StaticResource Caption}" FontSize="11" />
+                    <TextBlock x:Name="ExternalTarget" Text="1.1.1.1" Style="{StaticResource Caption}" FontSize="11" />
+                  </StackPanel>
+                </Grid>
+              </Grid>
+            </Border>
+            <Border x:Name="DashboardHomePanel" Grid.Row="1" Style="{StaticResource Card}" Padding="18,10" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Text="DEIN HEIMNETZ" FontWeight="SemiBold" />
+                <TextBlock x:Name="DashboardPeersText" Text="PC-Verbindung wird geprüft." Style="{StaticResource Caption}" Margin="0,6,0,8" />
+                <Button x:Name="DashboardDevicesButton" Content="Verbundene PCs ansehen  →" Click="DevicesNav_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" FontSize="12" Padding="9,4" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
+        <Border Grid.Row="3" Style="{StaticResource Card}" Padding="14,9,14,7">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <DockPanel Margin="2,0,2,5" LastChildFill="False">
+              <TextBlock Text="VERBUNDENE PCs" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <TextBlock x:Name="OverviewDeviceCount" DockPanel.Dock="Right" Text="0 GERÄTE" Style="{StaticResource Caption}" VerticalAlignment="Center" />
+            </DockPanel>
+            <Grid Grid.Row="1" ClipToBounds="True">
+              <DataGrid x:Name="OverviewDeviceGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="27" ColumnHeaderHeight="25" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MinHeight="94">
+                <DataGrid.Resources>
+                  <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                    <Setter Property="Padding" Value="5,2" />
+                    <Setter Property="ContentTemplate">
+                      <Setter.Value><DataTemplate><TextBlock Text="{Binding}" FontSize="10" FontWeight="SemiBold" TextWrapping="NoWrap" /></DataTemplate></Setter.Value>
+                    </Setter>
+                  </Style>
+                  <Style x:Key="OverviewDeviceCell" TargetType="TextBlock">
+                    <Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}" />
+                    <Setter Property="VerticalAlignment" Value="Center" />
+                    <Setter Property="Margin" Value="6,1" />
+                    <Setter Property="TextWrapping" Value="NoWrap" />
+                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                    <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                  </Style>
+                  <Style x:Key="OverviewDeviceRateCell" TargetType="TextBlock" BasedOn="{StaticResource OverviewDeviceCell}">
+                    <Setter Property="TextAlignment" Value="Right" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                  </Style>
+                </DataGrid.Resources>
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="GERÄT" Binding="{Binding Name}" Width="2*" MinWidth="110" ElementStyle="{StaticResource OverviewDeviceCell}" />
+                  <DataGridTextColumn Header="STATUS" Binding="{Binding State}" Width="1.2*" MinWidth="82" ElementStyle="{StaticResource OverviewDeviceCell}" />
+                  <DataGridTextColumn Header="↓ DOWNLOAD" Binding="{Binding DownloadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.2*" MinWidth="88" ElementStyle="{StaticResource OverviewDeviceRateCell}" />
+                  <DataGridTextColumn Header="↑ UPLOAD" Binding="{Binding UploadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.2*" MinWidth="82" ElementStyle="{StaticResource OverviewDeviceRateCell}" />
+                  <DataGridTextColumn Header="LIMIT" Binding="{Binding LimitMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.1*" MinWidth="70" ElementStyle="{StaticResource OverviewDeviceCell}" />
+                </DataGrid.Columns>
+              </DataGrid>
+              <TextBlock x:Name="OverviewDevicesEmpty" Text="Noch keine Gerätedaten verfügbar. DYNEX auf weiteren PCs starten und verbinden." Style="{StaticResource Caption}" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="14,0" IsHitTestVisible="False" />
+            </Grid>
+          </Grid>
+        </Border>
+      </Grid>
+      <Grid x:Name="DevicesPage" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="66" />
+          <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel>
+          <TextBlock Text="Verbundene PCs" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
+          <WrapPanel Margin="0,5,0,0">
+            <Button Content="Geräte verwalten" Click="DeviceManager_Click" Style="{StaticResource CompactButton}"/>
+            <Button Content="Zwei-PC-Test" Click="PeerConnectionTest_Click" Style="{StaticResource CompactButton}"/>
+            <Button Content="Verbrauchsverlauf" Click="UsageHistory_Click" Style="{StaticResource CompactButton}"/>
+          </WrapPanel>
+        </StackPanel>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="16">
+          <Grid>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="26" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="VERBUNDENE PCs" FontWeight="SemiBold" />
+                <TextBlock x:Name="DeviceCount" Text="0 GERÄTE" Style="{StaticResource Caption}" Margin="12,2,0,0" />
+              </StackPanel>
+              <TextBlock x:Name="DevicesPageText" Grid.Column="1" Text="Seite 1 / 1" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,10,0" />
+              <StackPanel Grid.Column="2" Orientation="Horizontal">
+                <Button x:Name="PreviousDevicesButton" Content="←" ToolTip="Vorherige PCs" Click="PreviousDevices_Click" Padding="9,2" Margin="0,0,4,0" />
+                <Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere PCs" Click="NextDevices_Click" Padding="9,2" Margin="0" />
+              </StackPanel>
+            </Grid>
+            <TextBlock x:Name="SharedBudgetText" Grid.Row="1" Text="Alle DYNEX-PCs teilen sich das Downloadbudget." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,2" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Spiele und Sprachchat umgehen die Downloadwarteschlange." Style="{StaticResource Caption}" Margin="0,0,0,6" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <DataGrid x:Name="DeviceGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="29" ColumnHeaderHeight="27" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+              <DataGrid.Resources>
+                <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                  <Setter Property="Padding" Value="5,3" />
+                  <Setter Property="ContentTemplate">
+                    <Setter.Value>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" FontSize="11" FontWeight="SemiBold" TextWrapping="NoWrap" />
+                      </DataTemplate>
+                    </Setter.Value>
+                  </Setter>
+                </Style>
+                <Style x:Key="DeviceCell" TargetType="TextBlock">
+                  <Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}" />
+                  <Setter Property="VerticalAlignment" Value="Center" />
+                  <Setter Property="Margin" Value="7,2" />
+                  <Setter Property="TextWrapping" Value="NoWrap" />
+                  <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                  <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </Style>
+                <Style x:Key="DeviceRateCell" TargetType="TextBlock" BasedOn="{StaticResource DeviceCell}">
+                  <Setter Property="TextAlignment" Value="Right" />
+                  <Setter Property="FontWeight" Value="SemiBold" />
+                </Style>
+              </DataGrid.Resources>
+              <DataGrid.Columns>
+                <DataGridTextColumn Header="GERÄT" Binding="{Binding Name}" Width="*" MinWidth="140" ElementStyle="{StaticResource DeviceCell}" />
+                <DataGridTextColumn Header="ADRESSE" Binding="{Binding Address}" Width="105" ElementStyle="{StaticResource DeviceCell}" />
+                <DataGridTextColumn Header="LÄDT GERADE" Binding="{Binding TopProgram, TargetNullValue=—}" Width="110" ElementStyle="{StaticResource DeviceCell}" />
+                <DataGridTextColumn Header="STATUS" Binding="{Binding State}" Width="105" ElementStyle="{StaticResource DeviceCell}" />
+                <DataGridTextColumn Header="↓ DOWNLOAD" Binding="{Binding DownloadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="115" ElementStyle="{StaticResource DeviceRateCell}" />
+                <DataGridTextColumn Header="↑ UPLOAD" Binding="{Binding UploadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="110" ElementStyle="{StaticResource DeviceRateCell}" />
+                <DataGridTextColumn Header="LIMIT" Binding="{Binding LimitMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="95" ElementStyle="{StaticResource DeviceCell}" />
+              </DataGrid.Columns>
+            </DataGrid>
+          </Grid>
+        </Border>
+      </Grid>
+      <Grid x:Name="SettingsPage" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="66" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="48" />
+        </Grid.RowDefinitions>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="18">
+          <Grid>
+            <Grid x:Name="GeneralSettingsSection">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <StackPanel Grid.Column="0">
+                <Border Style="{StaticResource Card}" Padding="10,5">
+                  <StackPanel>
+                    <TextBlock Text="ANSCHLUSS &amp; START" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
+                    <TextBlock Text="Internetgeschwindigkeit (Mbit/s)" Style="{StaticResource Caption}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                      <TextBox x:Name="CapacityBox" Width="96" IsReadOnly="True" Margin="0,0,8,0" VerticalContentAlignment="Center" ToolTip="Wird automatisch per Speedtest ermittelt" />
+                      <Button x:Name="SpeedTestButton" Content="Speedtest starten" Click="SpeedTest_Click" Style="{StaticResource CompactButton}" />
+                    </StackPanel>
+                    <ProgressBar x:Name="SpeedTestProgress" IsIndeterminate="True" Height="3" Foreground="{StaticResource Accent}" Background="{StaticResource Line}" Margin="0,3,0,0" Visibility="Collapsed" />
+                    <TextBlock x:Name="SpeedTestHint" Style="{StaticResource Caption}" FontSize="12" Margin="0,3,0,2" MaxHeight="32" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <CheckBox x:Name="AutoStartCheck" Content="Mit Windows starten" Style="{StaticResource WrappedCheck}" />
+                    <CheckBox x:Name="NotificationsCheck" Content="Verbindungs- und Limitmeldungen" ToolTip="Benachrichtigungen bei Verbindung und Limit" Style="{StaticResource WrappedCheck}" />
+                    <CheckBox x:Name="PingAlarmCheck" Content="Ping-Alarm beim Spielen" ToolTip="Ping-Alarm beim Spielen (mit vermuteter Ursache)" Style="{StaticResource WrappedCheck}" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Padding="12,7" Margin="0,8,0,0">
+                  <StackPanel>
+                    <TextBlock Text="LIMITS BEIM SPIELEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,2">
+                      <TextBlock Text="Download (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
+                      <TextBox x:Name="ManualLimitBox" Width="72" Margin="0,0,5,0" ToolTip="Gilt bei tatsächlichem Netzwerkverkehr eines Spiels auf einem DYNEX-PC. Fokus allein reicht nicht; ohne Spielverkehr gibt es kein Limit. Leer = automatisch." />
+                      <Button Content="Speichern" Click="ManualLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0,0,4,0" />
+                      <Button Content="Aufheben" Click="ClearLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0" />
+                    </StackPanel>
+                    <CheckBox x:Name="UploadLimitCheck" Content="Große Uploads begrenzen" Style="{StaticResource WrappedCheck}" Margin="0" ToolTip="Cloud-Sync, Backups, Datei-Uploads. Spiele, Sprachchat und Bestätigungspakete von Downloads bleiben immer frei." />
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                      <TextBlock Text="Upload (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
+                      <Grid Width="82" MinHeight="34">
+                        <TextBox x:Name="ManualUploadBox" Width="82" />
+                        <TextBlock Foreground="{StaticResource Muted}" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False">
+                          <TextBlock.Inlines>
+                            <Run Text="{Binding Tag, ElementName=ManualUploadBox}" />
+                          </TextBlock.Inlines>
+                          <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                              <Setter Property="Visibility" Value="Collapsed" />
+                              <Style.Triggers>
+                                <DataTrigger Binding="{Binding Text, ElementName=ManualUploadBox}" Value="">
+                                  <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsKeyboardFocused, ElementName=ManualUploadBox}" Value="True">
+                                  <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                              </Style.Triggers>
+                            </Style>
+                          </TextBlock.Style>
+                        </TextBlock>
+                      </Grid>
+                      <TextBlock Text="Auto · Speedtest" FontSize="11" Foreground="{StaticResource Muted}" Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding Text, ElementName=ManualUploadBox}" Value="">
+                                <Setter Property="Visibility" Value="Visible" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                      </TextBlock>
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <Border Style="{StaticResource Card}" Padding="14,10">
+                  <StackPanel>
+                    <TextBlock Text="SPIELE &amp; SPRACHCHAT" Style="{StaticResource SectionTitle}" Margin="0,0,0,5" />
+                    <CheckBox x:Name="DriverCheck" Content="Beim Spielen priorisieren und große Downloads begrenzen" Style="{StaticResource WrappedCheck}" />
+                    <Button x:Name="SetupButton" Content="Downloadbegrenzung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,3,0,0" />
+                    <TextBlock x:Name="SetupHint" Text="Windows bestätigt das Einschalten." Style="{StaticResource Caption}" Margin="0,4,0,5" TextWrapping="Wrap" />
+                    <TextBlock Text="Während Gaming teilt DYNEX das Downloadbudget zwischen deinen PCs auf. Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+                <Border Style="{StaticResource Card}" Padding="12,8" Margin="0,8,0,0">
+                  <StackPanel>
+                    <TextBlock Text="BUDGET &amp; DATEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <StackPanel>
+                        <TextBlock Text="Downloadprofil" Style="{StaticResource Caption}" />
+                        <ComboBox x:Name="ProfileCombo" Margin="0,3,0,0" SelectionChanged="ProfileCombo_SelectionChanged" ToolTip="Legt fest, wie viel der Leitung große Downloads beim Spielen nutzen dürfen.">
+                          <ComboBoxItem Content="Turnier (40 %)" Tag="Turnier" />
+                          <ComboBoxItem Content="Standard (65 %)" Tag="Standard" />
+                          <ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt" />
+                        </ComboBox>
+                      </StackPanel>
+                      <StackPanel Grid.Column="2">
+                        <TextBlock Text="PC-Anteil" Style="{StaticResource Caption}" />
+                        <ComboBox x:Name="PriorityCombo" Margin="0,3,0,0" SelectionChanged="PriorityCombo_SelectionChanged" ToolTip="Wirkt nur, wenn alle verbundenen PCs DYNEX 1.0.6 oder neuer nutzen; sonst gleiche Anteile.">
+                          <ComboBoxItem Content="Niedrig · ½ Anteil" Tag="0.5" />
+                          <ComboBoxItem Content="Normal" Tag="1" />
+                          <ComboBoxItem Content="Hoch · 2× Anteil" Tag="2" />
+                        </ComboBox>
+                      </StackPanel>
+                    </Grid>
+                    <WrapPanel Margin="0,7,0,0">
+                      <Button Content="Diagnose" ToolTip="Diagnose exportieren" Click="Diagnostics_Click" Style="{StaticResource CompactButton}" FontSize="12" Padding="7,4" />
+                      <Button Content="Sichern" ToolTip="Einstellungen sichern" Click="ExportSettings_Click" Style="{StaticResource CompactButton}" FontSize="12" Padding="7,4" />
+                      <Button Content="Wiederherstellen" Click="ImportSettings_Click" Style="{StaticResource CompactButton}" FontSize="12" Padding="7,4" Margin="0" />
+                    </WrapPanel>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Grid>
+            <Grid x:Name="GamesSettingsSection" Visibility="Collapsed">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="24" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <StackPanel>
+                <TextBlock Text="SPIELERKENNUNG" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="Nur bestätigter Netzwerkverkehr eines Spiels löst Schutz aus. Fokus allein reicht nicht; Wallpaper Engine bleibt ausgeschlossen." Style="{StaticResource Caption}" Margin="0,0,0,12" />
+                <ComboBox x:Name="ModeCombo" SelectionChanged="ModeCombo_SelectionChanged">
+                  <ComboBoxItem Content="Bei Fokus und Spielverkehr" Tag="Auto" />
+                  <ComboBoxItem Content="Fokus-Erkennung aus" Tag="Off" />
+                </ComboBox>
+                <TextBlock x:Name="GameText" Text="Kein Spiel erkannt" Style="{StaticResource Caption}" Margin="0,4,0,0" />
+                <TextBlock Text="Ohne bestätigten Spielverkehr wird der Prozess beobachtet. Menüs allein lösen kein Limit aus; bei Wechsel zu Desktop oder Discord endet die Fokus-Erkennung." Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                <TextBlock Text="Schon ab Prozessstart beobachten (Prozessnamen, z. B. VALORANT-Win64-Shipping)" Style="{StaticResource FieldLabel}" Margin="0,4,0,3" ToolTip="Diese Spiele werden ab dem Prozessstart beobachtet. Ein Limit beginnt erst bei bestätigtem Netzwerkverkehr des Spiels." />
+                <TextBox x:Name="EarlyGamesBox" />
+              </StackPanel>
+              <Grid x:Name="AdvancedExpander" Grid.Column="2">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <StackPanel>
+                  <TextBlock Text="FEHLENDES SPIEL ERGÄNZEN" Style="{StaticResource SectionTitle}" />
+                  <TextBlock Text="Programm suchen, auswählen und hinzufügen. Änderungen mit „Einstellungen speichern“ übernehmen." Style="{StaticResource Caption}" Margin="0,0,0,10" />
+                  <Grid Margin="0,0,0,8">
+                    <TextBox x:Name="ProcessSearchBox" TextChanged="ProcessSearch_TextChanged" GotKeyboardFocus="ProcessSearch_GotKeyboardFocus" ToolTip="Laufende Programme nach Name durchsuchen" AutomationProperties.Name="Laufende Programme suchen" />
+                    <TextBlock Text="Laufende Programme suchen …" Margin="10,0" VerticalAlignment="Center" IsHitTestVisible="False">
+                      <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+                          <Setter Property="Visibility" Value="Collapsed" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text, ElementName=ProcessSearchBox}" Value="">
+                              <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </TextBlock.Style>
+                    </TextBlock>
+                  </Grid>
+                  <ComboBox x:Name="RunningProcessesBox" HorizontalContentAlignment="Stretch" IsTextSearchEnabled="True" DropDownOpened="RunningProcesses_DropDownOpened" SelectionChanged="RunningProcesses_SelectionChanged" ToolTip="Laufendes Programm auswählen" AutomationProperties.Name="Laufende Programme zur Spielerkennung">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="AddProcessButton" Content="Hinzufügen" IsEnabled="False" Click="AddProcess_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" />
+                    <Button x:Name="RefreshProcessesButton" Content="Liste aktualisieren" Click="RefreshProcesses_Click" Style="{StaticResource CompactButton}" />
+                  </StackPanel>
+                  <TextBlock x:Name="ProcessPickerHint" Text="Suche oder Auswahl öffnen, um laufende Programme zu laden." Style="{StaticResource Caption}" Margin="0,6,0,3" />
+                  <TextBlock Text="Hinzugefügte Programme" Style="{StaticResource FieldLabel}" />
+                </StackPanel>
+                <Grid Grid.Row="1" VerticalAlignment="Top" MinHeight="52" MaxHeight="180">
+                  <ListBox x:Name="ConfiguredProcessesList" Background="#0B0C10" Foreground="#F4F4F5" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="0" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Hinzugefügte Programme">
+                    <ListBox.ItemContainerStyle>
+                      <Style TargetType="ListBoxItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Padding" Value="0" />
+                        <Setter Property="Template">
+                          <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                              <Border x:Name="Row" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Background="Transparent">
+                                <ContentPresenter />
+                              </Border>
+                              <ControlTemplate.Triggers>
+                                <Trigger Property="IsSelected" Value="True">
+                                  <Setter TargetName="Row" Property="Background" Value="#1D2028" />
+                                </Trigger>
+                              </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                          </Setter.Value>
+                        </Setter>
+                      </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="10,5,6,5">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="{Binding}" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding}" Margin="0,0,8,0" />
+                          <Button Grid.Column="1" Content="Entfernen" Tag="{Binding}" Click="RemoveProcess_Click" Style="{StaticResource CompactButton}" Padding="8,3" Margin="0" ToolTip="Programm aus der Liste entfernen" AutomationProperties.Name="{Binding StringFormat='Programm {0} entfernen'}" />
+                        </Grid>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
+                  <TextBlock x:Name="NoConfiguredProcessesText" Text="Noch keine Programme hinzugefügt." Style="{StaticResource Caption}" Margin="10,8" VerticalAlignment="Center" IsHitTestVisible="False" />
+                </Grid>
+              </Grid>
+            </Grid>
+            <Grid x:Name="NetworkSettingsSection" Visibility="Collapsed">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="24" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <StackPanel x:Name="ConnectionModeControls">
+                <TextBlock Text="DEINE PCs VERBINDEN" Style="{StaticResource SectionTitle}" />
+                <CheckBox x:Name="AutoConnectCheck" Click="AutoConnectCheck_Click" Content="PCs im selben privaten Netzwerk automatisch verbinden" Style="{StaticResource WrappedCheck}" />
+                <TextBlock Text="Standardmäßig aktiv: DYNEX sucht selbst nach anderen DYNEX-PCs und verbindet sie. Auch über verschiedene Repeater im selben privaten Netz. Diese Checkbox wird sofort gespeichert." Style="{StaticResource Caption}" Margin="0,2,0,12" />
+                <TextBlock Text="Manuelle Gruppe (optional)" Style="{StaticResource FieldLabel}" />
+                <TextBlock Text="Anzeigen oder Kopieren aktiviert die manuelle Gruppe auf diesem PC. Den Code auf den anderen PCs importieren. Alle beteiligten PCs müssen denselben Modus verwenden." Style="{StaticResource Caption}" Margin="0,0,0,7" />
+                <TextBox x:Name="PairingBox" IsReadOnly="True" FontFamily="Consolas" />
+                <StackPanel Orientation="Horizontal" Margin="0,7,0,0">
+                  <Button Content="Anzeigen" Click="RevealCode_Click" Style="{StaticResource CompactButton}" />
+                  <Button Content="Kopieren" Click="CopyCode_Click" Style="{StaticResource CompactButton}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,7,0,0">
+                  <Button Content="Einfügen" Click="PasteCode_Click" Style="{StaticResource CompactButton}" />
+                  <Button Content="Code importieren" Click="ImportCode_Click" Style="{StaticResource CompactButton}" />
+                </StackPanel>
+                <TextBlock x:Name="PairFingerprint" Text="Noch keine Gruppe gekoppelt" Style="{StaticResource Caption}" Margin="0,8,0,0" />
+                <WrapPanel Margin="0,12,0,0">
+                  <Button Content="Geräte verwalten" Click="DeviceManager_Click" Style="{StaticResource CompactButton}" Margin="0,0,6,6"/>
+                  <Button Content="Zwei-PC-Test" Click="PeerConnectionTest_Click" Style="{StaticResource CompactButton}" Margin="0,0,0,6"/>
+                </WrapPanel>
+                <Button Content="Netzwerkprofile" Click="NetworkProfiles_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left"/>
+                <TextBlock x:Name="NetworkProfileText" Style="{StaticResource Caption}" Margin="0,6,0,0"/>
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <TextBlock Text="VERBINDUNG &amp; MESSZIELE" Style="{StaticResource SectionTitle}" />
+                <TextBlock x:Name="NetworkCheckStatusText" Style="{StaticResource Caption}" MaxHeight="42" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Visibility="Collapsed" Margin="0,0,0,6" AutomationProperties.LiveSetting="Polite" />
+                <TextBlock x:Name="NetworkHelpText" Style="{StaticResource Caption}" MaxHeight="56" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Margin="0,0,0,6" />
+                <StackPanel Orientation="Horizontal">
+                  <Button x:Name="CheckConnectionButton" Content="Verbindung prüfen" Click="NetworkHelp_Click" Style="{StaticResource CompactButton}" Margin="0,0,6,10" />
+                  <Button x:Name="WindowsNetworkButton" Content="Windows-Netzwerk" Click="WindowsNetwork_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Margin="0,0,0,10" />
+                </StackPanel>
+                <TextBlock Text="Direkte PC-Adressen (optional)" Style="{StaticResource Caption}" ToolTip="Private IPv4-Adresse des anderen PCs. Verbindung prüfen übernimmt die Eingabe und testet die Erreichbarkeit." />
+                <TextBox x:Name="PeersBox" AcceptsReturn="True" Height="42" Padding="8,4" Margin="0,5,0,0" />
+                <TextBlock Text="Router-Pingziel (leer = automatisch)" Style="{StaticResource FieldLabel}" />
+                <TextBox x:Name="RouterBox" Height="34" Padding="8,4" />
+                <TextBlock Text="Internet-Pingziel (Vergleichswert)" Style="{StaticResource FieldLabel}" />
+                <TextBox x:Name="ExternalBox" Height="34" Padding="8,4" />
+              </StackPanel>
+            </Grid>
+            <Grid x:Name="ScheduleSettingsSection" Visibility="Collapsed">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="24" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <StackPanel>
+                <TextBlock Text="NACHTS OHNE LIMITS" Style="{StaticResource SectionTitle}" />
+                <CheckBox x:Name="NightFreeCheck" Content="In diesem Zeitraum nie begrenzen" Style="{StaticResource WrappedCheck}" />
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                  <TextBlock Text="von" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                  <TextBox x:Name="NightFromBox" Width="76" />
+                  <TextBlock Text="bis" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="10,0,6,0" />
+                  <TextBox x:Name="NightToBox" Width="76" />
+                  <TextBlock Text="Uhr" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="6,0,0,0" />
+                </StackPanel>
+                <TextBlock Text="Große Downloads laufen dann mit voller Geschwindigkeit, auch wenn jemand spielt – ideal für Updates über Nacht." Style="{StaticResource Caption}" Margin="0,10,0,0" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Grid.Column="2">
+                <TextBlock Text="WOCHENENDE" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="Profil am Samstag und Sonntag" Style="{StaticResource FieldLabel}" />
+                <ComboBox x:Name="WeekendProfileCombo" Width="220" HorizontalAlignment="Left">
+                  <ComboBoxItem Content="Wie unter Allgemein" Tag="" />
+                  <ComboBoxItem Content="Turnier (40 %)" Tag="Turnier" />
+                  <ComboBoxItem Content="Standard (65 %)" Tag="Standard" />
+                  <ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt" />
+                </ComboBox>
+                <TextBlock x:Name="ScheduleStatusText" Style="{StaticResource Caption}" Margin="0,12,0,0" TextWrapping="Wrap" />
+                <TextBlock Text="Änderungen mit „Einstellungen speichern“ übernehmen." Style="{StaticResource Caption}" Margin="0,8,0,0" />
+              </StackPanel>
+            </Grid>
+            <ScrollViewer x:Name="AnalysisSettingsSection" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="24" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Text="WOCHENBERICHT" Style="{StaticResource SectionTitle}" />
+                  <TextBlock x:Name="WeeklyReportText" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                  <TextBlock Text="WER LÄDT GERADE?" Style="{StaticResource SectionTitle}" Margin="0,16,0,0" />
+                  <TextBlock x:Name="TopProgramsText" Style="{StaticResource Caption}" TextWrapping="Wrap" Text="Programme erscheinen, sobald beim Spielen die Priorisierung läuft." />
+                  <WrapPanel Margin="0,10,0,0">
+                    <Button Content="Programmregeln" Click="ApplicationRules_Click" Style="{StaticResource CompactButton}" Margin="0,0,6,6"/>
+                    <Button Content="Verbrauchsverlauf" Click="UsageHistory_Click" Style="{StaticResource CompactButton}" Margin="0,0,0,6"/>
+                  </WrapPanel>
+                  <TextBlock Text="INTERNETSTÖRUNGEN" Style="{StaticResource SectionTitle}" Margin="0,16,0,0" />
+                  <TextBlock x:Name="QualityLogText" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                  <Button Content="Störungsprotokoll exportieren (CSV)" Click="ExportQualityLog_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Margin="0,6,0,0" />
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                  <TextBlock Text="ROUTER-ASSISTENT" Style="{StaticResource SectionTitle}" />
+                  <TextBlock x:Name="RouterGuideTitle" FontWeight="SemiBold" />
+                  <TextBlock x:Name="RouterGuideSteps" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                </StackPanel>
+              </Grid>
+            </ScrollViewer>
+            <StackPanel x:Name="UpdatesSettingsSection" Visibility="Collapsed" MaxWidth="850" HorizontalAlignment="Left">
+              <TextBlock Text="DYNEX AKTUELL HALTEN" Style="{StaticResource SectionTitle}" />
+              <TextBlock x:Name="InstalledVersionText" FontWeight="SemiBold" Margin="0,0,0,12" />
+              <CheckBox x:Name="AutoUpdateCheck" Content="Updates automatisch herunterladen und installieren" Style="{StaticResource WrappedCheck}" Checked="AutoUpdateCheck_Changed" Unchecked="AutoUpdateCheck_Changed" />
+              <TextBlock x:Name="UpdateStatusText" Text="Automatische Updates sind ausgeschaltet." Style="{StaticResource Caption}" Margin="0,10,0,12" />
+              <ProgressBar x:Name="UpdateDownloadProgress" Minimum="0" Maximum="100" Height="4" Foreground="{StaticResource Accent}" Background="{StaticResource Line}" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="Fortschritt des Update-Downloads">
+                <ProgressBar.Template>
+                  <ControlTemplate TargetType="ProgressBar">
+                    <Grid Background="{TemplateBinding Background}">
+                      <Border x:Name="PART_Track" />
+                      <Border x:Name="PART_Indicator" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}" />
+                    </Grid>
+                  </ControlTemplate>
+                </ProgressBar.Template>
+              </ProgressBar>
+              <CheckBox x:Name="BetaUpdatesCheck" Content="Vorabversionen (Beta) erhalten" Style="{StaticResource WrappedCheck}" Checked="BetaUpdatesCheck_Changed" Unchecked="BetaUpdatesCheck_Changed" Margin="0,0,0,10" ToolTip="Prüft zusätzlich als Vorabversion markierte GitHub-Releases. Gleiche Prüfungen wie stabile Updates." />
+              <Button x:Name="CheckUpdatesButton" Content="Jetzt prüfen" Click="CheckUpdates_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" />
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,24,0,0" Padding="0,16,0,0">
+                <StackPanel>
+                  <TextBlock Text="Dein Spiel läuft weiter." FontWeight="SemiBold" />
+                  <TextBlock Text="DYNEX lädt Updates auch beim Spielen mit höchstens 512 KiB/s (ca. 4,2 Mbit/s). Nach der Prüfung schließt sich DYNEX, installiert im Hintergrund und startet wieder. Ungespeicherte Einstellungen bleiben geschützt; während der Installation pausiert die Priorisierung kurz." Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                  <TextBlock Text="Diese Checkbox wird sofort gespeichert." Style="{StaticResource Caption}" Margin="0,12,0,0" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+            <StackPanel x:Name="AppearanceSettingsSection" Visibility="Collapsed" MaxWidth="640" HorizontalAlignment="Left">
+              <TextBlock Text="BEDIENUNG &amp; FEEDBACK" Style="{StaticResource SectionTitle}" />
+              <CheckBox x:Name="UiSoundsCheck" Content="Dezente Klick-Sounds" Style="{StaticResource WrappedCheck}" Checked="FeedbackPreference_Changed" Unchecked="FeedbackPreference_Changed" />
+              <TextBlock Text="Ein kurzer, leiser Klick bei Buttons und Schaltern. Live-Messwerte bleiben lautlos." Style="{StaticResource Caption}" Margin="4,5,0,22" />
+              <CheckBox x:Name="UiAnimationsCheck" Content="Sanfte Übergänge und Animationen" Style="{StaticResource WrappedCheck}" Checked="FeedbackPreference_Changed" Unchecked="FeedbackPreference_Changed" />
+              <TextBlock Text="Kurze Seitenwechsel und dezente Bewegung. Die Windows-Einstellung für reduzierte Animationen wird berücksichtigt." Style="{StaticResource Caption}" Margin="4,5,0,22" />
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="0,18,0,0">
+                <TextBlock Text="Du kannst beides direkt ausprobieren. Mit „Einstellungen speichern“ dauerhaft übernehmen." Style="{StaticResource Caption}" />
+              </Border>
+            </StackPanel>
+          </Grid>
+        </Border>
+        <Grid Grid.Row="2" VerticalAlignment="Bottom" x:Name="SettingsActionBar">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <Button x:Name="SettingsSaveButton" Content="Einstellungen speichern" Click="SaveSettings_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" />
+          <Button x:Name="RefreshStatusButton" Grid.Column="1" Content="Status aktualisieren" Click="Refresh_Click" Style="{StaticResource CompactButton}" />
+          <Button Grid.Column="2" Content="Neu laden" Click="ReloadSettings_Click" Style="{StaticResource CompactButton}" ToolTip="Eingaben durch die aktuell gespeicherten Einstellungen ersetzen"/>
+          <TextBlock x:Name="StatusRefreshText" Grid.Column="3" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="4,0,0,0" MaxHeight="38" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
+        </Grid>
+        <StackPanel Grid.Row="0">
+          <TextBlock x:Name="SettingsHeading" Text="Einstellungen" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
+          <TextBlock x:Name="SettingsDescription" Text="DYNEX passend zu deinem Alltag." Style="{StaticResource Caption}" Margin="0,4,0,0" />
+        </StackPanel>
+      </Grid>
+      <Border x:Name="GuidePanel" Visibility="Collapsed" Background="#E6090A0D" Padding="0">
+        <Border Style="{StaticResource Card}" MaxWidth="560" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="22,18">
+          <StackPanel>
+            <TextBlock Text="DYNEX EINRICHTEN" Style="{StaticResource SectionTitle}" />
+            <TextBlock Text="Drei Punkte, dann arbeitet DYNEX automatisch. Der Stand wird live geprüft." Style="{StaticResource Caption}" Margin="0,0,0,12" TextWrapping="Wrap" />
+            <TextBlock x:Name="GuideNetworkText" Text="1 · Netzwerk wird geprüft …" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <TextBlock x:Name="GuidePeerText" Text="2 · Andere PCs werden gesucht …" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <TextBlock x:Name="GuideSpeedText" Text="3 · Speedtest wird geprüft …" TextWrapping="Wrap" Margin="0,0,0,14" />
+            <StackPanel Orientation="Horizontal">
+              <Button Content="Windows-Netzwerk öffnen" Click="WindowsNetwork_Click" Style="{StaticResource CompactButton}" />
+              <Button Content="Speedtest starten" Click="SpeedTest_Click" Style="{StaticResource CompactButton}" />
+              <Button x:Name="GuideDoneButton" Content="Später" Click="GuideDone_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </Border>
     </Grid>
-    <Border Grid.Row="3" Style="{StaticResource Card}" Padding="10,8"><Grid><Grid.RowDefinitions><RowDefinition Height="26"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="VERBUNDENE PCs" FontWeight="SemiBold"/><TextBlock x:Name="DeviceCount" Text="0 GERÄTE" Style="{StaticResource Caption}" Margin="12,2,0,0"/><Button x:Name="NetworkHelpButton" Content="Netzwerk prüfen" Click="NetworkHelp_Click" Visibility="Collapsed" Padding="8,2" Margin="12,0,0,0" FontSize="11"/></StackPanel><TextBlock x:Name="DevicesPageText" Grid.Column="1" Text="Seite 1 / 1" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,10,0"/><StackPanel Grid.Column="2" Orientation="Horizontal"><Button x:Name="PreviousDevicesButton" Content="←" ToolTip="Vorherige PCs" Click="PreviousDevices_Click" Padding="9,2" Margin="0,0,4,0"/><Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere PCs" Click="NextDevices_Click" Padding="9,2" Margin="0"/></StackPanel></Grid>
-     <TextBlock x:Name="SharedBudgetText" Grid.Row="1" Text="Alle DYNEX-PCs teilen sich das Downloadbudget." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,2" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-     <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Spiele und Sprachchat umgehen die Downloadwarteschlange." Style="{StaticResource Caption}" Margin="0,0,0,6" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
-     <DataGrid x:Name="DeviceGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="29" ColumnHeaderHeight="27" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-      <DataGrid.Resources><Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}"><Setter Property="Padding" Value="5,3"/></Style><Style x:Key="DeviceCell" TargetType="TextBlock"><Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Margin" Value="7,2"/><Setter Property="TextWrapping" Value="NoWrap"/><Setter Property="TextTrimming" Value="CharacterEllipsis"/><Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/></Style><Style x:Key="DeviceRateCell" TargetType="TextBlock" BasedOn="{StaticResource DeviceCell}"><Setter Property="TextAlignment" Value="Right"/><Setter Property="FontWeight" Value="SemiBold"/></Style></DataGrid.Resources>
-      <DataGrid.Columns><DataGridTextColumn Header="GERÄT" Binding="{Binding Name}" Width="*" MinWidth="140" ElementStyle="{StaticResource DeviceCell}"/><DataGridTextColumn Header="ADRESSE" Binding="{Binding Address}" Width="105" ElementStyle="{StaticResource DeviceCell}"/><DataGridTextColumn Header="LÄDT GERADE" Binding="{Binding TopProgram, TargetNullValue=—}" Width="110" ElementStyle="{StaticResource DeviceCell}"/><DataGridTextColumn Header="STATUS" Binding="{Binding State}" Width="105" ElementStyle="{StaticResource DeviceCell}"/><DataGridTextColumn Header="↓ DOWNLOAD" Binding="{Binding DownloadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="115" ElementStyle="{StaticResource DeviceRateCell}"/><DataGridTextColumn Header="↑ UPLOAD" Binding="{Binding UploadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="110" ElementStyle="{StaticResource DeviceRateCell}"/><DataGridTextColumn Header="LIMIT" Binding="{Binding LimitMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="95" ElementStyle="{StaticResource DeviceCell}"/></DataGrid.Columns>
-     </DataGrid>
-    </Grid></Border>
-   </Grid>
-   <Grid x:Name="SettingsPage" Visibility="Collapsed"><Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/><RowDefinition Height="48"/></Grid.RowDefinitions>
-    <StackPanel x:Name="SettingsSectionsNav" Orientation="Horizontal" VerticalAlignment="Top"><Button Content="Allgemein" Tag="general" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/><Button Content="Spiele" Tag="games" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/><Button Content="Netzwerk" Tag="network" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/><Button Content="Planung" Tag="schedule" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/><Button Content="Analyse" Tag="analysis" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/><Button Content="Updates" Tag="updates" Click="SettingsSection_Click" Style="{StaticResource CompactButton}"/></StackPanel>
-    <Border Grid.Row="1" Style="{StaticResource Card}" Padding="18"><Grid>
-     <Grid x:Name="GeneralSettingsSection"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <StackPanel><TextBlock Text="DEIN INTERNETANSCHLUSS" Style="{StaticResource SectionTitle}"/><TextBlock Text="Internetgeschwindigkeit (Mbit/s)" Style="{StaticResource Caption}"/><StackPanel Orientation="Horizontal" Margin="0,6,0,0"><TextBox x:Name="CapacityBox" Width="120" IsReadOnly="True" Margin="0,0,8,0" VerticalContentAlignment="Center" ToolTip="Wird automatisch per Speedtest ermittelt"/><Button x:Name="SpeedTestButton" Content="Speedtest starten" Click="SpeedTest_Click" Style="{StaticResource CompactButton}"/></StackPanel><ProgressBar x:Name="SpeedTestProgress" IsIndeterminate="True" Height="3" Foreground="{StaticResource Accent}" Background="{StaticResource Line}" Margin="0,7,0,0" Visibility="Collapsed"/><TextBlock x:Name="SpeedTestHint" Style="{StaticResource Caption}" Margin="0,7,0,6"/><CheckBox x:Name="AutoStartCheck" Content="Mit Windows starten" Style="{StaticResource WrappedCheck}"/><CheckBox x:Name="NotificationsCheck" Content="Benachrichtigungen bei Verbindung und Limit" Style="{StaticResource WrappedCheck}"/><CheckBox x:Name="PingAlarmCheck" Content="Ping-Alarm beim Spielen (mit vermuteter Ursache)" Style="{StaticResource WrappedCheck}"/>
-       <TextBlock Text="Download-Obergrenze beim Spielen (Mbps)" Style="{StaticResource FieldLabel}"/><StackPanel Orientation="Horizontal"><TextBox x:Name="ManualLimitBox" Width="82" Margin="0,0,8,0" ToolTip="Gilt nur, wenn auf diesem oder einem verbundenen PC ein Spiel im Fokus ist. Leer = automatisch."/><Button Content="Speichern" Click="ManualLimit_Click" Style="{StaticResource CompactButton}"/><Button Content="Aufheben" Click="ClearLimit_Click" Style="{StaticResource CompactButton}"/></StackPanel><CheckBox x:Name="UploadLimitCheck" Content="Große Uploads anderer Programme beim Spielen begrenzen" Style="{StaticResource WrappedCheck}" ToolTip="Cloud-Sync, Backups, Datei-Uploads. Spiele, Sprachchat und Bestätigungspakete von Downloads bleiben immer frei."/><TextBlock Text="Upload-Obergrenze beim Spielen (Mbps, leer = automatisch)" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ManualUploadBox" Width="82" HorizontalAlignment="Left"/><TextBlock Text="Profil" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="ProfileCombo" Width="200" HorizontalAlignment="Left" SelectionChanged="ProfileCombo_SelectionChanged" ToolTip="Legt fest, wie viel der Leitung große Downloads beim Spielen nutzen dürfen."><ComboBoxItem Content="Turnier (40 % für Downloads)" Tag="Turnier"/><ComboBoxItem Content="Standard (65 %)" Tag="Standard"/><ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt"/></ComboBox><TextBlock Text="Anteil dieses PCs am gemeinsamen Budget" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="PriorityCombo" Width="200" HorizontalAlignment="Left" SelectionChanged="PriorityCombo_SelectionChanged" ToolTip="Wirkt nur, wenn alle verbundenen PCs DYNEX 1.0.6 oder neuer nutzen; sonst gleiche Anteile."><ComboBoxItem Content="Niedrig (halber Anteil)" Tag="0.5"/><ComboBoxItem Content="Normal" Tag="1"/><ComboBoxItem Content="Hoch (doppelter Anteil)" Tag="2"/></ComboBox>
-      </StackPanel>
-      <StackPanel Grid.Column="2"><TextBlock Text="SPIELE &amp; SPRACHCHAT" Style="{StaticResource SectionTitle}"/><CheckBox x:Name="DriverCheck" Content="Beim Spielen priorisieren und große Downloads begrenzen" Style="{StaticResource WrappedCheck}"/><Button x:Name="SetupButton" Content="Downloadbegrenzung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,7,0,0"/><TextBlock x:Name="SetupHint" Text="Windows bestätigt das Einschalten." Style="{StaticResource Caption}" Margin="0,8,0,16"/><TextBlock Text="Während Gaming teilt DYNEX das Downloadbudget zwischen deinen PCs auf und priorisiert Spiele und Sprachchat. Sprachchat allein aktiviert den Filter nicht." Style="{StaticResource Caption}"/><StackPanel Orientation="Horizontal" Margin="0,18,0,0"><Button Content="Diagnose exportieren" Click="Diagnostics_Click" Style="{StaticResource CompactButton}"/><Button Content="Einstellungen sichern" Click="ExportSettings_Click" Style="{StaticResource CompactButton}"/><Button Content="Wiederherstellen" Click="ImportSettings_Click" Style="{StaticResource CompactButton}"/></StackPanel></StackPanel>
-     </Grid>
-     <Grid x:Name="GamesSettingsSection" Visibility="Collapsed"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <StackPanel><TextBlock Text="SPIELERKENNUNG" Style="{StaticResource SectionTitle}"/><TextBlock Text="Downloads werden nur begrenzt, wenn auf einem DYNEX-PC ein Spiel im Vordergrund ist. Wallpaper Engine bleibt ausgeschlossen." Style="{StaticResource Caption}" Margin="0,0,0,12"/><ComboBox x:Name="ModeCombo" SelectionChanged="ModeCombo_SelectionChanged"><ComboBoxItem Content="Nur bei Spiel im Fokus" Tag="Auto"/><ComboBoxItem Content="Fokus-Erkennung aus" Tag="Off"/></ComboBox><TextBlock x:Name="GameText" Text="Kein Spiel erkannt" Style="{StaticResource Caption}" Margin="0,8,0,0"/><TextBlock Text="Beim Wechsel auf den Desktop oder zu Discord fällt das Limit weg, sofern kein anderer PC ein Spiel im Fokus hat. Ein Spielmenü im Vordergrund zählt ebenfalls." Style="{StaticResource Caption}" Margin="0,18,0,0"/><TextBlock Text="Schon ab Spielstart begrenzen (Prozessnamen, z. B. VALORANT-Win64-Shipping)" Style="{StaticResource FieldLabel}" ToolTip="Diese Spiele zählen schon beim Laden und in der Warteschlange, auch ohne Fokus."/><TextBox x:Name="EarlyGamesBox"/></StackPanel>
-      <Grid x:Name="AdvancedExpander" Grid.Column="2"><StackPanel><TextBlock Text="FEHLENDES SPIEL ERGÄNZEN" Style="{StaticResource SectionTitle}"/><TextBlock Text="Spiel starten, laufendes Programm auswählen und hinzufügen. Anschließend Einstellungen speichern." Style="{StaticResource Caption}" Margin="0,0,0,10"/><ComboBox x:Name="RunningProcessesBox" HorizontalContentAlignment="Stretch" IsTextSearchEnabled="True" DropDownOpened="RunningProcesses_DropDownOpened" SelectionChanged="RunningProcesses_SelectionChanged" ToolTip="Laufendes Programm auswählen" AutomationProperties.Name="Laufende Programme zur Spielerkennung"><ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding}"/></DataTemplate></ComboBox.ItemTemplate></ComboBox><StackPanel Orientation="Horizontal" Margin="0,8,0,0"><Button x:Name="AddProcessButton" Content="Hinzufügen" IsEnabled="False" Click="AddProcess_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}"/><Button x:Name="RefreshProcessesButton" Content="Liste aktualisieren" Click="RefreshProcesses_Click" Style="{StaticResource CompactButton}"/></StackPanel><TextBlock x:Name="ProcessPickerHint" Text="Dropdown öffnen, um laufende Programme zu laden." Style="{StaticResource Caption}" Margin="0,6,0,3"/><TextBlock Text="Zusätzliche Prozessnamen (mit Semikolon getrennt)" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ProcessesBox" Height="56" TextWrapping="Wrap" VerticalContentAlignment="Top"/></StackPanel></Grid>
-     </Grid>
-     <Grid x:Name="NetworkSettingsSection" Visibility="Collapsed"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <StackPanel><TextBlock Text="DEINE PCs VERBINDEN" Style="{StaticResource SectionTitle}"/><CheckBox x:Name="AutoConnectCheck" Content="PCs im selben privaten Netzwerk automatisch verbinden" Style="{StaticResource WrappedCheck}"/><TextBlock Text="DYNEX muss auf jedem PC laufen. Das eigene Heimnetz in Windows auf Privat einstellen; dann ist kein Verbindungscode nötig." Style="{StaticResource Caption}" Margin="0,2,0,12"/><TextBlock Text="Manuelle Gruppe (optional)" Style="{StaticResource FieldLabel}"/><TextBlock Text="Anzeigen oder Kopieren aktiviert die manuelle Gruppe auf diesem PC. Den Code auf den anderen PCs importieren. Alle beteiligten PCs müssen denselben Modus verwenden." Style="{StaticResource Caption}" Margin="0,0,0,7"/><TextBox x:Name="PairingBox" IsReadOnly="True" FontFamily="Consolas"/><StackPanel Orientation="Horizontal" Margin="0,7,0,0"><Button Content="Anzeigen" Click="RevealCode_Click" Style="{StaticResource CompactButton}"/><Button Content="Kopieren" Click="CopyCode_Click" Style="{StaticResource CompactButton}"/></StackPanel><StackPanel Orientation="Horizontal" Margin="0,7,0,0"><Button Content="Einfügen" Click="PasteCode_Click" Style="{StaticResource CompactButton}"/><Button Content="Code importieren" Click="ImportCode_Click" Style="{StaticResource CompactButton}"/></StackPanel><TextBlock x:Name="PairFingerprint" Text="Noch keine Gruppe gekoppelt" Style="{StaticResource Caption}" Margin="0,8,0,0"/></StackPanel>
-      <StackPanel Grid.Column="2"><TextBlock Text="VERBINDUNG &amp; MESSZIELE" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="NetworkHelpText" Style="{StaticResource Caption}" Margin="0,0,0,6"/><StackPanel Orientation="Horizontal"><Button x:Name="CheckConnectionButton" Content="Verbindung prüfen" Click="NetworkHelp_Click" Style="{StaticResource CompactButton}" Margin="0,0,6,10"/><Button x:Name="WindowsNetworkButton" Content="Windows-Netzwerk öffnen" Click="WindowsNetwork_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Margin="0,0,0,10"/></StackPanel><TextBlock Text="Direkte Geräteadressen (optional, private IPv4)" Style="{StaticResource Caption}"/><TextBox x:Name="PeersBox" AcceptsReturn="True" Height="56" Margin="0,5,0,0"/><TextBlock Text="Router-Pingziel (leer = automatisch)" Style="{StaticResource FieldLabel}"/><TextBox x:Name="RouterBox"/><TextBlock Text="Internet-Pingziel (Vergleichswert)" Style="{StaticResource FieldLabel}"/><TextBox x:Name="ExternalBox"/></StackPanel>
-     </Grid>
-     <Grid x:Name="ScheduleSettingsSection" Visibility="Collapsed"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <StackPanel><TextBlock Text="NACHTS OHNE LIMITS" Style="{StaticResource SectionTitle}"/><CheckBox x:Name="NightFreeCheck" Content="In diesem Zeitraum nie begrenzen" Style="{StaticResource WrappedCheck}"/><StackPanel Orientation="Horizontal" Margin="0,8,0,0"><TextBlock Text="von" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,6,0"/><TextBox x:Name="NightFromBox" Width="64"/><TextBlock Text="bis" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="10,0,6,0"/><TextBox x:Name="NightToBox" Width="64"/><TextBlock Text="Uhr" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="6,0,0,0"/></StackPanel><TextBlock Text="Große Downloads laufen dann mit voller Geschwindigkeit, auch wenn jemand spielt – ideal für Updates über Nacht." Style="{StaticResource Caption}" Margin="0,10,0,0" TextWrapping="Wrap"/></StackPanel>
-      <StackPanel Grid.Column="2"><TextBlock Text="WOCHENENDE" Style="{StaticResource SectionTitle}"/><TextBlock Text="Profil am Samstag und Sonntag" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="WeekendProfileCombo" Width="220" HorizontalAlignment="Left"><ComboBoxItem Content="Wie unter Allgemein" Tag=""/><ComboBoxItem Content="Turnier (40 %)" Tag="Turnier"/><ComboBoxItem Content="Standard (65 %)" Tag="Standard"/><ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt"/></ComboBox><TextBlock x:Name="ScheduleStatusText" Style="{StaticResource Caption}" Margin="0,12,0,0" TextWrapping="Wrap"/><TextBlock Text="Änderungen mit „Einstellungen speichern“ übernehmen." Style="{StaticResource Caption}" Margin="0,8,0,0"/></StackPanel>
-     </Grid>
-     <ScrollViewer x:Name="AnalysisSettingsSection" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <StackPanel><TextBlock Text="WOCHENBERICHT" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="WeeklyReportText" Style="{StaticResource Caption}" TextWrapping="Wrap"/><TextBlock Text="WER LÄDT GERADE?" Style="{StaticResource SectionTitle}" Margin="0,16,0,0"/><TextBlock x:Name="TopProgramsText" Style="{StaticResource Caption}" TextWrapping="Wrap" Text="Programme erscheinen, sobald beim Spielen die Priorisierung läuft."/><TextBlock Text="INTERNETSTÖRUNGEN" Style="{StaticResource SectionTitle}" Margin="0,16,0,0"/><TextBlock x:Name="QualityLogText" Style="{StaticResource Caption}" TextWrapping="Wrap"/><Button Content="Störungsprotokoll exportieren (CSV)" Click="ExportQualityLog_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Margin="0,6,0,0"/></StackPanel>
-      <StackPanel Grid.Column="2"><TextBlock Text="ROUTER-ASSISTENT" Style="{StaticResource SectionTitle}"/><TextBlock x:Name="RouterGuideTitle" FontWeight="SemiBold"/><TextBlock x:Name="RouterGuideSteps" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,0"/></StackPanel>
-     </Grid></ScrollViewer>
-     <StackPanel x:Name="UpdatesSettingsSection" Visibility="Collapsed" MaxWidth="850" HorizontalAlignment="Left"><TextBlock Text="DYNEX AKTUELL HALTEN" Style="{StaticResource SectionTitle}"/><CheckBox x:Name="AutoUpdateCheck" Content="Updates automatisch herunterladen und installieren" Style="{StaticResource WrappedCheck}" Checked="AutoUpdateCheck_Changed" Unchecked="AutoUpdateCheck_Changed"/><TextBlock x:Name="UpdateStatusText" Text="Automatische Updates sind ausgeschaltet." Style="{StaticResource Caption}" Margin="0,10,0,12"/><ProgressBar x:Name="UpdateDownloadProgress" Minimum="0" Maximum="100" Height="4" Foreground="{StaticResource Accent}" Background="{StaticResource Line}" Margin="0,0,0,12" Visibility="Collapsed" AutomationProperties.Name="Fortschritt des Update-Downloads"><ProgressBar.Template><ControlTemplate TargetType="ProgressBar"><Grid Background="{TemplateBinding Background}"><Border x:Name="PART_Track"/><Border x:Name="PART_Indicator" HorizontalAlignment="Left" Background="{TemplateBinding Foreground}"/></Grid></ControlTemplate></ProgressBar.Template></ProgressBar><CheckBox x:Name="BetaUpdatesCheck" Content="Vorabversionen (Beta) erhalten" Style="{StaticResource WrappedCheck}" Checked="BetaUpdatesCheck_Changed" Unchecked="BetaUpdatesCheck_Changed" Margin="0,0,0,10" ToolTip="Prüft zusätzlich als Vorabversion markierte GitHub-Releases. Gleiche Prüfungen wie stabile Updates."/><Button x:Name="CheckUpdatesButton" Content="Jetzt prüfen" Click="CheckUpdates_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left"/><Border BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Margin="0,24,0,0" Padding="0,16,0,0"><StackPanel><TextBlock Text="Dein Spiel läuft weiter." FontWeight="SemiBold"/><TextBlock Text="DYNEX lädt Updates auch beim Spielen mit höchstens 512 KiB/s (ca. 4,2 Mbit/s). Nach der Prüfung schließt sich DYNEX, installiert im Hintergrund und startet wieder. Ungespeicherte Einstellungen bleiben geschützt; während der Installation pausiert die Priorisierung kurz." Style="{StaticResource Caption}" Margin="0,6,0,0"/><TextBlock Text="Diese Checkbox wird sofort gespeichert." Style="{StaticResource Caption}" Margin="0,12,0,0"/></StackPanel></Border></StackPanel>
-    </Grid></Border>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="SettingsSaveButton" Content="Einstellungen speichern" Click="SaveSettings_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}"/><Button Content="Status aktualisieren" Click="Refresh_Click" Style="{StaticResource CompactButton}"/></StackPanel>
-   </Grid>
-   <Border x:Name="GuidePanel" Visibility="Collapsed" Background="#E6090A0D" Padding="0"><Border Style="{StaticResource Card}" MaxWidth="560" VerticalAlignment="Center" HorizontalAlignment="Center" Padding="22,18"><StackPanel><TextBlock Text="DYNEX EINRICHTEN" Style="{StaticResource SectionTitle}"/><TextBlock Text="Drei Punkte, dann arbeitet DYNEX automatisch. Der Stand wird live geprüft." Style="{StaticResource Caption}" Margin="0,0,0,12" TextWrapping="Wrap"/><TextBlock x:Name="GuideNetworkText" Text="1 · Netzwerk wird geprüft …" TextWrapping="Wrap" Margin="0,0,0,8"/><TextBlock x:Name="GuidePeerText" Text="2 · Andere PCs werden gesucht …" TextWrapping="Wrap" Margin="0,0,0,8"/><TextBlock x:Name="GuideSpeedText" Text="3 · Speedtest wird geprüft …" TextWrapping="Wrap" Margin="0,0,0,14"/><StackPanel Orientation="Horizontal"><Button Content="Windows-Netzwerk öffnen" Click="WindowsNetwork_Click" Style="{StaticResource CompactButton}"/><Button Content="Speedtest starten" Click="SpeedTest_Click" Style="{StaticResource CompactButton}"/><Button x:Name="GuideDoneButton" Content="Später" Click="GuideDone_Click" Style="{StaticResource CompactButton}" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}"/></StackPanel></StackPanel></Border></Border>
+    <Border Grid.Row="2" Background="#0C0D11" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Grid.ColumnSpan="2">
+      <Grid Margin="18,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock x:Name="ErrorText" Foreground="#FF7882" FontSize="11" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        <TextBlock x:Name="NetworkStatus" Grid.Column="1" Text="Netzwerk wird ermittelt" Style="{StaticResource Caption}" FontSize="11" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Right" />
+      </Grid>
+    </Border>
   </Grid>
-  <Border Grid.Row="3" Background="#0C0D11" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0"><Grid Margin="18,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock x:Name="ErrorText" Foreground="#FF7882" FontSize="11" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/><TextBlock x:Name="NetworkStatus" Grid.Column="1" Text="Netzwerk wird ermittelt" Style="{StaticResource Caption}" FontSize="11" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Right"/></Grid></Border>
- </Grid>
 </Window>

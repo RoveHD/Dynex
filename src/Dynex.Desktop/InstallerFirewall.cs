@@ -9,26 +9,27 @@ internal static class InstallerFirewall
 {
     internal sealed record RuleInfo(string Name, string ApplicationName, bool Enabled, int Direction,
         int Profiles, int Action, int Protocol, string LocalPorts, string RemotePorts);
+    internal sealed record PrivatePolicy(bool Enabled, bool BlockAllInboundTraffic, int DefaultOutboundAction);
 
     internal static string ApplicationPath => Path.Combine(AppContext.BaseDirectory, "DYNEX.exe");
-    internal static string RuleName(string applicationPath) => "DYNEX AutoLAN " +
+    internal static string RuleName(string applicationPath, int direction = 1) => (direction == 2 ? "DYNEX AutoLAN Outbound " : "DYNEX AutoLAN ") +
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(applicationPath).ToUpperInvariant())))[..16];
 
     internal static bool IsConfigured()
     {
         dynamic? policy = null;
         dynamic? rules = null;
-        dynamic? rule = null;
         try
         {
             policy = CreatePolicy();
+            ThrowIfPolicyBlocks(ReadPrivatePolicy(policy));
             rules = policy.Rules;
             ThrowIfBlocked(ReadApplicationBlocks(rules), ApplicationPath);
-            rule = FindRule(rules, RuleName(ApplicationPath));
-            return rule is not null && Matches(rule, ApplicationPath);
+            return RulesConfigured(rules, ApplicationPath);
         }
-        catch (COMException) { return false; }
-        finally { Release(rule); Release(rules); Release(policy); }
+        catch (COMException error)
+        { throw new IOException("Der Windows-Firewallstatus konnte nicht gelesen werden: " + error.Message, error); }
+        finally { Release(rules); Release(policy); }
     }
 
     internal static void EnsureConfigured(string? applicationPath = null)
@@ -36,37 +37,102 @@ internal static class InstallerFirewall
         applicationPath ??= ApplicationPath;
         dynamic? policy = null;
         dynamic? rules = null;
-        dynamic? existing = null;
-        dynamic? rule = null;
-        dynamic? installed = null;
         try
         {
             policy = CreatePolicy();
+            ThrowIfPolicyBlocks(ReadPrivatePolicy(policy));
             rules = policy.Rules;
             // A Windows "deny access" rule has precedence over our allow rule.
             // Diagnose it before any mutation; do not relax user or company policy.
             ThrowIfBlocked(ReadApplicationBlocks(rules, applicationPath), applicationPath);
-            var name = RuleName(applicationPath);
-            existing = FindRule(rules, name);
-            if (existing is not null && Matches(existing, applicationPath)) return;
-            if (existing is not null) throw new IOException("Die vorhandene DYNEX-Firewallregel wurde verändert. Bitte diese Regel in der Windows-Firewall prüfen: " + name);
-            rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", throwOnError: true)!)!;
-            rule.Name = name;
-            rule.Description = "DYNEX-PCs im selben privaten IPv4-Heimnetz automatisch verbinden.";
-            rule.ApplicationName = applicationPath;
-            rule.Protocol = 17; // UDP
-            rule.LocalPorts = "39274";
-            rule.RemoteAddresses = "LocalSubnet";
-            rule.Direction = 1; // inbound
-            rule.Profiles = 2; // Private only
-            rule.Action = 1; // allow
-            rule.EdgeTraversal = false;
-            rule.Enabled = true;
-            rules.Add(rule);
-            installed = FindRule(rules, name);
-            if (installed is null || !Matches(installed, applicationPath)) throw new IOException("Die DYNEX-Heimnetzregel konnte nicht bestätigt werden.");
+            EnsureRules(rules, applicationPath);
         }
-        finally { Release(installed); Release(rule); Release(existing); Release(rules); Release(policy); }
+        finally { Release(rules); Release(policy); }
+    }
+
+    internal static bool RulesConfigured(object rules, string applicationPath)
+    {
+        foreach (var direction in new[] { 1, 2 })
+        {
+            object? rule = null;
+            try
+            {
+                rule = FindRule(rules, RuleName(applicationPath, direction));
+                if (rule is null || !Matches(rule, applicationPath, direction)) return false;
+            }
+            finally { Release(rule); }
+        }
+        return true;
+    }
+
+    internal static bool HasRules()
+    {
+        dynamic? policy = null, rules = null;
+        try
+        {
+            policy = CreatePolicy();
+            rules = policy.Rules;
+            return RulesPresent(rules, ApplicationPath);
+        }
+        finally { Release(rules); Release(policy); }
+    }
+
+    internal static bool RulesPresent(object rules, string applicationPath)
+    {
+        foreach (var direction in new[] { 1, 2 })
+        {
+            object? rule = null;
+            try
+            {
+                rule = FindRule(rules, RuleName(applicationPath, direction));
+                if (rule is not null) return true;
+            }
+            finally { Release(rule); }
+        }
+        return false;
+    }
+
+    internal static void EnsureRules(object rules, string applicationPath, Func<object>? createRule = null)
+    {
+        ValidateOwnedRules(rules, applicationPath);
+        foreach (var direction in new[] { 1, 2 })
+        {
+            object? existing = null, rule = null, installed = null;
+            try
+            {
+                var name = RuleName(applicationPath, direction);
+                existing = FindRule(rules, name);
+                if (existing is not null)
+                {
+                    if (!Matches(existing, applicationPath, direction))
+                        throw new IOException("Die vorhandene DYNEX-Firewallregel wurde verändert: " + name);
+                    continue;
+                }
+                rule = createRule?.Invoke() ?? Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule", throwOnError: true)!)!;
+                ConfigureDiscoveryRule(rule, applicationPath, direction);
+                ((dynamic)rules).Add(rule);
+                installed = FindRule(rules, name);
+                if (installed is null || !Matches(installed, applicationPath, direction))
+                    throw new IOException("Die DYNEX-Heimnetzregel konnte nicht bestätigt werden: " + name);
+            }
+            finally { Release(installed); Release(rule); Release(existing); }
+        }
+    }
+
+    private static void ValidateOwnedRules(object rules, string applicationPath)
+    {
+        foreach (var direction in new[] { 1, 2 })
+        {
+            object? rule = null;
+            try
+            {
+                var name = RuleName(applicationPath, direction);
+                rule = FindRule(rules, name);
+                if (rule is not null && !Matches(rule, applicationPath, direction))
+                    throw new IOException("Die vorhandene DYNEX-Firewallregel wurde verändert. Bitte diese Regel in der Windows-Firewall prüfen: " + name);
+            }
+            finally { Release(rule); }
+        }
     }
 
     private static IEnumerable<RuleInfo> ReadApplicationBlocks(dynamic rules, string? applicationPath = null)
@@ -76,14 +142,15 @@ internal static class InstallerFirewall
         {
             try
             {
-                if (!(bool)candidate.Enabled || (int)candidate.Direction != 1 || (int)candidate.Action != 0 ||
+                var direction = (int)candidate.Direction;
+                if (!(bool)candidate.Enabled || direction is not (1 or 2) || (int)candidate.Action != 0 ||
                     ((int)candidate.Profiles & 2) == 0) continue;
                 var application = (string)candidate.ApplicationName;
                 if (!SameApplication(application, applicationPath)) continue;
                 var protocol = (int)candidate.Protocol;
                 if (protocol is not (17 or 256)) continue;
                 // Windows does not expose port lists for protocol "Any".
-                yield return new RuleInfo((string)candidate.Name, application, true, 1, (int)candidate.Profiles,
+                yield return new RuleInfo((string)candidate.Name, application, true, direction, (int)candidate.Profiles,
                     0, protocol, protocol == 256 ? "*" : (string)candidate.LocalPorts,
                     protocol == 256 ? "*" : (string)candidate.RemotePorts);
             }
@@ -96,18 +163,41 @@ internal static class InstallerFirewall
         var conflicts = rules.Where(rule => BlocksDiscovery(rule, applicationPath)).Select(rule =>
         {
             var name = rule.Name.Replace('\r', ' ').Replace('\n', ' ');
-            return name.Length > 100 ? name[..100] : name;
+            return (name.Length > 100 ? name[..100] : name) + (rule.Direction == 2 ? " (ausgehend)" : " (eingehend)");
         }).Distinct(StringComparer.OrdinalIgnoreCase).Take(3).ToArray();
         if (conflicts.Length == 0) return;
         throw new IOException("Eine Windows-Firewall-Regel kann DYNEX im privaten Heimnetz blockieren (Regel: " +
             string.Join(", ", conflicts) + "). Öffne Windows-Sicherheit → Firewall & Netzwerkschutz → Erweiterte Einstellungen → " +
-            "Eingehende Regeln und prüfe diese DYNEX-Blockregel für private Netzwerke. Vorhandene Sperren werden nicht automatisch geändert.");
+            "Eingehende/Ausgehende Regeln und prüfe diese DYNEX-Blockregel für private Netzwerke. Vorhandene Sperren werden nicht automatisch geändert.");
     }
 
     internal static bool BlocksDiscovery(RuleInfo rule, string applicationPath) =>
-        rule.Enabled && rule.Direction == 1 && (rule.Profiles & 2) != 0 && rule.Action == 0 &&
+        rule.Enabled && rule.Direction is 1 or 2 && (rule.Profiles & 2) != 0 && rule.Action == 0 &&
         SameApplication(rule.ApplicationName, applicationPath) &&
         (rule.Protocol == 256 || rule.Protocol == 17 && IncludesDiscoveryPort(rule.LocalPorts) && IncludesDiscoveryPort(rule.RemotePorts));
+
+    internal static PrivatePolicy ReadPrivatePolicy(dynamic policy)
+    {
+        try
+        {
+            return new PrivatePolicy((bool)policy.FirewallEnabled[2],
+                (bool)policy.BlockAllInboundTraffic[2], (int)policy.DefaultOutboundAction[2]);
+        }
+        catch (COMException error)
+        { throw new IOException("Die Windows-Firewallrichtlinie für das private Netzwerk konnte nicht gelesen werden: " + error.Message, error); }
+    }
+
+    internal static void ThrowIfPolicyBlocks(PrivatePolicy policy)
+    {
+        if (!policy.Enabled) return;
+        var problems = new List<string>();
+        if (policy.BlockAllInboundTraffic)
+            problems.Add("Im Privatprofil ist ‚Alle eingehenden Verbindungen blockieren‘ aktiviert. Windows ignoriert damit auch die DYNEX-Heimnetzfreigabe.");
+        // DefaultOutboundAction=Block is supported by our app-scoped outgoing
+        // allow rule. Explicit block rules still win and are checked separately.
+        if (problems.Count > 0)
+            throw new IOException(string.Join(" ", problems) + " Prüfe Windows-Sicherheit → Firewall & Netzwerkschutz → Erweiterte Einstellungen. Globale Firewallrichtlinien werden nicht automatisch geändert.");
+    }
 
     private static bool SameApplication(string? left, string right)
     {
@@ -136,32 +226,76 @@ internal static class InstallerFirewall
         applicationPath ??= ApplicationPath;
         dynamic? policy = null;
         dynamic? rules = null;
-        dynamic? rule = null;
         try
         {
             policy = CreatePolicy();
             rules = policy.Rules;
-            rule = FindRule(rules, RuleName(applicationPath));
-            if (rule is null) return;
-            if (!Matches(rule, applicationPath)) throw new IOException("Die DYNEX-Firewallregel wurde verändert und konnte deshalb nicht automatisch entfernt werden: " + RuleName(applicationPath));
-            rules.Remove(RuleName(applicationPath));
+            RemoveRules(rules, applicationPath);
+        }
+        finally { Release(rules); Release(policy); }
+    }
+
+    internal static void RemoveRules(object rules, string applicationPath)
+    {
+        ValidateOwnedRules(rules, applicationPath);
+        foreach (var direction in new[] { 1, 2 })
+        {
+            var name = RuleName(applicationPath, direction);
+            object? rule = null;
             dynamic? remaining = null;
             try
             {
-                remaining = FindRule(rules, RuleName(applicationPath));
-                if (remaining is not null) throw new IOException("Die Entfernung der DYNEX-Firewallregel wurde nicht bestätigt.");
+                rule = FindRule(rules, name);
+                if (rule is null) continue;
+                ((dynamic)rules).Remove(name);
+                remaining = FindRule(rules, name);
+                if (remaining is not null) throw new IOException("Die Entfernung der DYNEX-Firewallregel wurde nicht bestätigt: " + name);
             }
-            finally { Release(remaining); }
+            finally { Release(remaining); Release(rule); }
         }
-        finally { Release(rule); Release(rules); Release(policy); }
     }
 
-    private static bool Matches(dynamic rule, string applicationPath) =>
+    internal static void ConfigureDiscoveryRule(dynamic rule, string applicationPath, int direction = 1)
+    {
+        if (direction is not (1 or 2)) throw new ArgumentOutOfRangeException(nameof(direction));
+        rule.Name = RuleName(applicationPath, direction);
+        rule.Description = "DYNEX-PCs im selben privaten IPv4-Heimnetz automatisch verbinden.";
+        rule.ApplicationName = applicationPath;
+        rule.Protocol = 17; // UDP
+        rule.LocalPorts = "39274";
+        rule.RemotePorts = direction == 2 ? "39274" : "*";
+        rule.LocalAddresses = "*";
+        rule.RemoteAddresses = direction == 2 ? "LocalSubnet,239.255.39.74" : "LocalSubnet";
+        rule.InterfaceTypes = "All";
+        rule.Direction = direction;
+        rule.Profiles = 2; // Private only
+        rule.Action = 1; // allow
+        rule.EdgeTraversal = false;
+        rule.Enabled = true;
+    }
+
+    internal static bool Matches(dynamic rule, string applicationPath, int direction = 1) =>
+        direction is 1 or 2 &&
         string.Equals(Path.GetFullPath((string)rule.ApplicationName), applicationPath, StringComparison.OrdinalIgnoreCase) &&
         (int)rule.Protocol == 17 && (string)rule.LocalPorts == "39274" &&
-        string.Equals((string)rule.RemoteAddresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase) &&
-        (int)rule.Direction == 1 && (int)rule.Profiles == 2 && (int)rule.Action == 1 &&
+        (direction == 2 ? (string?)rule.RemotePorts == "39274" : IsUnrestricted((string?)rule.RemotePorts)) && IsUnrestricted((string?)rule.LocalAddresses) &&
+        (string.IsNullOrEmpty((string?)rule.InterfaceTypes) || string.Equals((string?)rule.InterfaceTypes, "All", StringComparison.OrdinalIgnoreCase)) &&
+        HasNoInterfaces((object?)rule.Interfaces) && string.IsNullOrEmpty((string?)rule.ServiceName) &&
+        RemoteAddressesMatch((string)rule.RemoteAddresses, direction) &&
+        (int)rule.Direction == direction && (int)rule.Profiles == 2 && (int)rule.Action == 1 &&
         (bool)rule.Enabled && !(bool)rule.EdgeTraversal;
+
+    private static bool IsUnrestricted(string? value) => string.IsNullOrEmpty(value) || value == "*";
+    private static bool HasNoInterfaces(object? value) => value is null or DBNull || value is Array { Length: 0 };
+
+    private static bool RemoteAddressesMatch(string? addresses, int direction)
+    {
+        if (direction == 1) return string.Equals(addresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase);
+        if (addresses is null) return false;
+        var values = addresses.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return values.Length == 2 && values.Any(value => string.Equals(value, "LocalSubnet", StringComparison.OrdinalIgnoreCase)) &&
+            values.Any(value => value is "239.255.39.74" or "239.255.39.74/255.255.255.255" or "239.255.39.74/32");
+    }
 
     internal static object? FindRule(object rules, string name)
     {

@@ -47,11 +47,25 @@ internal static class InstallerPrerequisites
         "Die Netzwerkeinrichtung ist noch nicht vollständig: " + reason +
         " DYNEX ist installiert. Starte das DYNEX-Setup erneut oder verwende die Einrichtung in den Einstellungen.");
 
-    private static async Task<int> InstallMachineAsync(bool legacyInstallation)
+    internal static async Task<int> InstallMachineAsync(bool legacyInstallation,
+        Func<Task<string?>>? preparePackage = null, Func<string?, Task<int>>? installMachine = null,
+        Func<Task<int>>? installFirewall = null)
     {
         // Download into the initiating user's cache before elevation. Credentials
         // from another administrator must not switch the DYNEX user profile.
-        var package = PacketFilterSetup.IsInstalled ? null : await PacketFilterSetup.PreparePackageAsync(_ => { });
+        preparePackage ??= async () => PacketFilterSetup.IsInstalled ? null : await PacketFilterSetup.PreparePackageAsync(_ => { });
+        string? package;
+        try { package = await preparePackage(); }
+        catch (Exception error) when (error is not (OutOfMemoryException or OperationCanceledException))
+        {
+            // A failed filter download must not leave PC discovery blocked.
+            var firewallCode = await (installFirewall?.Invoke() ?? RunElevatedAsync("--setup-machine-firewall"));
+            if (firewallCode is 1602 or 1223) throw new OperationCanceledException("Die Windows-Einrichtung wurde abgebrochen.");
+            throw new IOException((firewallCode == 0
+                ? "Die Firewallfreigabe für DYNEX-PCs wurde eingerichtet. Die Downloadbegrenzung konnte nicht vorbereitet werden: "
+                : $"Die Downloadbegrenzung konnte nicht vorbereitet werden; auch die Firewallfreigabe wurde nicht bestätigt (Windows-Code {firewallCode}): ") + error.Message, error);
+        }
+        if (installMachine is not null) return await installMachine(package);
         var arguments = package is null ? new List<string>() : [package];
         if (legacyInstallation) arguments.Add("--upgrade-legacy-installation");
         return await RunElevatedAsync("--setup-machine", arguments.ToArray());
@@ -134,7 +148,7 @@ internal static class InstallerPrerequisites
             }
             catch (Exception error) { return await WriteRemovalResultAsync(resultName, new(1, "Die Systembereinigung ist nicht vollständig: " + error.Message)); }
         }
-        if (args[0] is "--setup-machine" or "--remove-machine-firewall")
+        if (args[0] is "--setup-machine" or "--setup-machine-firewall" or "--remove-machine-firewall")
         {
             var legacyUpgrade = args[0] == "--setup-machine" && args[^1] == "--upgrade-legacy-installation";
             var effectiveLength = args.Length - (legacyUpgrade ? 1 : 0);
@@ -144,6 +158,8 @@ internal static class InstallerPrerequisites
             try
             {
                 if (args[0] == "--remove-machine-firewall") { InstallerFirewall.RemoveConfigured(); return 0; }
+                if (args[0] == "--setup-machine-firewall")
+                    return await WithSetupLockAsync(() => { InstallerFirewall.EnsureConfigured(); return Task.FromResult(0); });
                 return await WithSetupLockAsync(() => InstallerSystem.InstallAsync(new WindowsInstallerSystem(), InstallerFirewall.ApplicationPath,
                     effectiveLength == 2 ? args[1] : null, legacyUpgrade));
             }
@@ -155,7 +171,7 @@ internal static class InstallerPrerequisites
         if (args[0] == "--remove-setup-firewall")
         {
             if (args.Length != 1) return 2;
-            try { return InstallerFirewall.IsConfigured() ? await RunElevatedAsync("--remove-machine-firewall") : 0; }
+            try { return InstallerFirewall.HasRules() ? await RunElevatedAsync("--remove-machine-firewall") : 0; }
             catch (Win32Exception error) { return error.NativeErrorCode == 1223 ? 1602 : error.NativeErrorCode; }
             catch { return 1; }
         }

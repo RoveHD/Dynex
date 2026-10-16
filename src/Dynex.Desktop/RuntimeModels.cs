@@ -27,7 +27,7 @@ public sealed record UserSettings
     public double? UploadCapacityMbps { get; init; }
     public bool UploadLimitEnabled { get; init; } = true;
     public double? ManualUploadLimitMbps { get; init; }
-    /// <summary>Games (process names) that count as gaming as soon as they run, e.g. during loading or matchmaking.</summary>
+    /// <summary>Process names to observe from launch; protection starts only after the game produces confirmed network traffic.</summary>
     public string EarlyLimitGames { get; init; } = "";
     public bool PingAlarm { get; init; } = true;
     public bool NightFree { get; init; }
@@ -38,7 +38,12 @@ public sealed record UserSettings
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";
     public string GameProcesses { get; init; } = "";
+    public bool UiSounds { get; init; } = true;
+    public bool UiAnimations { get; init; } = true;
     public string DirectPeers { get; init; } = "";
+    public ApplicationRule[] ApplicationRules { get; init; } = [];
+    public string? ActiveNetworkProfileId { get; init; }
+    public NetworkProfileEntry[] NetworkProfiles { get; init; } = [];
 }
 
 public sealed record PingView(double? Current, double? Jitter, double? Loss, int Count, string Target);
@@ -59,4 +64,5 @@ public sealed record RuntimeSnapshot(
     string LimitReason = "", Dynex.Core.ConnectionAdvice? Connection = null, DateTimeOffset? PausedUntil = null,
     Dynex.Core.SessionSummary? LastSession = null, Dynex.Core.RouterTrafficSample? HomeTraffic = null,
     double? UploadLimitMbps = null, string? PingAlert = null, IReadOnlyList<ProgramTraffic>? TopPrograms = null,
-    string? ScheduleReason = null);
+    string? ScheduleReason = null, bool WaitingForGameTraffic = false, bool ObservingGameTraffic = false,
+    bool ApplicationRulesActive = false);

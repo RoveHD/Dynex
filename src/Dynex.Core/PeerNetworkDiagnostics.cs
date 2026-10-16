@@ -1,7 +1,7 @@
 namespace Dynex.Core;
 
 /// <summary>What the user sees: an observed cause and exactly one concrete next step.</summary>
-public enum ConnectionProblemKind { None, NoPrivateNetwork, FirewallMissing, VersionMismatch, OtherMode, ClockSkew, WrongNetwork, PeerLost, NoResponse, NotConfirmed, ReceiveError, ClientIsolation }
+public enum ConnectionProblemKind { None, NoPrivateNetwork, FirewallMissing, VersionMismatch, OtherMode, ClockSkew, WrongNetwork, PeerLost, NoResponse, NotConfirmed, ReceiveError, ClientIsolation, IdentityConflict }
 
 /// <summary>Read-only observations about the local network used to explain why PCs do not see each other.</summary>
 public sealed record LanEnvironment(string? WifiName = null, int? OtherUpnpDevices = null)
@@ -38,7 +38,9 @@ public sealed record PeerNetworkDiagnostics(
     long UnsupportedProtocolDatagrams = 0,
     string? LostPeerName = null,
     DateTimeOffset? LostPeerAtUtc = null,
-    string? ReceiveError = null)
+    string? ReceiveError = null,
+    long DiscoveryProbeDatagrams = 0,
+    long ConflictingIdentityDatagrams = 0)
 {
     public string Hint => Assess().ToString();
 
@@ -71,11 +73,14 @@ public sealed record PeerNetworkDiagnostics(
                 mismatched.Length > 0 && mismatched.All(v => IsOlder(v.Version, LocalVersion))
                     ? $"DYNEX auf {Names(mismatched)} auf Version {LocalVersion} aktualisieren."
                     : "DYNEX auf diesem PC aktualisieren (Einstellungen → Updates → Jetzt prüfen), danach auf beiden PCs dieselbe Version verwenden.");
+        if (ConflictingIdentityDatagrams > 0)
+            return new(ConnectionProblemKind.IdentityConflict, "Bestätigte DYNEX-Pakete verwenden dieselbe Geräteidentität wie dieser PC, aber eine andere Sitzung. Eine zweite Instanz oder kopierte Gerätedaten können die Verbindung verhindern.",
+                "DYNEX auf beiden PCs vollständig beenden und jeweils einmal starten. Bleibt der Hinweis bestehen, auf einem PC eigene DYNEX-Gerätedaten neu einrichten.");
         if (OtherModeDatagrams > 0)
             return new(ConnectionProblemKind.OtherMode, "Pakete eines anderen DYNEX-Verbindungsmodus beobachtet (Absender unbestätigt): Ein PC nutzt die automatische Verbindung, der andere eine private Gruppe.",
                 "Auf beiden PCs „Automatisch im privaten LAN verbinden“ aktivieren oder auf einem PC einen Gruppencode erzeugen und auf dem anderen importieren.");
         if (AuthenticatedClockSkewDatagrams > 0)
-            return new(ConnectionProblemKind.ClockSkew, "Ein authentifiziertes Gruppenpaket wurde wegen mehr als 30 Sekunden Zeitabweichung abgewiesen.",
+            return new(ConnectionProblemKind.ClockSkew, "Ein authentifiziertes DYNEX-Paket wurde wegen mehr als 30 Sekunden Zeitabweichung abgewiesen.",
                 "Auf beiden PCs Windows-Einstellungen → Zeit und Sprache → „Jetzt synchronisieren“ wählen.");
         if (ScopeRejectedDatagrams > 0)
             return new(ConnectionProblemKind.WrongNetwork, "UDP-Pakete außerhalb der freigegebenen privaten LAN-Schnittstelle beobachtet. Die PCs sind vermutlich in verschiedenen Netzen (z. B. Gast-WLAN oder zweiter Router).",

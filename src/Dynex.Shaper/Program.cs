@@ -99,7 +99,9 @@ internal static class Program
         double? rate = null;
         double? uploadRate = null;
         var qosEnabled = false;
+        var observeGameTraffic = false;
         var captureOutbound = false;
+        var applicationRulesEnabled = false;
         string? error = null;
         string? releaseError = null;
         long acknowledgedCommandId = 0;
@@ -107,6 +109,8 @@ internal static class Program
         var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
         var accounting = new TrafficAccounting();
         var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
+        var gameTraffic = new GameTrafficMonitor(() => ownership.Snapshot);
+        var applicationPolicy = new ApplicationRulePolicy(() => ownership.Snapshot);
         var ownershipWorker = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -147,6 +151,11 @@ internal static class Program
                     active = current?.Active == true && current.HasDownloadLimit && ownershipReady,
                     mbps = current?.Active == true && current.HasDownloadLimit && ownershipReady ? rate : null,
                     qosActive = current?.Active == true && current.QosEnabled && ownershipReady,
+                    applicationRulesActive = current?.Active == true && current.HasApplicationRules && ownershipReady,
+                    observingGameTraffic = current?.Active == true && observeGameTraffic && ownershipReady,
+                    activeGameProcesses = current?.Active == true && observeGameTraffic && ownershipReady
+                        ? gameTraffic.Snapshot().Select(game => new { processId = game.ProcessId,
+                            startedAtUtcTicks = game.StartedAtUtcTicks, ageSeconds = game.AgeSeconds }).ToArray() : [],
                     uploadActive = current?.Active == true && current.HasUploadLimit && ownershipReady,
                     uploadMbps = current?.Active == true && current.HasUploadLimit && ownershipReady ? uploadRate : null,
                     uploadSentBytes = current?.UploadSentBytes ?? 0,
@@ -211,13 +220,18 @@ internal static class Program
                 if (commandId < 0) throw new FormatException("Ungültige Befehlsbestätigung.");
                 var shutdown = commandJson.RootElement.TryGetProperty("shutdown", out var shutdownValue) && shutdownValue.GetBoolean();
                 var requestedUpload = command.UploadMbps;
-                if (shutdown && (requested is not null || requestedQos || requestedUpload is not null))
-                    throw new FormatException("Abschaltung erfordert mbps:null, uploadMbps:null und qosEnabled:false.");
+                var requestedObservation = command.ObserveGameTraffic;
+                var requestedRules = command.ApplicationRules ?? [];
+                if (shutdown && (requested is not null || requestedQos || requestedUpload is not null || requestedObservation || requestedRules.Length != 0))
+                    throw new FormatException("Abschaltung erfordert ausgeschaltete Limits, QoS und Paketbeobachtung.");
                 // Upload pacing and QoS marking both need outbound capture; download-only does not.
-                var wantsOutbound = requestedQos || requestedUpload.HasValue;
-                var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue;
+                var wantsOutbound = requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Any(r => r.UploadMbps.HasValue);
+                var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Length != 0;
                 bulkPolicy.Protect(command.ProtectedProcesses);
                 qosPolicy.Protect(command.ProtectedProcesses);
+                gameTraffic.Configure(command.ProtectedProcesses, requestedObservation);
+                applicationPolicy.Configure(requestedRules);
+                observeGameTraffic = requestedObservation;
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
                 var current = Volatile.Read(ref session);
                 if (current?.Active == true && requestedQos == qosEnabled && wantsOutbound == captureOutbound && wantsActive)
@@ -226,10 +240,13 @@ internal static class Program
                     // changes and cap <-> QoS-only transitions.
                     if (requested != rate) current.UpdateLimit(requested);
                     if (requestedUpload != uploadRate) current.UpdateUploadLimit(requestedUpload);
+                    current.UpdateApplicationRules(requestedRules);
+                    applicationRulesEnabled = requestedRules.Length != 0;
                     rate = requested;
                     uploadRate = requestedUpload;
                 }
-                else if (requested != rate || requestedUpload != uploadRate || requestedQos != qosEnabled || wantsOutbound != captureOutbound || !wantsActive)
+                else if (requested != rate || requestedUpload != uploadRate || requestedQos != qosEnabled || wantsOutbound != captureOutbound ||
+                    (requestedRules.Length != 0) != applicationRulesEnabled || !wantsActive)
                 {
                     var old = Interlocked.Exchange(ref session, null);
                     if (old is not null) await ReleaseAsync(old);
@@ -238,6 +255,7 @@ internal static class Program
                     uploadRate = requestedUpload;
                     qosEnabled = requestedQos;
                     captureOutbound = wantsOutbound;
+                    applicationRulesEnabled = requestedRules.Length != 0;
                     error = null;
                     if (wantsActive && Volatile.Read(ref releaseError) is null)
                     {
@@ -248,7 +266,7 @@ internal static class Program
                             {
                                 stop.Token.ThrowIfCancellationRequested();
                                 var created = new PacketPump(device, requested, bulkPolicy.ShouldLimit, requestedQos ? qosPolicy.Classify : null,
-                                    requestedUpload, bulkPolicy.ShouldLimitUpload);
+                                    requestedUpload, bulkPolicy.ShouldLimitUpload, gameTraffic.Observe, applicationPolicy.Classify, requestedRules);
                                 Volatile.Write(ref session, created);
                                 if (stop.IsCancellationRequested)
                                 {

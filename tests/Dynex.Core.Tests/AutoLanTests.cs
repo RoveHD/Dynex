@@ -23,6 +23,11 @@ internal static class AutoLanTests
         var tamperedHello = cryptoA.Hello(now); tamperedHello[^1] ^= 1;
         check(AutoLanCrypto.Verify(tamperedHello, now) is null, "AutoLAN rejects invalid ECDSA signatures");
         check(AutoLanCrypto.Verify(cryptoA.Hello(now.AddMinutes(-1)), now) is null, "AutoLAN rejects stale signed announcements");
+        check(AutoLanCrypto.Verify(cryptoA.Hello(now.AddMinutes(-1)), now, out var signedClockSkew) is null && signedClockSkew,
+            "AutoLAN diagnoses time skew only after validating the announcement signature");
+        var forgedStale = cryptoA.Hello(now.AddMinutes(-1)); forgedStale[^1] ^= 1;
+        check(AutoLanCrypto.Verify(forgedStale, now, out var forgedClockSkew) is null && !forgedClockSkew,
+            "an invalid signature cannot create a false authenticated clock-skew diagnosis");
         check(AutoLanCrypto.Verify(new byte[4096], now) is null, "AutoLAN bounds handshake datagram length");
         var ackB = AutoLanCrypto.Verify(cryptoB.Ack(helloA!, now), now)!;
         check(cryptoA.IsAckForLocal(ackB), "AutoLAN acknowledgement binds the recipient identity, session and random challenge");
@@ -59,9 +64,35 @@ internal static class AutoLanTests
         check(cryptoB.Decrypt(channelB, packet2, now) is not null, "invalid AutoLAN ciphertext cannot advance replay state");
         var old = cryptoA.Encrypt(channelA, wire with { Sequence = 6, SentAtUnixMs = now.AddMinutes(-1).ToUnixTimeMilliseconds() });
         check(cryptoB.Decrypt(channelB, old, now) is null, "AutoLAN rejects stale authenticated encrypted status");
+        check(cryptoB.Decrypt(channelB, old, now, out var encryptedClockSkew) is null && encryptedClockSkew,
+            "AutoLAN diagnoses signed-session ciphertext time skew without advancing replay state");
+        var forgedOld = old.ToArray(); forgedOld[^1] ^= 1;
+        check(cryptoB.Decrypt(channelB, forgedOld, now, out var falseEncryptedSkew) is null && !falseEncryptedSkew,
+            "tampered stale ciphertext cannot claim an authenticated clock discrepancy");
         var binding = new AutoLanBinding(IPAddress.Parse("192.168.4.12"), IPAddress.Parse("255.255.255.0"), 4);
         check(binding.Contains(IPAddress.Parse("192.168.4.8")) && !binding.Contains(IPAddress.Parse("192.168.5.8")) &&
             binding.Broadcast.Equals(IPAddress.Parse("192.168.4.255")), "AutoLAN discovery fallback computes subnet broadcast and rejects off-link source scope");
+        var discovery = new AutoLanDiscovery();
+        var sweep = Enumerable.Range(0, 32).SelectMany(_ => discovery.Next([binding], 8)).ToArray();
+        check(sweep.Distinct().Count() == 253 && sweep.All(ip => binding.Contains(ip) && !ip.Equals(binding.Address) &&
+                !ip.Equals(IPAddress.Parse("192.168.4.0")) && !ip.Equals(binding.Broadcast)),
+            "bounded unicast search covers every other usable /24 address without leaving the private on-link subnet");
+        var largeBinding = new AutoLanBinding(IPAddress.Parse("10.0.2.1"), IPAddress.Parse("255.255.0.0"), 4);
+        discovery.Reset([largeBinding]);
+        var initial = discovery.Next([largeBinding], 8);
+        check(initial.Contains(IPAddress.Parse("10.0.2.2")) && initial.All(ip => ip.GetAddressBytes()[2] == 2),
+            "unicast fallback searches the PC's own /24 first even when its router uses a wider subnet");
+        var wideSweep = Enumerable.Range(0, 8192).SelectMany(_ => discovery.Next([largeBinding], 8)).ToArray();
+        check(wideSweep.All(ip => largeBinding.Contains(ip)) && wideSweep.Any(ip => ip.Equals(IPAddress.Parse("10.0.0.2"))),
+            "incremental unicast search reaches other /24 segments of the same private /16");
+        var broadBinding = largeBinding with { Mask = IPAddress.Parse("255.0.0.0") };
+        discovery.Reset([broadBinding]);
+        check(Enumerable.Range(0, 8192).SelectMany(_ => discovery.Next([broadBinding], 8)).All(ip => ip.GetAddressBytes()[1] == 0),
+            "large private ranges remain capped to the local /16 rather than scanning an entire /8");
+        var narrowBinding = binding with { Address = IPAddress.Parse("192.168.4.1"), Mask = IPAddress.Parse("255.255.255.252") };
+        check(discovery.Next([narrowBinding], 8) is [var only] && only.Equals(IPAddress.Parse("192.168.4.2")),
+            "a changed subnet resets discovery and excludes network, broadcast and the local host on /30");
+        check(discovery.Next([], 8).Count == 0, "closing private network scope immediately removes every fallback search target");
         var privateId = Guid.NewGuid(); var publicId = Guid.NewGuid(); var domainId = Guid.NewGuid();
         var profiles = new Dictionary<Guid, int> { [privateId] = 1, [publicId] = 0, [domainId] = 2 };
         AutoLanNetworkScope.Candidate Candidate(Guid? id, string name) => new(id, name, binding);
@@ -94,7 +125,7 @@ internal static class AutoLanTests
             DeviceId = idA, DeviceName = "Automatic A", Port = portA, LoopbackOnly = true,
             DirectPeers = [new(IPAddress.Loopback, portB)], PeerTtl = TimeSpan.FromSeconds(1), HeartbeatInterval = TimeSpan.FromMilliseconds(150)
         };
-        var settingsB = settingsA with { DeviceId = idB, DeviceName = "Automatic B", Port = portB, DirectPeers = [new(IPAddress.Loopback, portA)] };
+        var settingsB = settingsA with { DeviceId = idB, DeviceName = "Automatic B", Port = portB, DirectPeers = [] };
         var scopeRecovered = false;
         await using (var recovery = new AutoLanPeerService(settingsA with { LoopbackOnly = false, DirectPeers = [], Port = FreePort() }, keyA,
             () => ([], Volatile.Read(ref scopeRecovered) ? null : "Temporary profile probe error")))
@@ -115,6 +146,11 @@ internal static class AutoLanTests
         var received = a.Snapshot().Single();
         check(received.DeviceId == idB && received.IsGaming && received.Game == "Live AutoLAN Game" && received.IdleBaselineMs == 20,
             "two real UDP AutoLAN peers exchange encrypted gaming status without any shared key");
+        check(b.GetNetworkDiagnostics().DirectPeers.Count == 0 && b.GetNetworkDiagnostics().LearnedEndpoints == 1,
+            "one-sided AutoLAN unicast discovery learns the authenticated return path without multicast or a reciprocal address");
+        for (var i = 0; i < 100; i++) a.RequestDiscovery();
+        check(a.Snapshot().Single().SessionId == received.SessionId && a.GetNetworkDiagnostics().DiscoveryProbeDatagrams == 0,
+            "repeated discovery requests preserve authenticated sessions and never probe real LANs in loopback mode");
         check(received.UploadMbps == 0, "AutoLAN peers exchange zero upload distinctly");
         check(received.BudgetProposal == DownloadBudgetProposal.FromSettings(settingsB),
             "AutoLAN encrypted status advertises original local capacity and reserve settings");

@@ -7,6 +7,17 @@ internal static class PeerConnectionTests
 {
     internal static async Task Run(Action<bool, string> check)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            using var probeSocket = BoundSocket();
+            PeerService.SuppressUdpConnectionReset(probeSocket);
+            await probeSocket.SendToAsync(new byte[] { 1 }, SocketFlags.None, new IPEndPoint(IPAddress.Loopback, FreePort()));
+            check(!await Receives(probeSocket, 150),
+                "Windows unused-port probe does not abort a shared UDP receive with PORT_UNREACHABLE");
+            using var healthySender = BoundSocket();
+            await healthySender.SendToAsync(new byte[] { 2 }, SocketFlags.None, probeSocket.LocalEndPoint!);
+            check(await Receives(probeSocket, 500), "UDP receiver still accepts real peer packets after a closed-port probe");
+        }
         var key = GroupKey.Generate();
         var portA = FreePort(); var portB = FreePort();
         while (portB == portA) portB = FreePort();
@@ -60,12 +71,19 @@ internal static class PeerConnectionTests
             "replayed authenticated datagram cannot move an existing peer return route to another UDP endpoint");
 
         var keyAuto = AutoLanIdentity.GenerateSigningKey();
-        var automaticSettings = isolatedSettings with { DeviceId = AutoLanIdentity.GetDeviceId(keyAuto), Port = FreePort() };
+        using var announcementCapture = BoundSocket();
+        var automaticSettings = isolatedSettings with { DeviceId = AutoLanIdentity.GetDeviceId(keyAuto), Port = FreePort(),
+            DirectPeers = [(IPEndPoint)announcementCapture.LocalEndPoint!] };
         await using var automatic = new AutoLanPeerService(automaticSettings, keyAuto);
         await automatic.StartAsync();
         using var autoCrypto = new AutoLanCrypto(keyAuto);
-        await SendUntil(impostor, autoCrypto.Hello(DateTimeOffset.UtcNow), new IPEndPoint(IPAddress.Loopback, automaticSettings.Port),
-            () => automatic.GetNetworkDiagnostics().SelfDatagrams >= 1);
+        var ownAnnouncement = new byte[AutoLanCrypto.MaxDatagram];
+        using (var captureTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+        {
+            var ownSize = await announcementCapture.ReceiveAsync(ownAnnouncement, SocketFlags.None, captureTimeout.Token);
+            await SendUntil(impostor, ownAnnouncement[..ownSize], new IPEndPoint(IPAddress.Loopback, automaticSettings.Port),
+                () => automatic.GetNetworkDiagnostics().SelfDatagrams >= 1);
+        }
         check(automatic.GetNetworkDiagnostics().Hint.Contains("keine UDP-Pakete anderer PCs") &&
             automatic.GetNetworkDiagnostics().InvalidOrRejectedDatagrams == 0,
             "authenticated AutoLAN self-broadcast is separate from other-PC reception and rejection counters");
@@ -83,6 +101,10 @@ internal static class PeerConnectionTests
         using var remote = new AutoLanCrypto(AutoLanIdentity.GenerateSigningKey());
         using var remoteSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         var automaticEndpoint = new IPEndPoint(IPAddress.Loopback, automaticSettings.Port);
+        await SendUntil(remoteSocket, remote.Hello(DateTimeOffset.UtcNow.AddMinutes(-2)), automaticEndpoint,
+            () => automatic.GetNetworkDiagnostics().AuthenticatedClockSkewDatagrams > 0);
+        check(automatic.GetNetworkDiagnostics().LearnedEndpoints == 0 && automatic.GetNetworkDiagnostics().AcceptedHandshakes == 0,
+            "stale signed AutoLAN announcements explain clock skew without creating trust or a return route");
         await SendUntil(remoteSocket, remote.Hello(DateTimeOffset.UtcNow), automaticEndpoint,
             () => automatic.GetNetworkDiagnostics().AcceptedHandshakes >= 1);
         using (var receiveTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
@@ -100,7 +122,18 @@ internal static class PeerConnectionTests
                 "valid repeated AutoLAN acknowledgement retains its channel without increasing rejection count");
         }
 
-        var deniedSettings = automaticSettings with { Port = FreePort(), LoopbackOnly = false };
+        await SendUntil(impostor, autoCrypto.Hello(DateTimeOffset.UtcNow), automaticEndpoint,
+            () => automatic.GetNetworkDiagnostics().ConflictingIdentityDatagrams > 0);
+        check(automatic.GetNetworkDiagnostics().ConnectedPeers == 0 &&
+            automatic.GetNetworkDiagnostics().Assess().Kind == ConnectionProblemKind.IdentityConflict,
+            "same AutoLAN key from another boot session is diagnosed distinctly from the service's own broadcast");
+        await SendUntil(impostor, codec.Encode(wire with { DeviceId = isolatedSettings.DeviceId,
+            SessionId = Guid.NewGuid(), SentAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }), endpoint,
+            () => isolated.GetNetworkDiagnostics().ConflictingIdentityDatagrams > 0);
+        check(isolated.GetNetworkDiagnostics().ConflictingIdentityDatagrams > 0,
+            "authenticated private-group packets with a duplicate local device ID are diagnosed without learning that sender");
+
+        var deniedSettings = automaticSettings with { Port = FreePort(), LoopbackOnly = false, DirectPeers = [] };
         await using var denied = new AutoLanPeerService(deniedSettings, keyAuto, () => ([], "Test scope is closed"));
         await denied.StartAsync();
         await SendUntil(impostor, autoCrypto.Hello(DateTimeOffset.UtcNow), new IPEndPoint(IPAddress.Loopback, deniedSettings.Port),

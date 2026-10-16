@@ -6,7 +6,7 @@ ManifestDPIAware true
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.6"
+  !define APP_VERSION "1.0.8"
 !endif
 !ifndef REPO_ROOT
   !error "REPO_ROOT fehlt; bitte scripts/build.ps1 verwenden."
@@ -61,12 +61,53 @@ Var UpgradeLegacy
 Var RollbackReady
 Var PreviousVersion
 Var SelfTestExit
+Var SelfTestLaunchError
+Var UpdateResultHandle
 
 Function ReleaseUpdateGate
   ${If} $UpdateMutex != 0
     System::Call 'kernel32::CloseHandle(p $UpdateMutex)'
     StrCpy $UpdateMutex 0
   ${EndIf}
+FunctionEnd
+
+Function AcquireUpdateGate
+  ; Manual setups, background updates and cleanup must exclude each other.
+  ; Keep the gate until the payload check and prerequisite setup are complete.
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\DYNEX.Update") p .r4 ?e'
+  Pop $5
+  StrCpy $UpdateMutex $4
+  ${If} $4 == 0
+  ${OrIf} $5 == 183
+    Call ReleaseUpdateGate
+    SetErrorLevel 11
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function RunPackageSelfTest
+  StrCpy $SelfTestLaunchError 0
+  ClearErrors
+  ExecWait '"$INSTDIR\DYNEX.exe" --self-test ${APP_VERSION}' $SelfTestExit
+  ${If} ${Errors}
+    StrCpy $SelfTestLaunchError 1
+    StrCpy $SelfTestExit 1
+  ${EndIf}
+  ; Fixed, non-sensitive diagnostic. A launch failure has no valid child exit.
+  ClearErrors
+  FileOpen $UpdateResultHandle "$INSTDIR\update-result.txt" w
+  IfErrors selftest_report_failed
+  FileWrite $UpdateResultHandle "expectedVersion=${APP_VERSION}$\r$\n"
+  FileWrite $UpdateResultHandle "launchError=$SelfTestLaunchError$\r$\n"
+  ${If} $SelfTestLaunchError == 0
+    FileWrite $UpdateResultHandle "childExit=$SelfTestExit$\r$\n"
+  ${Else}
+    FileWrite $UpdateResultHandle "childExit=unavailable$\r$\n"
+  ${EndIf}
+  FileClose $UpdateResultHandle
+  Return
+  selftest_report_failed:
+    DetailPrint "Starttest-Diagnose konnte nicht gespeichert werden."
 FunctionEnd
 
 Function RestartAfterUpdate
@@ -148,6 +189,7 @@ FunctionEnd
 
 Function .onInit
   StrCpy $UpdateMutex 0
+  Call AcquireUpdateGate
   StrCpy $UpgradeLegacy ""
   ; Detect an existing installation before replacing its executable/registry.
   ; Old installers have no filter receipt; an upgrade must not turn that
@@ -162,17 +204,7 @@ Function .onInit
   ${GetOptions} $3 "/DYNEXUPDATE=" $UpdateParent
   ${GetOptions} $3 "/DYNEXTRAY=" $UpdateTray
   ${If} $UpdateParent != ""
-    ; The update gate blocks fresh application launches until the file copy
-    ; completes. The parent only invokes this mode before starting its worker.
-    System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\DYNEX.Update") p .r4 ?e'
-    Pop $5
-    StrCpy $UpdateMutex $4
-    ${If} $4 == 0
-    ${OrIf} $5 == 183
-      Call ReleaseUpdateGate
-      SetErrorLevel 11
-      Abort
-    ${EndIf}
+    ; The parent released its helper before launching us; wait for its clean exit.
     System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdateParent) p .r4'
     ${If} $4 != 0
       System::Call 'kernel32::WaitForSingleObject(p r4, i 20000) i .r5'
@@ -237,11 +269,7 @@ Section "DYNEX Anwendung" SEC_MAIN
   File /r "${PUBLISH_ROOT}\shaper\*"
   !insertmacro InstallDocumentation
   ; Prove the new binary starts and its payload is complete before anything else changes.
-  ClearErrors
-  ExecWait '"$INSTDIR\DYNEX.exe" --self-test ${APP_VERSION}' $SelfTestExit
-  ${If} ${Errors}
-    StrCpy $SelfTestExit 1
-  ${EndIf}
+  Call RunPackageSelfTest
   ${If} $SelfTestExit != 0
     DetailPrint "Starttest der neuen Version fehlgeschlagen (Fehler $SelfTestExit)."
     IfSilent +2
@@ -359,6 +387,11 @@ Section "Uninstall"
     FileReadUTF16LE $PrerequisiteLog $PrerequisiteMessage
     FileClose $PrerequisiteLog
   DetailPrint "$PrerequisiteMessage"
+  Delete "$INSTDIR\update-result.txt"
+  ${If} ${FileExists} "$INSTDIR\update-result.txt"
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
   !insertmacro DeleteInstalledFiles
   ; Additional files somebody placed in the program directory are preserved.
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX"
