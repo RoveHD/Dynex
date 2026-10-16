@@ -27,6 +27,16 @@ Der lokale Proxy lauscht ausschließlich auf `127.0.0.1:37831`, mit dem Namen `d
 
 Im AdGuard-Modus sucht DYNEX nur im WLAN nach PCs. Mobilfunk wird nicht begrenzt; die Proxy-Durchleitung bleibt dort aktiv. Ohne PC-Gaming wird kein Downloadlimit angewendet. **Pause** entfernt das Limit und lässt die Weiterleitung bestehen. Bei **Stoppen** fordert DYNEX AdGuard auf, den Proxy auszuschalten. Nimmt AdGuard die Anfrage nicht an, etwa nach einer Passwortänderung, oder beendet Android DYNEX hart, kann der weiter eingestellte Proxy die Internetverbindung blockieren. Dann den Proxy in AdGuard ausschalten oder DYNEX neu starten. Die Schnittstelle liefert keine dokumentierte Bestätigung für die Anwendung einer Einstellung.
 
+### Wenn AdGuard nicht weiterleitet
+
+Der Einrichtungsassistent prüft nach der Rückkehr aus AdGuard automatisch die aktuell für DYNEX geltende Netzroute. Wird DYNEX noch durch ein VPN geleitet oder ist keine Route prüfbar, bleibt der erste Schritt offen. Der Abschluss wird erst bei direkter App-Route und beobachteter Proxyweiterleitung freigegeben. Die App-Ausnahme selbst bietet AdGuard nicht als dokumentierte Automatisierungsaktion an; sie muss einmal in AdGuard gesetzt werden.
+
+Ein laufender DYNEX-Dienst und eine sichtbare PC-Verbindung bestätigen noch keinen Datenverkehr durch den Proxy. Ohne bestätigte Weiterleitung zeigt DYNEX unbekannte Messwerte statt 0,0 Mbit/s. Ein Downloadlimit gilt erst nach tatsächlich unter diesem Limit weitergeleiteten Internetdaten als angewendet; DNS- und lokale Verbindungen sind dafür kein Nachweis.
+
+Die **Integration mit der separaten App AdGuard VPN** kann die Proxy-Einstellungen sperren. AdGuard zeigt dann auf seiner Proxy-Seite den Hinweis, zuerst diese Integration zu deaktivieren. Das lokale VPN des AdGuard-Werbeblockers bleibt für DYNEX weiterhin nötig und kann aktiv bleiben. Das Abschalten der zusätzlichen AdGuard-VPN-Integration kann jedoch die IP-Verschleierung beenden und ist deshalb eine ausdrückliche Entscheidung des Nutzers. DYNEX schaltet sie nicht stillschweigend aus. Die bloße Installation von AdGuard VPN beweist noch keinen Konflikt.
+
+Prüfe außerdem die im Assistenten beschriebene Ausnahme für DYNEX und ob die gewünschte Download-App über AdGuard und dessen Proxy geleitet wird. Die Anzeige bezieht sich auf diesen weitergeleiteten Verkehr, nicht auf Apps, die AdGuard umgehen.
+
 ## Betrieb ohne AdGuard
 
 Im eigenständigen Modus benötigt DYNEX die einmalige Android-VPN-Freigabe. Ein bereits aktives anderes VPN blockiert diesen Modus. Der Tunnel läuft nur bei gemeldetem PC-Gaming und vorhandenem Downloadlimit. Bei Mobilfunk wartet DYNEX passiv auf ein WLAN-Ereignis und sucht nicht nach PCs.

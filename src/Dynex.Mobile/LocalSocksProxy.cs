@@ -8,7 +8,10 @@ using System.Text;
 
 namespace Dynex.Mobile;
 
-public readonly record struct ProxySnapshot(long DownloadBytes, long UploadBytes, int ActiveSessions);
+public readonly record struct ProxySnapshot(long DownloadBytes, long UploadBytes, int ActiveSessions,
+    long LimitedDownloadBytes = 0, long LimitVersion = 0, long? DownloadLimitBytesPerSecond = null,
+    long AcceptedConnections = 0, long AuthenticatedConnections = 0, long AuthenticationFailures = 0,
+    long OutboundFailures = 0);
 
 /// <summary>
 /// Loopback-only RFC1928/RFC1929 SOCKS5 server for a trusted local TUN engine.
@@ -26,6 +29,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     private const int MaximumRoutes = 128;
     private static readonly TimeSpan RouteLifetime = TimeSpan.FromMinutes(2);
     private readonly object lifecycle = new();
+    private readonly object trafficSync = new();
     private readonly Action<Socket> prepareOutboundSocket;
     private readonly Func<IPEndPoint, bool> shouldLimitDownload;
     private readonly Func<string, CancellationToken, Task<IPAddress[]>> resolveHost;
@@ -44,6 +48,9 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     private long uploadBytes;
     private int port;
     private int downloadNoticeSent;
+    private long limitedDownloadBytes, limitVersion;
+    private long? downloadLimit;
+    private long acceptedConnections, authenticatedConnections, authenticationFailures, outboundFailures;
 
     public LocalSocksProxy(Action<Socket> prepareOutboundSocket, int maxSessions = 128,
         Func<IPEndPoint, bool>? shouldLimitDownload = null,
@@ -75,13 +82,38 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     /// <summary>One notification after real downloaded payload; can be rearmed for a new setup check.</summary>
     public event Action? DownloadObserved;
     public void ObserveNextDownload() => Volatile.Write(ref downloadNoticeSent, 0);
-    public ProxySnapshot Snapshot() => new(DownloadBytes, UploadBytes, sessions.Count);
-    public void SetDownloadLimit(long? bytesPerSecond) => limiter.SetLimit(bytesPerSecond);
+    public ProxySnapshot Snapshot()
+    {
+        lock (trafficSync) return new(DownloadBytes, UploadBytes, sessions.Count,
+            limitedDownloadBytes, limitVersion, downloadLimit, Interlocked.Read(ref acceptedConnections),
+            Interlocked.Read(ref authenticatedConnections), Interlocked.Read(ref authenticationFailures), Interlocked.Read(ref outboundFailures));
+    }
+    public void SetDownloadLimit(long? bytesPerSecond)
+    {
+        lock (trafficSync)
+        {
+            limiter.SetLimit(bytesPerSecond);
+            if (downloadLimit == bytesPerSecond) return;
+            downloadLimit = bytesPerSecond;
+            limitVersion++;
+            limitedDownloadBytes = 0;
+        }
+    }
 
-    private void RecordDownload(int bytes)
+    private long? LimitedVersion(bool eligible)
+    {
+        lock (trafficSync) return eligible && downloadLimit.HasValue ? limitVersion : null;
+    }
+
+    private void RecordDownload(int bytes, long? limitedVersion)
     {
         if (bytes <= 0) return;
-        Interlocked.Add(ref downloadBytes, bytes);
+        lock (trafficSync)
+        {
+            Interlocked.Add(ref downloadBytes, bytes);
+            if (limitedVersion is { } version && version == limitVersion && downloadLimit.HasValue)
+                limitedDownloadBytes += bytes;
+        }
         if (Interlocked.Exchange(ref downloadNoticeSent, 1) == 0) DownloadObserved?.Invoke();
     }
 
@@ -130,6 +162,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
             while (!token.IsCancellationRequested)
             {
                 var client = await server.AcceptSocketAsync(token).ConfigureAwait(false);
+                Interlocked.Increment(ref acceptedConnections);
                 if (sessions.Count >= maxSessions) { client.Dispose(); continue; }
                 client.NoDelay = true;
                 var id = Interlocked.Increment(ref nextSession);
@@ -179,7 +212,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
         await stream.ReadExactlyAsync(methods, token).ConfigureAwait(false);
         var supported = methods.Contains((byte)2);
         await stream.WriteAsync(new byte[] { 5, supported ? (byte)2 : (byte)255 }, token).ConfigureAwait(false);
-        if (!supported) return false;
+        if (!supported) { Interlocked.Increment(ref authenticationFailures); return false; }
         var auth = new byte[2];
         await stream.ReadExactlyAsync(auth, token).ConfigureAwait(false);
         if (auth[0] != 1 || auth[1] == 0) return false;
@@ -191,6 +224,8 @@ public sealed class LocalSocksProxy : IAsyncDisposable
         await stream.ReadExactlyAsync(password, token).ConfigureAwait(false);
         var valid = CryptographicOperations.FixedTimeEquals(username, usernameBytes)
             & CryptographicOperations.FixedTimeEquals(password, passwordBytes);
+        if (valid) Interlocked.Increment(ref authenticatedConnections);
+        else Interlocked.Increment(ref authenticationFailures);
         await stream.WriteAsync(new byte[] { 1, valid ? (byte)0 : (byte)1 }, token).ConfigureAwait(false);
         return valid;
     }
@@ -225,6 +260,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
         }
         catch (Exception ex) when (IsSessionFailure(ex))
         {
+            if (!token.IsCancellationRequested) Interlocked.Increment(ref outboundFailures);
             remote?.Dispose();
             var code = ex is SocketException { SocketErrorCode: SocketError.ConnectionRefused } ? (byte)5 : (byte)4;
             await ReplyAsync(stream, code, null, token).ConfigureAwait(false);
@@ -254,13 +290,14 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     try { target.Shutdown(SocketShutdown.Send); } catch (SocketException) { } catch (ObjectDisposedException) { }
                     return;
                 }
+                var limitedVersion = LimitedVersion(limited);
                 if (limited) await limiter.WaitAsync(received, lifetime.Token).ConfigureAwait(false);
                 var remaining = buffer.AsMemory(0, received);
                 while (!remaining.IsEmpty)
                 {
                     var sent = await target.SendAsync(remaining, SocketFlags.None, lifetime.Token).ConfigureAwait(false);
                     if (sent == 0) throw new IOException("Socket closed while forwarding.");
-                    if (download) RecordDownload(sent); else Interlocked.Add(ref uploadBytes, sent);
+                    if (download) RecordDownload(sent, limitedVersion); else Interlocked.Add(ref uploadBytes, sent);
                     remaining = remaining[sent..];
                 }
             }
@@ -456,7 +493,8 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                         resolution.CancelAfter(TimeSpan.FromSeconds(10));
                         targets = await owner.ResolveAsync(destination!, resolution.Token).ConfigureAwait(false);
                     }
-                    catch (Exception ex) when (IsSessionFailure(ex) && !lifetime.IsCancellationRequested) { continue; }
+                    catch (Exception ex) when (IsSessionFailure(ex) && !lifetime.IsCancellationRequested)
+                    { Interlocked.Increment(ref owner.outboundFailures); continue; }
                     var target = targets[0];
                     var outbound = GetOutbound(target.AddressFamily);
                     await routeLock.WaitAsync(lifetime.Token).ConfigureAwait(false);
@@ -471,7 +509,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                         routes[target] = Stopwatch.GetTimestamp();
                         Interlocked.Add(ref owner.uploadBytes, sent);
                     }
-                    catch (SocketException) { }
+                    catch (SocketException) { Interlocked.Increment(ref owner.outboundFailures); }
                     finally { routeLock.Release(); }
                 }
             }
@@ -519,11 +557,13 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     var headerLength = family == AddressFamily.InterNetwork ? 10 : 22;
                     // A SOCKS UDP packet itself must fit in an IPv4 UDP datagram to loopback.
                     if (received.ReceivedBytes + headerLength > MaximumUdpPacket) continue;
-                    if (owner.shouldLimitDownload(source)) await owner.limiter.WaitAsync(received.ReceivedBytes, lifetime.Token).ConfigureAwait(false);
+                    var eligible = owner.shouldLimitDownload(source);
+                    var limitedVersion = owner.LimitedVersion(eligible);
+                    if (eligible) await owner.limiter.WaitAsync(received.ReceivedBytes, lifetime.Token).ConfigureAwait(false);
                     var packet = EncodeEndpoint(source, received.ReceivedBytes);
                     payload.AsSpan(0, received.ReceivedBytes).CopyTo(packet.AsSpan(headerLength));
                     var sent = await relay.SendToAsync(packet, SocketFlags.None, destination, lifetime.Token).ConfigureAwait(false);
-                    if (sent == packet.Length) owner.RecordDownload(received.ReceivedBytes);
+                    if (sent == packet.Length) owner.RecordDownload(received.ReceivedBytes, limitedVersion);
                 }
             }
             finally { await lifetime.CancelAsync().ConfigureAwait(false); }

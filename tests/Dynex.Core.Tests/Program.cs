@@ -14,6 +14,18 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name);
 }
 void Near(double? actual, double expected, string name) => Check(actual is { } d && Math.Abs(d - expected) < 0.02, name);
+if (args.Contains("--auto-lan-clock") || args.Contains("--auto-lan-clock-crypto"))
+{
+    await AutoLanClockTests.Run(Check, args.Contains("--auto-lan-clock-crypto"));
+    Console.WriteLine($"{checks} AutoLAN clock checks passed.");
+    return;
+}
+if (args.Contains("--auto-lan"))
+{
+    await AutoLanTests.Run(Check);
+    Console.WriteLine($"{checks} AutoLAN checks passed.");
+    return;
+}
 if (args.Contains("--mobile-network-scope"))
 {
     await MobileNetworkScopeTests.Run(Check);
@@ -286,6 +298,7 @@ await using (var observer = new PeerService(aSettings with
 }
 await MobileNetworkScopeTests.Run(Check);
 await AutoLanTests.Run(Check);
+await AutoLanClockTests.Run(Check);
 await ConnectionAdviceTests.Run(Check);
 LimitExplanationTests.Run(Check);
 StatusNotificationTests.Run(Check);

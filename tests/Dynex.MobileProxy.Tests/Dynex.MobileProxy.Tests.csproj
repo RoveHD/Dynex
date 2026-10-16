@@ -7,5 +7,8 @@
   <ItemGroup>
     <Compile Include="../../src/Dynex.Mobile/DownloadRateLimiter.cs" Link="DownloadRateLimiter.cs" />
     <Compile Include="../../src/Dynex.Mobile/LocalSocksProxy.cs" Link="LocalSocksProxy.cs" />
+    <Compile Include="../../src/Dynex.Mobile/ProxyTrafficMonitor.cs" Link="ProxyTrafficMonitor.cs" />
+    <Compile Include="../../src/Dynex.Android/AdGuardSetupDiagnostics.cs" Link="AdGuardSetupDiagnostics.cs" />
+    <Compile Include="../../src/Dynex.Android/AndroidUiModels.cs" Link="AndroidUiModels.cs" />
   </ItemGroup>
 </Project>

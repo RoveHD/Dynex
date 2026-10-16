@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -10,7 +12,11 @@ internal sealed record AutoHello(Guid DeviceId, Guid SessionId, string SigningPu
     string ExchangePublicKey, string Challenge, long SentAtUnixMs,
     Guid? TargetId = null, Guid? TargetSession = null, string? TargetChallenge = null, string? TargetExchangePublicKey = null,
     // Optional and signed. Releases before 1.0.6 ignore this unknown property and do not send it.
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? AppVersion = null);
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? AppVersion = null,
+    // Optional signed v1 extension. Older peers ignore these and retain their UTC checks.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? FreshnessChallenge = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? TargetFreshnessChallenge = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] long? StatusSequence = null);
 
 internal sealed class AutoLanCrypto : IDisposable
 {
@@ -25,19 +31,22 @@ internal sealed class AutoLanCrypto : IDisposable
     {
         _signing = AutoLanIdentity.ImportPrivate(privateKey);
         var pub = _signing.ExportSubjectPublicKeyInfo();
+        var challenge = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         Local = new(AutoLanIdentity.PublicId(pub), Guid.NewGuid(), Convert.ToBase64String(pub),
             Convert.ToBase64String(_exchange.ExportSubjectPublicKeyInfo()),
-            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), 0, AppVersion: appVersion);
+            challenge, 0, AppVersion: appVersion, FreshnessChallenge: challenge, StatusSequence: 0);
     }
 
     internal static bool IsVersion(string value) => value.Length <= 16 && value.All(c => char.IsAsciiDigit(c) || c == '.') &&
         Version.TryParse(value, out var parsed) && parsed.Major < 1000;
 
     internal byte[] Hello(DateTimeOffset now) => Sign(Local with { SentAtUnixMs = now.ToUnixTimeMilliseconds() }, 1);
-    internal byte[] Ack(AutoHello remote, DateTimeOffset now) => Sign(Local with
+    internal byte[] Ack(AutoHello remote, DateTimeOffset now, string? freshnessChallenge = null, long statusSequence = 0) => Sign(Local with
     {
         SentAtUnixMs = now.ToUnixTimeMilliseconds(), TargetId = remote.DeviceId,
-        TargetSession = remote.SessionId, TargetChallenge = remote.Challenge, TargetExchangePublicKey = remote.ExchangePublicKey
+        TargetSession = remote.SessionId, TargetChallenge = remote.Challenge, TargetExchangePublicKey = remote.ExchangePublicKey,
+        FreshnessChallenge = freshnessChallenge ?? Local.FreshnessChallenge,
+        TargetFreshnessChallenge = remote.FreshnessChallenge, StatusSequence = statusSequence
     }, 2);
 
     internal byte[] Sign(AutoHello body, byte kind)
@@ -58,6 +67,16 @@ internal sealed class AutoLanCrypto : IDisposable
     internal static AutoHello? Verify(ReadOnlySpan<byte> packet, DateTimeOffset now, out bool authenticatedClockSkew)
     {
         authenticatedClockSkew = false;
+        var hello = VerifySignature(packet);
+        if (hello is not null && !TimestampIsCurrent(hello.SentAtUnixMs, now.ToUnixTimeMilliseconds()))
+        { authenticatedClockSkew = true; return null; }
+        return hello;
+    }
+
+    // Authentication alone does NOT establish liveness or authorize any peer/route.
+    // Callers must either retain the legacy UTC check or complete a pending fresh challenge.
+    internal static AutoHello? VerifySignature(ReadOnlySpan<byte> packet)
+    {
         if (packet.Length is < 72 or > MaxDatagram || !packet[..4].SequenceEqual("DYNA"u8) || packet[4] != 1 || packet[5] is not (1 or 2) ||
             BinaryPrimitives.ReadUInt16BigEndian(packet.Slice(6, 2)) + 72 != packet.Length) return null;
         try
@@ -66,6 +85,10 @@ internal sealed class AutoLanCrypto : IDisposable
             if (hello is null || hello.DeviceId == Guid.Empty || hello.SessionId == Guid.Empty ||
                 hello.SigningPublicKey?.Length != 124 || hello.ExchangePublicKey?.Length != 124 || hello.Challenge?.Length != 44 ||
                 hello.AppVersion is { } version && !IsVersion(version) ||
+                hello.FreshnessChallenge is null && (hello.TargetFreshnessChallenge is not null || hello.StatusSequence is not null) ||
+                hello.FreshnessChallenge is not null && (hello.FreshnessChallenge.Length != 44 || hello.StatusSequence is null or < 0) ||
+                hello.TargetFreshnessChallenge is not null && hello.TargetFreshnessChallenge.Length != 44 ||
+                packet[5] == 1 && hello.TargetFreshnessChallenge is not null ||
                 packet[5] == 1 && (hello.TargetId is not null || hello.TargetSession is not null || hello.TargetChallenge is not null || hello.TargetExchangePublicKey is not null) ||
                 packet[5] == 2 && (hello.TargetId is null || hello.TargetSession is null || hello.TargetChallenge?.Length != 44 || hello.TargetExchangePublicKey?.Length != 124)) return null;
             var pub = Convert.FromBase64String(hello.SigningPublicKey);
@@ -73,6 +96,8 @@ internal sealed class AutoLanCrypto : IDisposable
             if (pub.Length != 91 || exchange.Length != 91 || Convert.FromBase64String(hello.Challenge).Length != 32 ||
                 hello.TargetChallenge is { } target && Convert.FromBase64String(target).Length != 32 ||
                 hello.TargetExchangePublicKey is { } targetKey && Convert.FromBase64String(targetKey).Length != 91 || AutoLanIdentity.PublicId(pub) != hello.DeviceId) return null;
+            if (hello.FreshnessChallenge is { } nonce && Convert.FromBase64String(nonce).Length != 32 ||
+                hello.TargetFreshnessChallenge is { } echo && Convert.FromBase64String(echo).Length != 32) return null;
             using var signer = ECDsa.Create();
             signer.ImportSubjectPublicKeyInfo(pub, out var read);
             if (read != pub.Length || signer.ExportParameters(false).Curve.Oid.Value != "1.2.840.10045.3.1.7" ||
@@ -82,12 +107,16 @@ internal sealed class AutoLanCrypto : IDisposable
             dh.ImportSubjectPublicKeyInfo(exchange, out read);
             if (read != exchange.Length || dh.ExportParameters(false).Curve.Oid.Value != "1.2.840.10045.3.1.7" ||
                 !dh.ExportSubjectPublicKeyInfo().AsSpan().SequenceEqual(exchange)) return null;
-            if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - hello.SentAtUnixMs) > 30000)
-            { authenticatedClockSkew = true; return null; }
             return hello;
         }
         catch (Exception e) when (e is CryptographicException or ArgumentException or FormatException or JsonException) { return null; }
     }
+
+    internal static bool TimestampIsCurrent(long sent, decimal expected) => Math.Abs(expected - sent) <= 30000;
+
+    internal static bool SameParticipant(AutoHello first, AutoHello second) => first.DeviceId == second.DeviceId &&
+        first.SessionId == second.SessionId && first.SigningPublicKey == second.SigningPublicKey &&
+        first.ExchangePublicKey == second.ExchangePublicKey && first.Challenge == second.Challenge;
 
     internal bool IsAckForLocal(AutoHello remote) => remote.TargetId == Local.DeviceId &&
         remote.TargetSession == Local.SessionId && remote.TargetChallenge == Local.Challenge && remote.TargetExchangePublicKey == Local.ExchangePublicKey;
@@ -134,7 +163,8 @@ internal sealed class AutoLanCrypto : IDisposable
 
     internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now) => Decrypt(channel, packet, now, out _);
 
-    internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now, out bool authenticatedClockSkew)
+    internal WireAdvertisement? Decrypt(AutoChannel channel, ReadOnlySpan<byte> packet, DateTimeOffset now, out bool authenticatedClockSkew,
+        long? monotonicTimestamp = null)
     {
         authenticatedClockSkew = false;
         if (packet.Length is < StatusHeader + 16 or > MaxDatagram || !packet[..4].SequenceEqual("DYNA"u8) || packet[4] != 1 || packet[5] != 3 ||
@@ -157,7 +187,8 @@ internal sealed class AutoLanCrypto : IDisposable
                 !Valid(wire.IdleBaselineMs, 10000) || wire.LatencyTargetId?.Length > 256 || wire.LatencyTargetId?.Any(char.IsControl) == true ||
                 wire.LatencySampleSequence is <= 0 || wire.BudgetProposal is { IsValid: false } || !WireAdvertisement.ValidWeight(wire.ShareWeight) ||
                 !WireAdvertisement.ValidProgram(wire.TopProgram)) return null;
-            if (Math.Abs((decimal)now.ToUnixTimeMilliseconds() - sent) > 30000)
+            var expected = channel.ExpectedRemoteTime(monotonicTimestamp ?? Stopwatch.GetTimestamp(), now);
+            if (!TimestampIsCurrent(sent, expected))
             { authenticatedClockSkew = true; return null; }
             channel.LastReceivedSequence = sequence;
             return wire;
@@ -176,5 +207,58 @@ internal sealed class AutoChannel(AutoHello remote, byte[] sendKey, byte[] recei
     internal byte[] SendKey { get; } = sendKey;
     internal byte[] ReceiveKey { get; } = receiveKey;
     internal long LastReceivedSequence { get; set; }
+    private (long SentAt, long Tick)? _remoteClock;
+
+    // Only a live, endpoint-bound challenge response may install/update this anchor.
+    internal void ConfirmFreshness(AutoHello proof, long tick)
+    {
+        if (!AutoLanCrypto.SameParticipant(Remote, proof) || proof.StatusSequence is null or < 0)
+            throw new ArgumentException("Invalid channel freshness proof.");
+        _remoteClock = (proof.SentAtUnixMs, tick);
+        LastReceivedSequence = Math.Max(LastReceivedSequence, proof.StatusSequence.Value);
+    }
+
+    internal decimal ExpectedRemoteTime(long tick, DateTimeOffset now) => _remoteClock is { } anchor
+        ? anchor.SentAt + (decimal)Stopwatch.GetElapsedTime(anchor.Tick, tick).TotalMilliseconds
+        : now.ToUnixTimeMilliseconds();
     public void Dispose() { CryptographicOperations.ZeroMemory(SendKey); CryptographicOperations.ZeroMemory(ReceiveKey); }
+}
+
+/// <summary>Bounded one-shot proofs: signature, participant, source endpoint and monotonic deadline all matter.</summary>
+internal sealed class AutoLanChallenges
+{
+    internal static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(10);
+    private readonly Dictionary<(Guid Id, Guid Session, IPEndPoint Endpoint), Pending> _pending = new();
+    internal int Count => _pending.Count;
+
+    internal string? Issue(AutoHello remote, IPEndPoint endpoint, long tick)
+    {
+        Expire(tick);
+        var key = (remote.DeviceId, remote.SessionId, endpoint);
+        if (_pending.TryGetValue(key, out var existing))
+            return AutoLanCrypto.SameParticipant(existing.Remote, remote) ? existing.Nonce : null;
+        if (_pending.Count >= 128) return null;
+        var nonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        _pending.Add(key, new(remote, nonce, tick));
+        return nonce;
+    }
+
+    internal bool Consume(AutoHello proof, IPEndPoint endpoint, long tick)
+    {
+        Expire(tick);
+        var key = (proof.DeviceId, proof.SessionId, endpoint);
+        if (!_pending.TryGetValue(key, out var pending) || proof.TargetFreshnessChallenge != pending.Nonce ||
+            !AutoLanCrypto.SameParticipant(pending.Remote, proof)) return false;
+        _pending.Remove(key);
+        return true;
+    }
+
+    internal void Expire(long tick)
+    {
+        foreach (var key in _pending.Where(pair => Stopwatch.GetElapsedTime(pair.Value.Tick, tick) >= Lifetime)
+            .Select(pair => pair.Key).ToArray()) _pending.Remove(key);
+    }
+
+    internal void Clear() => _pending.Clear();
+    private sealed record Pending(AutoHello Remote, string Nonce, long Tick);
 }

@@ -8,7 +8,7 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-  <queries><package android:name="com.adguard.android" /></queries>
+  <queries><package android:name="com.adguard.android" /><package android:name="com.adguard.vpn" /></queries>
   <application android:allowBackup="false" android:usesCleartextTraffic="false" android:label="DYNEX" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@style/AppTheme" android:extractNativeLibs="true">
     <service android:name="de.dynex.mobile.DynexVpnService" android:permission="android.permission.BIND_VPN_SERVICE" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="specialUse">
       <intent-filter><action android:name="android.net.VpnService" /></intent-filter>

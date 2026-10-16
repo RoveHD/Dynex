@@ -904,31 +904,31 @@ public partial class MainWindow : Window
         OverviewDeviceCount.Text = $"{s.Devices.Count} {(s.Devices.Count == 1 ? "GERÄT" : "GERÄTE")}";
         OverviewDevicesEmpty.Visibility = s.Devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
-        var otherPcs = Math.Max(0, s.Devices.Count - 1);
-        DashboardPeersText.Text = otherPcs == 0
-            ? "Hier siehst du deinen PC. Weitere verbundene PCs erscheinen direkt in dieser Übersicht."
-            : $"{otherPcs} weitere {(otherPcs == 1 ? "PC ist" : "PCs sind")} hier live sichtbar. Details und weitere Geräte gibt es in der PC-Ansicht.";
+        var otherDevices = Math.Max(0, s.Devices.Count - 1);
+        DashboardPeersText.Text = otherDevices == 0
+            ? "Hier siehst du dein Gerät. Weitere verbundene Geräte erscheinen direkt in dieser Übersicht."
+            : $"{otherDevices} weitere {(otherDevices == 1 ? "Gerät ist" : "Geräte sind")} hier live sichtbar. Details findest du in der Geräteansicht.";
         NetworkStatus.ToolTip = s.NetworkStatus;
         NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 || s.Connection is { IsProblem: true } ? Visibility.Visible : Visibility.Collapsed;
         NetworkHelpText.Text = (s.NetworkProblem is { } problem && s.Connection is { IsProblem: true } step ? $"{problem} Nächster Schritt: {step.NextStep}" : s.NetworkProblem)
             ?? s.Connection?.ToString() ?? s.NetworkDiagnostics?.Hint ?? (s.Devices.Count < 2
-            ? "Noch kein anderer PC verbunden. DYNEX muss auf beiden PCs laufen und das Windows-Netzwerk auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
-            : $"{s.Devices.Count} PCs verbunden. Die Verbindung wird automatisch überwacht.");
+            ? "Noch kein weiteres Gerät verbunden. DYNEX muss auf den beteiligten Geräten laufen und Windows-Netzwerke auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
+            : $"{s.Devices.Count} Geräte verbunden. Die Verbindung wird automatisch überwacht.");
         NetworkHelpText.ToolTip = s.NetworkDiagnostics is { } network
             ? $"{NetworkHelpText.Text}\nModus: {network.Mode}\nLokale Adressen: {string.Join(", ", network.LocalAddresses)}\nGesendet: {network.SentDatagrams} · Empfangen: {network.ReceivedDatagrams} (davon eigene: {network.SelfDatagrams}) · Bestätigte Statuspakete: {network.AcceptedStatusDatagrams}\nVollständige Werte: Diagnose exportieren."
             : NetworkHelpText.Text;
         SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
-            ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "PC" : "PCs")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
-            : "Sobald Spiel-Netzwerkverkehr bestätigt ist, teilen sich die DYNEX-PCs ein Downloadbudget.";
+            ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s für {s.ParticipantCount} {(s.ParticipantCount == 1 ? "Gerät" : "Geräte")} · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
+            : "Sobald Spiel-Netzwerkverkehr bestätigt ist, teilen sich die DYNEX-Geräte ein Downloadbudget.";
         CoordinationText.Text = s.SharedDownloadBudgetMbps.HasValue
-            ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} PCs bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
-                (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen PCs prüfen." :
-                    s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem PC eingeschaltet sein." : "")
-            : "Spiel- und Sprachchatpakete umgehen die Downloadwarteschlange. DYNEX muss auf jedem beteiligten PC laufen.";
+            ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} Geräten bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
+                (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen Geräten prüfen." :
+                    s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem Gerät eingeschaltet sein." : "")
+            : "Spiel- und Sprachchatpakete umgehen die Downloadwarteschlange. DYNEX muss auf jedem beteiligten Gerät laufen.";
         PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
         if (s.NetworkProblem is not null)
         {
-            SharedBudgetText.Text = "PC-Verbindung nicht bereit · Netzwerk prüfen";
+            SharedBudgetText.Text = "Geräteverbindung nicht bereit · Netzwerk prüfen";
             CoordinationText.Text = s.NetworkProblem;
         }
         // A lone PC without any observed partner is normal; surface only causes DYNEX actually observed.
@@ -981,7 +981,7 @@ public partial class MainWindow : Window
         OverviewPage.Visibility = SettingsPage.Visibility = Visibility.Collapsed;
         DevicesPage.Visibility = Visibility.Visible;
         UpdateNavigation("devices");
-        PageTitle.Text = "Verbundene PCs";
+        PageTitle.Text = "Verbundene Geräte";
         RenderDevicePage();
         if (changed && IsLoaded) _feedback.Transition(DevicesPage);
     }

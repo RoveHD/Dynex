@@ -5,8 +5,8 @@
     <RootNamespace>Dynex.Android</RootNamespace>
     <ApplicationId>de.dynex.mobile</ApplicationId>
     <ApplicationTitle>DYNEX</ApplicationTitle>
-    <Version>1.0.11</Version>
-    <ApplicationVersion>10011</ApplicationVersion>
+    <Version>1.0.12</Version>
+    <ApplicationVersion>10012</ApplicationVersion>
     <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
@@ -33,6 +33,7 @@
   </ItemGroup>
   <ItemGroup Condition="'$(Configuration)' == 'Debug'">
     <Compile Include="../../tests/Dynex.MobileProxy.Tests/MobileProxyChecks.cs" Link="Tests/MobileProxyChecks.cs" />
+    <Compile Include="../../tests/Dynex.Core.Tests/AutoLanClockTests.cs" Link="Tests/AutoLanClockTests.cs" />
   </ItemGroup>
   <Target Name="RequireTunnelDependency" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('../../artifacts/android-dependencies/native/arm64-v8a/libhev-socks5-tunnel.so')" Text="Die geprüfte Tunnelbibliothek fehlt. Zuerst scripts/prepare-android.ps1 ausführen." />

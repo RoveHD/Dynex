@@ -35,6 +35,11 @@ public sealed class DebugSelfTestActivity : Activity
                 Report("TEST_WORKER_STARTED");
                 await DebugRuntimeDiagnostics.RunAsync(Report).ConfigureAwait(false);
                 await MobileProxyChecks.RunAsync(["--require-half-close"], Report);
+                await AutoLanClockTests.Run((passed, message) =>
+                {
+                    if (!passed) throw new InvalidOperationException(message);
+                    Report("PASS: " + message);
+                });
                 await CheckCoreInteropAsync(Report);
                 Report("ANDROID_SELF_TEST_PASS");
             }

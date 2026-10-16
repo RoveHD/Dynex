@@ -14,6 +14,10 @@ public sealed partial class AutoLanPeerService : IPeerService
     private readonly Func<(AutoLanBinding[] Bindings, string? Error)> _readScope;
     private readonly bool _subscribeNetworkChanges;
     private readonly bool _lowPowerDiscovery;
+    private readonly Func<DateTimeOffset> _utcNow;
+    private readonly AutoLanChallenges _challenges = new();
+    private (DateTimeOffset Utc, long Tick)? _clockAnchor;
+    private long _clockSkewAt;
     private readonly SemaphoreSlim _discoverySignal = new(0, 1);
     private int _scopeDiscoveryRequested;
     private readonly object _gate = new();
@@ -69,7 +73,7 @@ public sealed partial class AutoLanPeerService : IPeerService
 
     internal AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64,
         Func<(AutoLanBinding[] Bindings, string? Error)> readScope, bool subscribeNetworkChanges = true,
-        bool lowPowerDiscovery = false)
+        bool lowPowerDiscovery = false, Func<DateTimeOffset>? utcNow = null)
     {
         settings.Validate(false);
         if (AutoLanIdentity.GetDeviceId(signingPrivateKeyBase64) != settings.DeviceId)
@@ -79,6 +83,7 @@ public sealed partial class AutoLanPeerService : IPeerService
         _readScope = readScope;
         _subscribeNetworkChanges = subscribeNetworkChanges;
         _lowPowerDiscovery = lowPowerDiscovery;
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _connectionProbe = new(settings, signingPrivateKeyBase64, IsExcluded);
     }
 
@@ -100,7 +105,12 @@ public sealed partial class AutoLanPeerService : IPeerService
                 socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastLoopback, false);
                 socket.ReceiveBufferSize = 128 * 1024;
                 socket.Bind(new IPEndPoint(_settings.LoopbackOnly ? IPAddress.Loopback : IPAddress.Any, _settings.Port));
-                lock (_gate) { _crypto = new(_privateKey, _settings.AppVersion); _sequence = 0; }
+                lock (_gate)
+                {
+                    _crypto = new(_privateKey, _settings.AppVersion); _sequence = 0;
+                    _clockAnchor = (_utcNow(), Stopwatch.GetTimestamp());
+                    _clockSkewAt = 0;
+                }
                 Volatile.Write(ref _networkStatus, null);
                 Volatile.Write(ref _receiveError, null);
                 RefreshScope(socket, true);
@@ -159,7 +169,8 @@ public sealed partial class AutoLanPeerService : IPeerService
                 Interlocked.Read(ref _handshakes), Interlocked.Read(ref _rejected), Interlocked.Read(ref _scopeRejected),
                 Interlocked.Read(ref _otherMode), last == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(last), _peers.Count,
                 _channels.Where(c => !IsExcluded(c.Key)).Select(c => c.Value.Endpoint).Distinct().Count(), SelfDatagrams: Interlocked.Read(ref _self),
-                AuthenticatedClockSkewDatagrams: Interlocked.Read(ref _clockSkew), DiscoveryProbeDatagrams: Interlocked.Read(ref _discoveryProbes),
+                AuthenticatedClockSkewDatagrams: _clockSkewAt != 0 && Stopwatch.GetElapsedTime(_clockSkewAt) < TimeSpan.FromSeconds(30)
+                    ? Interlocked.Read(ref _clockSkew) : 0, DiscoveryProbeDatagrams: Interlocked.Read(ref _discoveryProbes),
                 ConflictingIdentityDatagrams: Interlocked.Read(ref _identityConflicts),
                 LocalVersion: _settings.AppVersion, RemoteVersions: versions, UnsupportedProtocolDatagrams: Interlocked.Read(ref _unsupported),
                 LostPeerName: _peers.Count == 0 ? _lost?.Name : null, LostPeerAtUtc: _peers.Count == 0 ? _lost?.At : null,
@@ -219,34 +230,44 @@ public sealed partial class AutoLanPeerService : IPeerService
                         var tick = Stopwatch.GetTimestamp();
                         if (!AllowPacketLocked(source.Address, tick, bytes[5] != 3)) continue;
                         ExpireLocked(tick);
-                        var now = DateTimeOffset.UtcNow;
+                        var now = _utcNow();
                         if (bytes[5] == 3)
                         {
                             if (length < AutoLanCrypto.StatusHeader + 16) continue;
                             var id = new Guid(bytes.AsSpan(6, 16));
                             if (IsExcluded(id) || !_channels.TryGetValue(id, out var session)) continue;
-                            var wire = _crypto!.Decrypt(session.Crypto, bytes.AsSpan(0, length), now, out var clockSkew);
-                            if (clockSkew) Interlocked.Increment(ref _clockSkew);
-                            if (wire is null) continue;
-                            session.LastActivity = tick;
-                            // Only authenticated ciphertext can update a device's observed address.
-                            session.Endpoint = source;
-                            _peers[id] = (new(id, wire.DeviceName, wire.IsGaming, wire.DownloadMbps, wire.LatencyMs,
+                            var wire = _crypto!.Decrypt(session.Crypto, bytes.AsSpan(0, length), now, out var clockSkew, tick);
+                            if (clockSkew) { Interlocked.Increment(ref _clockSkew); _clockSkewAt = tick; }
+                            if (session.Crypto.Remote.FreshnessChallenge is not null &&
+                                (clockSkew || wire is not null && !session.Endpoint.Equals(source)))
+                            {
+                                // A valid but delayed packet or a new source never teaches a route/time offset.
+                                response = ChallengeLocked(session.Crypto.Remote, source, now, tick);
+                            }
+                            else if (wire is not null)
+                            {
+                                session.LastActivity = tick;
+                                // Modern route changes need a directed fresh proof above; legacy retains UTC validation.
+                                session.Endpoint = source;
+                                _clockSkewAt = 0;
+                                _peers[id] = (new(id, wire.DeviceName, wire.IsGaming, wire.DownloadMbps, wire.LatencyMs,
                                 now, source.Address.ToString(), wire.AppliedLimitMbps, wire.Game, wire.ShaperActive,
                                 wire.IdleBaselineMs, wire.LatencyTargetId, wire.LatencySampleSequence, wire.IdleBaselineAtUtc, SessionId: wire.SessionId,
                                 UploadMbps: wire.UploadMbps, BudgetProposal: wire.BudgetProposal,
                                 AppVersion: _versions.TryGetValue(id, out var remoteVersion) ? remoteVersion.Version : null, ShareWeight: wire.ShareWeight, TopProgram: wire.TopProgram, RemotePort: source.Port), tick);
-                            _names[id] = wire.DeviceName;
-                            if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
-                            Interlocked.Decrement(ref _rejected);
-                            Interlocked.Increment(ref _accepted);
-                            changed = true;
+                                _names[id] = wire.DeviceName;
+                                if (_lost is { } lost && lost.Name == wire.DeviceName) _lost = null;
+                                Interlocked.Decrement(ref _rejected);
+                                Interlocked.Increment(ref _accepted);
+                                changed = true;
+                            }
                         }
                         else if (bytes[5] is 1 or 2)
                         {
-                            var hello = AutoLanCrypto.Verify(bytes.AsSpan(0, length), now, out var clockSkew);
-                            if (clockSkew) Interlocked.Increment(ref _clockSkew);
+                            var hello = AutoLanCrypto.VerifySignature(bytes.AsSpan(0, length));
                             if (hello is null || IsExcluded(hello.DeviceId)) continue;
+                            if (hello.FreshnessChallenge is null && !AutoLanCrypto.TimestampIsCurrent(hello.SentAtUnixMs, now.ToUnixTimeMilliseconds()))
+                            { Interlocked.Increment(ref _clockSkew); _clockSkewAt = tick; continue; }
                             if (hello.DeviceId == _settings.DeviceId)
                             {
                                 Interlocked.Decrement(ref _rejected);
@@ -254,40 +275,7 @@ public sealed partial class AutoLanPeerService : IPeerService
                                 else Interlocked.Increment(ref _identityConflicts);
                                 continue;
                             }
-                            var key = (hello.DeviceId, hello.SessionId);
-                            if (_sessions.TryGetValue(key, out var history) && history.Retired) continue;
-                            // Signed, so the announced version is attributable even before a session exists.
-                            if (_versions.ContainsKey(hello.DeviceId) || _versions.Count < 128)
-                                _versions[hello.DeviceId] = (hello.AppVersion ?? RemoteVersion.BeforeVersionAnnouncement, tick);
-                            if (bytes[5] == 1)
-                            {
-                                // Stateless signed challenge response: unproven announcements do not
-                                // consume peer/session slots or reset established replay counters.
-                                response = _crypto!.Ack(hello, now);
-                                Interlocked.Decrement(ref _rejected);
-                                Interlocked.Increment(ref _handshakes);
-                            }
-                            else
-                            {
-                                if (!_crypto!.IsAckForLocal(hello)) continue;
-                                if (_channels.TryGetValue(hello.DeviceId, out var prior) && prior.Crypto.Remote.SessionId == hello.SessionId)
-                                {
-                                    // Existing session's signed ephemeral key/challenge are immutable.
-                                    if (prior.Crypto.Remote.ExchangePublicKey != hello.ExchangePublicKey || prior.Crypto.Remote.Challenge != hello.Challenge) continue;
-                                    Interlocked.Decrement(ref _rejected);
-                                    continue; // Never reset sequence state on a replayed acknowledgement.
-                                }
-                                if (!_channels.ContainsKey(hello.DeviceId) && _channels.Count >= 64 || !_sessions.ContainsKey(key) && _sessions.Count >= 256) continue;
-                                var channel = _crypto.Derive(hello);
-                                foreach (var old in _sessions.Keys.Where(k => k.Id == hello.DeviceId && k.Session != hello.SessionId).ToArray())
-                                    _sessions[old] = (tick, true);
-                                _sessions[key] = (tick, false);
-                                if (prior is not null) { prior.Crypto.Dispose(); _peers.Remove(hello.DeviceId); }
-                                _channels[hello.DeviceId] = new(channel, source, tick);
-                                response = _crypto.Ack(hello, now);
-                                Interlocked.Decrement(ref _rejected);
-                                Interlocked.Increment(ref _handshakes);
-                            }
+                            response = HandshakeLocked(hello, bytes[5], source, now, tick);
                         }
                     }
                     if (response is not null) await SendAsync(socket, response, source, token).ConfigureAwait(false);
@@ -312,6 +300,94 @@ public sealed partial class AutoLanPeerService : IPeerService
         catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
     }
 
+    private byte[]? ChallengeLocked(AutoHello remote, IPEndPoint source, DateTimeOffset now, long tick)
+    {
+        var nonce = _challenges.Issue(remote, source, tick);
+        return nonce is null ? null : _crypto!.Ack(remote, now, nonce, _sequence);
+    }
+
+    private byte[]? HandshakeLocked(AutoHello hello, byte kind, IPEndPoint source, DateTimeOffset now, long tick)
+    {
+        var key = (hello.DeviceId, hello.SessionId);
+        if (_sessions.TryGetValue(key, out var history) && history.Retired) return null;
+        if (kind == 2 && !_crypto!.IsAckForLocal(hello)) return null;
+        _channels.TryGetValue(hello.DeviceId, out var prior);
+        var sameSession = prior is not null && prior.Crypto.Remote.SessionId == hello.SessionId;
+        if (sameSession && (!AutoLanCrypto.SameParticipant(prior!.Crypto.Remote, hello) ||
+            (prior.Crypto.Remote.FreshnessChallenge is null) != (hello.FreshnessChallenge is null))) return null;
+
+        byte[]? response;
+        if (hello.FreshnessChallenge is not null)
+        {
+            // Neither a signed timestamp nor the process-lifetime challenge proves that a
+            // packet is live. Only a one-shot nonce sent to THIS source may anchor its clock.
+            if (kind != 2 || !_challenges.Consume(hello, source, tick))
+            {
+                if (!sameSession || !prior!.Endpoint.Equals(source))
+                    response = ChallengeLocked(hello, source, now, tick);
+                else if (kind == 1 || hello.FreshnessChallenge != hello.Challenge)
+                {
+                    // Reply again to a directed nonce if UDP lost the earlier response.
+                    // Plain acknowledgements carry the process marker, so never echo
+                    // those recursively once both participants have a channel.
+                    response = _crypto!.Ack(hello, now, statusSequence: _sequence);
+                }
+                else response = null;
+                if (response is not null) Interlocked.Increment(ref _handshakes);
+                Interlocked.Decrement(ref _rejected);
+                return response;
+            }
+        }
+        else if (kind == 1)
+        {
+            // Legacy v1 peers keep their original strict UTC window; no offset is learned.
+            Interlocked.Decrement(ref _rejected);
+            Interlocked.Increment(ref _handshakes);
+            return _crypto!.Ack(hello, now, statusSequence: _sequence);
+        }
+        else if (sameSession)
+        {
+            Interlocked.Decrement(ref _rejected);
+            return null; // A repeated legacy acknowledgement must not reset replay state.
+        }
+
+        if (!sameSession)
+        {
+            if (prior is null && _channels.Count >= 64 || !_sessions.ContainsKey(key) && _sessions.Count >= 256) return null;
+            var channel = _crypto!.Derive(hello);
+            foreach (var old in _sessions.Keys.Where(k => k.Id == hello.DeviceId && k.Session != hello.SessionId).ToArray())
+                _sessions[old] = (tick, true);
+            _sessions[key] = (tick, false);
+            if (prior is not null) { prior.Crypto.Dispose(); _peers.Remove(hello.DeviceId); }
+            prior = new(channel, source, tick);
+            _channels[hello.DeviceId] = prior;
+        }
+        if (hello.FreshnessChallenge is not null) prior!.Crypto.ConfirmFreshness(hello, tick);
+        prior!.Endpoint = source;
+        prior.LastActivity = tick;
+        _versions[hello.DeviceId] = (hello.AppVersion ?? RemoteVersion.BeforeVersionAnnouncement, tick);
+        _clockSkewAt = 0;
+        response = _crypto!.Ack(hello, now, statusSequence: _sequence);
+        Interlocked.Decrement(ref _rejected);
+        Interlocked.Increment(ref _handshakes);
+        return response;
+    }
+
+    private bool RenewAfterClockChangeLocked(DateTimeOffset now, long tick)
+    {
+        var jumped = _clockAnchor is { } anchor && Math.Abs((now - anchor.Utc -
+            Stopwatch.GetElapsedTime(anchor.Tick, tick)).TotalSeconds) > 30;
+        _clockAnchor = (now, tick);
+        if (!jumped) return false;
+        // A local wall-clock step starts a new cryptographic epoch. Old proof packets,
+        // sequence floors and ciphertext cannot cross this boundary.
+        foreach (var channel in _channels.Values) channel.Crypto.Dispose();
+        _channels.Clear(); _peers.Clear(); _sessions.Clear(); _challenges.Clear();
+        _crypto!.Dispose(); _crypto = new(_privateKey, _settings.AppVersion); _sequence = 0;
+        _clockSkewAt = 0;
+        return true;
+    }
+
     private async Task HeartbeatLoopAsync(Socket socket, CancellationToken token)
     {
         using var timer = new PeriodicTimer(_settings.HeartbeatInterval);
@@ -328,8 +404,10 @@ public sealed partial class AutoLanPeerService : IPeerService
                 bool expired;
                 lock (_gate)
                 {
-                    var now = DateTimeOffset.UtcNow;
-                    expired = ExpireLocked(Stopwatch.GetTimestamp());
+                    var now = _utcNow();
+                    var tick = Stopwatch.GetTimestamp();
+                    expired = RenewAfterClockChangeLocked(now, tick);
+                    expired |= ExpireLocked(tick);
                     hello = _crypto!.Hello(now);
                     var local = Volatile.Read(ref _local);
                     var throughputIsFresh = local.PublishedAtTick != 0 && Stopwatch.GetElapsedTime(local.PublishedAtTick) < _settings.PeerTtl;
@@ -397,7 +475,7 @@ public sealed partial class AutoLanPeerService : IPeerService
                 targets.AddRange(sweep.Next(bindings, 8 - targets.Count));
                 if (targets.Count == 0) continue;
                 byte[] hello;
-                lock (_gate) hello = _crypto!.Hello(DateTimeOffset.UtcNow);
+                lock (_gate) hello = _crypto!.Hello(_utcNow());
                 foreach (var address in targets.Distinct())
                 {
                     // A profile/address change may close scope while this batch is being sent.
@@ -434,7 +512,7 @@ public sealed partial class AutoLanPeerService : IPeerService
                 var targets = AutoLanDiscovery.LocalBurst(bindings);
                 _lastDiscoveryRequest = Stopwatch.GetTimestamp();
                 byte[] hello;
-                lock (_gate) hello = _crypto!.Hello(DateTimeOffset.UtcNow);
+                lock (_gate) hello = _crypto!.Hello(_utcNow());
                 for (var i = 0; i < targets.Count; i++)
                 {
                     if (!_deviceNetworkEnabled || !bindings.SequenceEqual(Volatile.Read(ref _bindings))) break;
@@ -473,6 +551,7 @@ public sealed partial class AutoLanPeerService : IPeerService
             catch (SocketException e) { SetError("AutoLAN Multicast: " + e.Message + " · Subnetz-Broadcast bleibt aktiv."); }
         lock (_gate)
         {
+            if (!previous.SequenceEqual(current)) _challenges.Clear();
             foreach (var id in _channels.Where(p => !EndpointAllowed(p.Value.Endpoint.Address)).Select(p => p.Key).ToArray())
             { _channels[id].Crypto.Dispose(); _channels.Remove(id); _peers.Remove(id); }
         }
@@ -499,6 +578,7 @@ public sealed partial class AutoLanPeerService : IPeerService
 
     private bool ExpireLocked(long tick)
     {
+        _challenges.Expire(tick);
         var ids = _peers.Where(p => Stopwatch.GetElapsedTime(p.Value.Tick, tick) >= _settings.PeerTtl).Select(p => p.Key).ToArray();
         foreach (var id in ids) { _lost = (_peers[id].Peer.DeviceName, DateTimeOffset.UtcNow); _peers.Remove(id); }
         foreach (var id in _versions.Where(p => Stopwatch.GetElapsedTime(p.Value.Tick, tick) > TimeSpan.FromMinutes(10)).Select(p => p.Key).ToArray())
@@ -550,6 +630,7 @@ public sealed partial class AutoLanPeerService : IPeerService
             {
                 foreach (var channel in _channels.Values) channel.Crypto.Dispose();
                 _channels.Clear(); _peers.Clear(); _sessions.Clear(); _rates.Clear(); _versions.Clear(); _names.Clear(); _lost = null;
+                _challenges.Clear(); _clockAnchor = null; _clockSkewAt = 0;
                 _crypto?.Dispose(); _crypto = null;
             }
             Volatile.Write(ref _bindings, []);

@@ -26,6 +26,14 @@ public static class AdGuardIntegration
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly byte[] Header = [0x44, 0x59, 0x4e, 1];
 
+    /// <summary>Presence only; this does not reveal whether its integration is active.</summary>
+    public static bool IsVpnInstalled(Context context)
+    {
+        try { using var info = context.PackageManager!.GetApplicationInfo("com.adguard.vpn", (PackageInfoFlags)0); return info is not null; }
+        catch (PackageManager.NameNotFoundException) { return false; }
+        catch (Java.Lang.SecurityException) { return false; }
+    }
+
     /// <summary>Requires manifest package visibility for com.adguard.android on Android 11+.</summary>
     public static bool IsAvailable(Context context)
     {

@@ -36,6 +36,8 @@ public static class MobileProxyChecks
             while (!condition()) await Task.Delay(10, timeout.Token);
         }
 
+        CheckTrafficEvidence(Check);
+
         async Task<Socket> Auth(LocalSocksProxy proxy, bool valid = true)
         {
             var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -219,6 +221,8 @@ public static class MobileProxyChecks
         using (var invalid = await Auth(proxy, false))
             Check(await Closed(invalid), "failed authentication closes connection");
         Check(prepared == 0, "authentication failures never create outbound sockets");
+        Check(proxy.Snapshot() is { AcceptedConnections: 2, AuthenticatedConnections: 0, AuthenticationFailures: 2,
+            DownloadBytes: 0, LimitedDownloadBytes: 0 }, "diagnostics distinguish rejected SOCKS credentials from forwarded traffic");
         Check(observedDownloads == 0, "idle listener and authentication do not confirm forwarding");
 
         var baselineListener = new TcpListener(IPAddress.Loopback, 0);
@@ -267,6 +271,7 @@ public static class MobileProxyChecks
 
         await WaitUntil(() => Volatile.Read(ref observedDownloads) == 1);
         Check(proxy.DownloadBytes > 0 && observedDownloads == 1, "forwarded payload wakes status exactly once across multiple streams");
+        Check(proxy.Snapshot().LimitedDownloadBytes == 0, "unlimited LAN payload cannot confirm an applied internet limit");
         var dnsListener = new TcpListener(IPAddress.Loopback, 0);
         dnsListener.Start();
         try
@@ -331,7 +336,15 @@ public static class MobileProxyChecks
                     "two TCP streams share a real aggregate 64 KiB/s download limit");
                 Check(limitedProxy.DownloadBytes == 131_072 && limitedProxy.UploadBytes == 0,
                     "TCP counters include actual payload only, not authentication/framing");
+                Check(limitedProxy.Snapshot() is { LimitedDownloadBytes: 131_072, DownloadLimitBytesPerSecond: 65_536 },
+                    "TCP limit confirmation counts actual payload after its limiter reservation");
+                var priorVersion = limitedProxy.Snapshot().LimitVersion;
+                limitedProxy.SetDownloadLimit(65_536);
+                Check(limitedProxy.Snapshot().LimitVersion == priorVersion && limitedProxy.Snapshot().LimitedDownloadBytes == 131_072,
+                    "repeated heartbeat with same limit preserves payload evidence");
                 limitedProxy.SetDownloadLimit(1);
+                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0 && limitedProxy.Snapshot().LimitVersion > priorVersion,
+                    "changing a limit invalidates old payload confirmation immediately");
                 await Send(clients[1], new byte[32_768]);
                 await Read(remotes[1], 32_768).WaitAsync(TimeSpan.FromSeconds(1));
                 Check(limitedProxy.UploadBytes == 32_768, "upload remains unlimited while download rate is one byte per second");
@@ -342,6 +355,8 @@ public static class MobileProxyChecks
                 limitedProxy.SetDownloadLimit(null);
                 await pending.WaitAsync(TimeSpan.FromSeconds(1));
                 Check(true, "unlimited releases waiting TCP relay");
+                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
+                    "payload released by removing a cap cannot confirm either the old or a new cap");
                 limitedProxy.SetDownloadLimit(1);
                 await Send(remotes[0], new byte[32_768]);
                 await limitedProxy.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
@@ -440,6 +455,8 @@ public static class MobileProxyChecks
                 await Task.WhenAll(Read(tcpClient, payload.Length), UdpReceive(udpClient));
                 Check(watch.Elapsed.TotalSeconds >= .85 && watch.Elapsed.TotalSeconds < 4,
                     "TCP and UDP downloads share the same aggregate byte budget");
+                Check(mixed.Snapshot().LimitedDownloadBytes == 65_536,
+                    "TCP and UDP both contribute only forwarded rate-controlled payload to confirmation");
                 mixed.SetDownloadLimit(1);
                 await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
                 var pending = UdpReceive(udpClient);
@@ -488,5 +505,73 @@ public static class MobileProxyChecks
         }
 
         write($"{checks} executed mobile proxy checks passed. TCP half-close {(halfCloseSupported ? "included" : "blocked by direct host baseline")}; UDP {(args.Contains("--tcp-only") ? "explicitly excluded" : "included")}. No WAN traffic or VPN/filter was started.");
+    }
+
+    private static void CheckTrafficEvidence(Action<bool, string> check)
+    {
+        var clock = new TrafficClock();
+        var monitor = new ProxyTrafficMonitor(clock);
+        ProxySnapshot sample = new(0, 0, 0);
+        check(monitor.Observe(sample, null) is { DownloadMbps: null, UploadMbps: null, ForwardingObserved: false, LimitApplied: false },
+            "unused proxy listener reports unknown traffic rather than numeric zero");
+        clock.Advance(4);
+        check(monitor.Observe(sample, null).DownloadMbps is null, "repeated idle listener samples do not manufacture a measured idle network");
+        clock.Advance(4);
+        sample = sample with { DownloadBytes = 125_000, UploadBytes = 62_500 };
+        check(monitor.Observe(sample, null) is { DownloadMbps: .25, UploadMbps: .125, ForwardingObserved: true, LimitApplied: false },
+            "real forwarded payload produces measured proxy rates independently of gaming");
+        clock.Advance(1);
+        sample = sample with { DownloadBytes = 126_000, LimitVersion = 1, DownloadLimitBytesPerSecond = 125_000 };
+        check(!monitor.Observe(sample, 1).LimitApplied, "LAN or DNS bypass payload never confirms an installed internet cap");
+        clock.Advance(1);
+        sample = sample with { DownloadBytes = 127_000, LimitedDownloadBytes = 1_000 };
+        check(monitor.Observe(sample, 1).LimitApplied, "real limited payload confirms the matching current cap");
+        clock.Advance(4);
+        check(monitor.Observe(sample, 1) is { DownloadMbps: 0, LimitApplied: true },
+            "confirmed cap remains stable between four-second heartbeat intervals while idle is genuinely measured");
+        clock.Advance(8);
+        check(monitor.Observe(sample, 1) is { DownloadMbps: null, ForwardingObserved: false, LimitApplied: false },
+            "monotonic evidence expiry removes stale route and limit claims without inventing zero traffic");
+        clock.Advance(1);
+        sample = sample with { DownloadBytes = 128_000, LimitedDownloadBytes = 2_000 };
+        check(monitor.Observe(sample, 1).LimitApplied, "new actual payload restores evidence after idle expiry");
+        sample = sample with { LimitVersion = 2, LimitedDownloadBytes = 0, DownloadLimitBytesPerSecond = 250_000 };
+        check(!monitor.Observe(sample, 2).LimitApplied, "cap replacement needs fresh payload under the new limiter version");
+        clock.Advance(1);
+        sample = sample with { DownloadBytes = 129_000, LimitedDownloadBytes = 1_000 };
+        check(!monitor.Observe(sample, 1).LimitApplied, "a different planned rate cannot reuse an old applied-rate confirmation");
+        check(!monitor.Observe(sample, null).LimitApplied, "game end or pause releases confirmation immediately");
+        monitor.Reset();
+        check(monitor.Observe(new(0, 0, 0), 2) is { DownloadMbps: null, LimitApplied: false },
+            "proxy or native-tunnel replacement forgets prior-session traffic and confirmation");
+        check(monitor.Observe(null, 2) is { DownloadMbps: null, UploadMbps: null, LimitApplied: false },
+            "failed or absent data plane cannot publish measured zero or an applied limit");
+        check(global::Dynex.Android.AdGuardSetupDiagnostics.VpnIntegrationHint(false, false) is null &&
+            global::Dynex.Android.AdGuardSetupDiagnostics.VpnIntegrationHint(true, true) is null,
+            "VPN integration hint requires installed VPN and missing forwarding, not mere package presence");
+        var hint = global::Dynex.Android.AdGuardSetupDiagnostics.VpnIntegrationHint(true, false)!;
+        check(hint.Contains("Prüfe") && hint.Contains("ob") && hint.Contains("IP-Verschleierung") && hint.Contains("ändert diese Einstellung nicht"),
+            "possible AdGuard VPN integration explains privacy tradeoff without asserting activity or disabling anything");
+        check(global::Dynex.Android.AdGuardSetupDiagnostics.WaitingStatus(new(0, 0, 0), true).Contains("keine Proxy-Verbindung"),
+            "sent automation without SOCKS evidence remains unconfirmed");
+        check(global::Dynex.Android.AdGuardSetupDiagnostics.WaitingStatus(new(0, 0, 0, AuthenticationFailures: 1), true).Contains("Anmeldung abgewiesen"),
+            "rejected SOCKS credentials are distinguished from an unapplied automation request");
+        check(global::Dynex.Android.AdGuardSetupDiagnostics.WaitingStatus(new(0, 0, 0, AuthenticatedConnections: 1, OutboundFailures: 1), true).Contains("Weiterleitung ins Netz fehlgeschlagen"),
+            "authenticated proxy with failed network forwarding is not presented as active shaping");
+        check(!global::Dynex.Android.AdGuardWizardGate.CanContinue(global::Dynex.Android.AppVpnRoute.Vpn) &&
+            !global::Dynex.Android.AdGuardWizardGate.CanContinue(global::Dynex.Android.AppVpnRoute.Unknown),
+            "wizard cannot skip an unresolved or still-VPN-routed app exception");
+        check(!global::Dynex.Android.AdGuardWizardGate.CanFinish(global::Dynex.Android.AppVpnRoute.Physical, false) &&
+            !global::Dynex.Android.AdGuardWizardGate.CanFinish(global::Dynex.Android.AppVpnRoute.Vpn, true) &&
+            global::Dynex.Android.AdGuardWizardGate.CanFinish(global::Dynex.Android.AppVpnRoute.Physical, true),
+            "wizard finishes only with a direct app route and actual forwarding, never just an automation request");
+    }
+
+    private sealed class TrafficClock : TimeProvider
+    {
+        private long timestamp;
+        public override long TimestampFrequency => 1_000;
+        public override long GetTimestamp() => timestamp;
+        public void Advance(int seconds) => timestamp += seconds * TimestampFrequency;
     }
 }

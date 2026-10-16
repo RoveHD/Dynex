@@ -311,8 +311,18 @@ internal static class DesktopLifecycle
             window.ShowDevices(); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             AssertPageFits(window, "DevicesPage", ["DeviceGrid", "DeviceCount", "NextDevicesButton", "SharedBudgetText"]);
+            var devicesPage = (FrameworkElement)window.FindName("DevicesPage");
+            var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
+            var devicesCard = (FrameworkElement)window.FindName("DevicesPageCard");
+            var headerSlot = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesHeader);
+            var cardSlot = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesCard);
+            if (headerSlot.Bottom > cardSlot.Top + 1)
+                throw new Exception($"Die Kopfzeile der Geräteansicht überlappt bei {width}x{height} den Inhalt.");
+            if (((System.Windows.Controls.TextBlock)window.FindName("SharedBudgetText")).TextWrapping != System.Windows.TextWrapping.Wrap ||
+                ((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).TextWrapping != System.Windows.TextWrapping.Wrap)
+                throw new Exception("Die Gerätehinweise müssen bei schmalen Fenstern umbrechen können.");
             if (((FrameworkElement)window.FindName("OverviewPage")).IsVisible || ((FrameworkElement)window.FindName("SettingsPage")).IsVisible)
-                throw new Exception("Die PC-Ansicht überlagert eine andere Seite.");
+                throw new Exception("Die Geräteansicht überlagert eine andere Seite.");
             Capture(window, Path.Combine(directory, $"devices-{width}x{height}.png"));
             foreach (var (section, controls) in sections)
             {
@@ -707,7 +717,7 @@ internal static class DesktopLifecycle
             SharedCapacityMbps: 150, SharedBudgetComplete: true, ConfirmedParticipantCount: 1 });
         var budgetLabel = (System.Windows.Controls.TextBlock)window.FindName("SharedBudgetText");
         var coordinationLabel = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
-        if (!budgetLabel.Text.Contains($"{90:0.0} Mbit/s für 2 PCs") || !coordinationLabel.Text.Contains("1/2 PCs bestätigt"))
+        if (!budgetLabel.Text.Contains($"{90:0.0} Mbit/s für 2 Geräte") || !coordinationLabel.Text.Contains("1/2 Geräten bestätigt"))
             throw new Exception("Gemeinsames Budget oder bestätigte Filteranzahl fehlen in der Oberfläche.");
         var grid = (System.Windows.Controls.DataGrid)window.FindName("DeviceGrid");
         string Cell(string property)
@@ -730,6 +740,17 @@ internal static class DesktopLifecycle
                 throw new Exception("Download, Upload und Limit sind nicht korrekt gebunden.");
             Capture(window, Path.Combine(directory, $"peer-traffic-fixture-{width}.png"));
         }
+        window.Width = 900; window.Height = 650; window.ShowDevices(); window.UpdateLayout();
+        var wrappedCoordination = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
+        if (wrappedCoordination.ActualHeight <= wrappedCoordination.FontSize * 1.5)
+            throw new Exception("Der längere Hinweis zum Gerätebudget wird im Mindestfenster nicht umgebrochen.");
+        var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
+        var devicesCard = (FrameworkElement)window.FindName("DevicesPageCard");
+        if (System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesHeader).Bottom >
+            System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesCard).Top + 1)
+            throw new Exception("Die Kopfzeile der Geräteansicht überlappt im Mindestfenster den Inhalt.");
+        window.UpdateLayout();
+        Capture(window, Path.Combine(directory, "devices-traffic-fixture-900x650.png"));
         var diagnostic = await runtime.ExportDiagnosticsAsync();
         using (var json = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(diagnostic)))
         {
@@ -739,7 +760,7 @@ internal static class DesktopLifecycle
         }
         peer.Publish(true, 120.5, game: "Testspiel im Fokus", appliedLimitMbps: 99, shaperActive: true, uploadMbps: 12.25);
         await WaitFor(() => Remote() is { LimitMbps: 99 } && runtime.Snapshot is { ConfirmedParticipantCount: 0 });
-        if (!coordinationLabel.Text.Contains("0/2 PCs bestätigt"))
+        if (!coordinationLabel.Text.Contains("0/2 Geräten bestätigt"))
             throw new Exception("Ein altes zu hohes Limit wird als neues gemeinsames Budget bestätigt.");
         peer.Publish(false, 0, uploadMbps: 0);
         await WaitFor(() => Remote() is { DownloadMbps: 0, UploadMbps: 0, LimitMbps: null });

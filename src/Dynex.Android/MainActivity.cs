@@ -79,6 +79,8 @@ public sealed class MainActivity : Activity
     private AlertDialog? _adGuardWizardDialog;
     private EditText? _adGuardWizardPassword;
     private TextView? _adGuardWizardStatus;
+    private TextView? _adGuardExceptionStatus;
+    private AppVpnRoute _adGuardRoute;
     private MobileSettings _settings = null!;
 
     protected override void OnCreate(Bundle? savedInstanceState)
@@ -109,6 +111,7 @@ public sealed class MainActivity : Activity
         base.OnResume();
         if (_content is not null)
         {
+            RefreshAdGuardRouteCheck();
             Render(MobileState.Current);
             new Handler(Looper.MainLooper!).Post(ShowFirstRunAdGuardWizardIfNeeded);
         }
@@ -206,6 +209,7 @@ public sealed class MainActivity : Activity
         rates.AddView(downCard, new LinearLayout.LayoutParams(0, -2, 1) { RightMargin = Dp(8) });
         rates.AddView(upCard, new LinearLayout.LayoutParams(0, -2, 1));
         _overview.AddView(rates, Spacing(bottom: 10));
+        _overview.AddView(Label("Gemessen wird nur tatsächlich über DYNEX weitergeleiteter Verkehr. — bedeutet: derzeit kein Datenpfad bestätigt.", 11, _muted), Spacing(bottom: 10));
 
         var deviceCard = Card();
         deviceCard.AddView(SectionLabel("GERÄTE IM WLAN"));
@@ -305,7 +309,11 @@ public sealed class MainActivity : Activity
         else if (state.LimitApplied)
             _limitStatus.Text = $"Begrenzt · {FormatRate(state.DownloadLimitMbps)} Mbit/s";
         else if (state.LimitPlanned)
-            _limitStatus.Text = $"Limit geplant · {FormatRate(state.DownloadLimitMbps)} Mbit/s";
+            _limitStatus.Text = $"Limit geplant · {FormatRate(state.DownloadLimitMbps)} Mbit/s" +
+                (adGuardMode && !state.ProxyForwardingObserved ? " · Weiterleitung nicht bestätigt" : " · warte auf öffentlichen Download");
+        else if (state.GamingReported)
+            _limitStatus.Text = state.SharedCapacityMbps is null
+                ? "PC meldet Gaming · bestätigte PC-Kapazität fehlt" : "PC meldet Gaming · Limit nicht aktiv";
         else if (proxyRunning && !state.HasNetworkTransport)
             _limitStatus.Text = "Kein aktives Netz · keine Begrenzung";
         else if (proxyRunning && !state.IsOnWifi)
@@ -318,8 +326,6 @@ public sealed class MainActivity : Activity
             _limitStatus.Text = "AdGuard-Proxy noch nicht gestartet";
         else if (state.IsObservingGaming)
             _limitStatus.Text = "Warte auf Gaming-Status vom PC";
-        else if (state.GamingReported)
-            _limitStatus.Text = "PC meldet Gaming · Limit nicht aktiv";
         else if (state.IsConnected)
             _limitStatus.Text = "Verbunden · Gaming-Status wird geprüft";
         else
@@ -335,12 +341,25 @@ public sealed class MainActivity : Activity
                 _adGuardWizardStatus.Text = "Datenweiterleitung über DYNEX wurde beobachtet. Du kannst den Assistenten schließen und DYNEX normal verwenden.";
             else if (state.IsRunning && !state.HasNetworkTransport)
                 _adGuardWizardStatus.Text = "Noch kein nutzbares Netz erkannt. Stelle eine Internetverbindung her. Falls AdGuard DYNEX erfasst: AdGuard → App-Verwaltung → DYNEX → Datenverkehr durch AdGuard leiten ausschalten. Danach hier erneut starten.";
-            else if (!string.IsNullOrEmpty(state.ConnectionStatusText) && (!state.IsRunning || state.ConnectionStatusText.Contains("nicht aktiv")))
+            else if (!string.IsNullOrEmpty(state.ConnectionStatusText) && (!state.IsRunning ||
+                state.ConnectionStatusText.Contains("nicht aktiv") || state.ConnectionStatusText.Contains("abgewiesen") ||
+                state.ConnectionStatusText.Contains("fehlgeschlagen") || state.ConnectionStatusText.Contains("am Proxy angemeldet")))
                 _adGuardWizardStatus.Text = state.ConnectionStatusText;
             else if (state.AdGuardSetupRequested)
                 _adGuardWizardStatus.Text = "Die Einrichtungsanfrage wurde gesendet, aber Datenweiterleitung ist noch nicht bestätigt. Lade eine Browserseite. Falls sie nicht lädt: In AdGuard → App-Verwaltung → DYNEX muss „Datenverkehr durch AdGuard leiten“ ausgeschaltet sein. Prüfe außerdem das Automatisierungs-Passwort.";
             else
                 _adGuardWizardStatus.Text = "Noch nicht bestätigt. Öffne Browser oder App und lade eine Seite; DYNEX bestätigt die Einrichtung erst, wenn Datenweiterleitung beobachtet wurde.";
+            if (AdGuardSetupDiagnostics.VpnIntegrationHint(state.AdGuardVpnInstalled, state.ProxyForwardingObserved) is { } integrationHint)
+                _adGuardWizardStatus.Text += "\n\n" + integrationHint;
+            if (_adGuardRoute != AppVpnRoute.Physical)
+                _adGuardWizardStatus.Text += "\n\n" + AdGuardWizardGate.RouteStatus(_adGuardRoute);
+            if (_adGuardWizardDialog?.GetButton((int)DialogButtonType.Positive) is { } finish)
+            {
+                var complete = AdGuardWizardGate.CanFinish(_adGuardRoute, state.ProxyForwardingObserved);
+                _adGuardWizardDialog.SetTitle(complete ? "Einrichtung bestätigt" : "Einrichtung offen · Weiterleitung prüfen");
+                finish.Text = complete ? "Fertig" : "Einrichtung offen";
+                SetButtonEnabled(finish, complete);
+            }
         }
         _downloadValue.Text = FormatRate(state.DownloadMbps);
         _uploadValue.Text = FormatRate(state.UploadMbps);
@@ -652,7 +671,12 @@ public sealed class MainActivity : Activity
         content.SetPadding(Dp(20), Dp(8), Dp(20), Dp(8));
         content.AddView(SectionLabel("SCHRITT 1 VON 3 · ADGUARD"), Spacing(bottom: 10));
         content.AddView(Label("AdGuard behält Androids VPN. DYNEX richtet darin einen lokalen SOCKS5-Proxy ein. Der aktuell in AdGuard ausgewählte Proxy wird dabei durch DYNEX ersetzt.", 13, _text), Spacing(bottom: 10));
+        if (AdGuardSetupDiagnostics.VpnIntegrationHint(AdGuardIntegration.IsVpnInstalled(this), false) is { } integrationHint)
+            content.AddView(Label(integrationHint, 13, _text), Spacing(bottom: 10));
         content.AddView(Label("Nimm zuerst DYNEX selbst aus: AdGuard → App-Verwaltung → DYNEX → „Datenverkehr durch AdGuard leiten“ ausschalten. So wird die Verbindung nicht im Kreis geleitet. Andere Apps bleiben geschützt.", 13, _text), Spacing(bottom: 10));
+        content.AddView(Label("Diese App-Ausnahme darf DYNEX nicht selbst setzen. Öffne AdGuard unten; nach deiner Rückkehr wird die eigene Netzroute automatisch geprüft.", 12, _muted), Spacing(bottom: 10));
+        _adGuardExceptionStatus = Label("Eigene Netzroute wird geprüft …", 13, _text);
+        content.AddView(_adGuardExceptionStatus, Spacing(bottom: 10));
         content.AddView(Label("In AdGuard: Einstellungen → Allgemein → Erweiterte Einstellungen → Automatisierung. Automatisierung erlauben und dort das angezeigte Passwort abrufen. Im nächsten Schritt gibst du es einmal hier ein.", 13, _muted), Spacing(bottom: 10));
         var openAdGuard = TextButton("ADGUARD ÖFFNEN", false);
         openAdGuard.Click += (_, _) =>
@@ -675,8 +699,11 @@ public sealed class MainActivity : Activity
         var dialog = builder.Create()!;
         TrackAdGuardWizardDialog(dialog);
         dialog.Show();
+        RefreshAdGuardRouteCheck();
         dialog.GetButton((int)DialogButtonType.Positive)!.Click += (_, _) =>
         {
+            RefreshAdGuardRouteCheck();
+            if (!AdGuardWizardGate.CanContinue(_adGuardRoute)) return;
             dialog.Dismiss();
             ShowAdGuardWizardPassword();
         };
@@ -792,13 +819,27 @@ public sealed class MainActivity : Activity
         };
         content.AddView(openAdGuard);
         var builder = new AlertDialog.Builder(this);
-        builder.SetTitle("Weiterleitung prüfen");
+        builder.SetTitle("Einrichtung offen · Weiterleitung prüfen");
         builder.SetView(content);
-        builder.SetPositiveButton("Schließen", (_, _) => { });
+        builder.SetPositiveButton("Einrichtung offen", (_, _) => { });
+        builder.SetNegativeButton("Später", (_, _) => { });
         var dialog = builder.Create()!;
         TrackAdGuardWizardDialog(dialog);
         dialog.Show();
+        RefreshAdGuardRouteCheck();
         Render(MobileState.Current);
+    }
+
+    private void RefreshAdGuardRouteCheck()
+    {
+        if (!_settings.UseAdGuardProxy && _adGuardWizardDialog is null) return;
+        _adGuardRoute = VpnCompatibility.ReadAppRoute(this);
+        if (_adGuardExceptionStatus is not null)
+        {
+            _adGuardExceptionStatus.Text = AdGuardWizardGate.RouteStatus(_adGuardRoute);
+            if (_adGuardWizardDialog?.GetButton((int)DialogButtonType.Positive) is { } next)
+                SetButtonEnabled(next, AdGuardWizardGate.CanContinue(_adGuardRoute));
+        }
     }
 
     private void TrackAdGuardWizardDialog(AlertDialog dialog, EditText? password = null)
@@ -812,6 +853,7 @@ public sealed class MainActivity : Activity
                 _adGuardWizardDialog = null;
                 _adGuardWizardPassword = null;
                 _adGuardWizardStatus = null;
+                _adGuardExceptionStatus = null;
             }
         };
     }

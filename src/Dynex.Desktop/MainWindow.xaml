@@ -141,10 +141,10 @@
               <TextBlock Text="Übersicht" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
             </StackPanel>
           </Button>
-          <Button x:Name="DevicesNavButton" Tag="" Style="{StaticResource NavButton}" Click="DevicesNav_Click" ToolTip="Verbundene PCs" AutomationProperties.Name="Verbundene PCs">
+          <Button x:Name="DevicesNavButton" Tag="" Style="{StaticResource NavButton}" Click="DevicesNav_Click" ToolTip="Verbundene Geräte" AutomationProperties.Name="Verbundene Geräte">
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
-              <TextBlock Text="Verbundene PCs" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
+              <TextBlock Text="Verbundene Geräte" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
             </StackPanel>
           </Button>
           <Button x:Name="AnalysisNavButton" Tag="analysis" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Analyse" AutomationProperties.Name="Analyse">
@@ -327,7 +327,7 @@
               <StackPanel>
                 <TextBlock Text="DEIN HEIMNETZ" FontWeight="SemiBold" />
                 <TextBlock x:Name="DashboardPeersText" Text="PC-Verbindung wird geprüft." Style="{StaticResource Caption}" Margin="0,6,0,8" />
-                <Button x:Name="DashboardDevicesButton" Content="Verbundene PCs ansehen  →" Click="DevicesNav_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" FontSize="12" Padding="9,4" />
+                <Button x:Name="DashboardDevicesButton" Content="Verbundene Geräte ansehen  →" Click="DevicesNav_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" FontSize="12" Padding="9,4" />
               </StackPanel>
             </Border>
           </Grid>
@@ -339,7 +339,7 @@
               <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <DockPanel Margin="2,0,2,5" LastChildFill="False">
-              <TextBlock Text="VERBUNDENE PCs" FontWeight="SemiBold" VerticalAlignment="Center" />
+              <TextBlock Text="VERBUNDENE GERÄTE" FontWeight="SemiBold" VerticalAlignment="Center" />
               <TextBlock x:Name="OverviewDeviceCount" DockPanel.Dock="Right" Text="0 GERÄTE" Style="{StaticResource Caption}" VerticalAlignment="Center" />
             </DockPanel>
             <Grid Grid.Row="1" ClipToBounds="True">
@@ -379,18 +379,18 @@
       </Grid>
       <Grid x:Name="DevicesPage" Visibility="Collapsed">
         <Grid.RowDefinitions>
-          <RowDefinition Height="66" />
+          <RowDefinition Height="Auto" />
           <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <StackPanel>
-          <TextBlock Text="Verbundene PCs" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
+        <StackPanel x:Name="DevicesPageHeader" Margin="0,0,0,10">
+          <TextBlock Text="Verbundene Geräte" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
           <WrapPanel Margin="0,5,0,0">
             <Button Content="Geräte verwalten" Click="DeviceManager_Click" Style="{StaticResource CompactButton}"/>
             <Button Content="Zwei-PC-Test" Click="PeerConnectionTest_Click" Style="{StaticResource CompactButton}"/>
             <Button Content="Verbrauchsverlauf" Click="UsageHistory_Click" Style="{StaticResource CompactButton}"/>
           </WrapPanel>
         </StackPanel>
-        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="16">
+        <Border x:Name="DevicesPageCard" Grid.Row="1" Style="{StaticResource Card}" Padding="16">
           <Grid>
             <Grid.RowDefinitions>
               <RowDefinition Height="26" />
@@ -405,17 +405,17 @@
                 <ColumnDefinition Width="Auto" />
               </Grid.ColumnDefinitions>
               <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <TextBlock Text="VERBUNDENE PCs" FontWeight="SemiBold" />
+                <TextBlock Text="VERBUNDENE GERÄTE" FontWeight="SemiBold" />
                 <TextBlock x:Name="DeviceCount" Text="0 GERÄTE" Style="{StaticResource Caption}" Margin="12,2,0,0" />
               </StackPanel>
               <TextBlock x:Name="DevicesPageText" Grid.Column="1" Text="Seite 1 / 1" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,10,0" />
               <StackPanel Grid.Column="2" Orientation="Horizontal">
-                <Button x:Name="PreviousDevicesButton" Content="←" ToolTip="Vorherige PCs" Click="PreviousDevices_Click" Padding="9,2" Margin="0,0,4,0" />
-                <Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere PCs" Click="NextDevices_Click" Padding="9,2" Margin="0" />
+                <Button x:Name="PreviousDevicesButton" Content="←" ToolTip="Vorherige Geräte" Click="PreviousDevices_Click" Padding="9,2" Margin="0,0,4,0" />
+                <Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere Geräte" Click="NextDevices_Click" Padding="9,2" Margin="0" />
               </StackPanel>
             </Grid>
-            <TextBlock x:Name="SharedBudgetText" Grid.Row="1" Text="Alle DYNEX-PCs teilen sich das Downloadbudget." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,2" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-            <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Spiele und Sprachchat umgehen die Downloadwarteschlange." Style="{StaticResource Caption}" Margin="0,0,0,6" MaxHeight="34" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <TextBlock x:Name="SharedBudgetText" Grid.Row="1" Text="Alle DYNEX-Geräte teilen sich das Downloadbudget." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,4" TextWrapping="Wrap" />
+            <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Spiele und Sprachchat umgehen die Downloadwarteschlange." Style="{StaticResource Caption}" Margin="0,0,0,6" TextWrapping="Wrap" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             <DataGrid x:Name="DeviceGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="29" ColumnHeaderHeight="27" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
               <DataGrid.Resources>
                 <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
