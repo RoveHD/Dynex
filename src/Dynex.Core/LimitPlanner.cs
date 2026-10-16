@@ -45,12 +45,7 @@ public sealed class LimitPlanner
         // Minimize the complete reserve-adjusted proposals, not only the raw line speeds:
         // different headroom and per-gamer settings must not produce different shared pools.
         double? capacity = proposals.Count == 0 ? null : proposals.Min(p => p.LineMbps);
-        var maxima = proposals.Where(p => p.SharedDownloadMaximumMbps.HasValue).Select(p => p.SharedDownloadMaximumMbps!.Value).ToList();
-        // Only original measured proposals carry shared policy. An unmeasured local
-        // maximum cannot silently become a private cap that other devices never see.
-        double? maximum = maxima.Count == 0 ? null : maxima.Min();
         double? pool = active && proposals.Count > 0 ? proposals.Min(p => p.Remaining(gamers)) : null;
-        if (active && maximum is { } sharedMaximum) pool = pool is { } available ? Math.Min(available, sharedMaximum) : sharedMaximum;
         var uploadProposals = proposals.Where(p => p.UploadCapacityMbps.HasValue).ToArray();
         double? uploadCapacity = uploadProposals.Length == 0 ? null : uploadProposals.Min(p => p.UploadCapacityMbps!.Value);
         double? uploadPool = active && uploadProposals.Length > 0
@@ -81,10 +76,10 @@ public sealed class LimitPlanner
         }
         double? automatic = pool is { } shared ? Math.Max(0.1, shared * localWeight / downloadWeight) : null;
         var allocationRepresentable = pool is null || pool * minimumDownloadWeight / downloadWeight >= .1;
-        // The new telemetry also establishes support for active shared-max allocation.
+        // Current activity establishes support for active allocation.
         // Capacity consumers (phones) need not invent proposals to participate; legacy
-        // peers without this telemetry cannot confirm enforcement of the new maximum.
-        var complete = (maximum is not null ? activityComplete && proposals.Count > 0 : proposals.Count == participants) && allocationRepresentable;
+        // peers without this telemetry retain the conservative all-proposal check.
+        var complete = (activityComplete && proposals.Count > 0 || proposals.Count == participants) && allocationRepresentable;
         // A manual maximum may be lower than the shared allocation. Adapt both
         // the load threshold and the applied rate from that actual starting budget.
         var adaptiveBudget = automatic;

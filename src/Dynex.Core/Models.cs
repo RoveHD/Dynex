@@ -17,8 +17,6 @@ public sealed record DynexSettings
     public double HeadroomPercent { get; init; } = 15;
     public double GamingReserveMbps { get; init; } = 12;
     public double? ManualDownloadLimitMbps { get; init; }
-    /// <summary>Gaming-time maximum shared by bulk downloaders, before per-device adaptive reductions.</summary>
-    public double? SharedDownloadMaximumMbps { get; init; }
     public bool AdaptiveEnabled { get; init; } = true;
     public TimeSpan PeerTtl { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(2);
@@ -37,7 +35,6 @@ public sealed record DynexSettings
             !double.IsFinite(HeadroomPercent) || HeadroomPercent is < 0 or > 90 ||
             !double.IsFinite(GamingReserveMbps) || GamingReserveMbps is < 0 or > 100000 ||
             ManualDownloadLimitMbps is { } m && (!double.IsFinite(m) || m is < 0.1 or > 100000) ||
-            SharedDownloadMaximumMbps is { } shared && (!double.IsFinite(shared) || shared is < 0.1 or > 100000) ||
             UploadCapacityMbps is { } upload && (!double.IsFinite(upload) || upload is < .1 or > 100000))
             throw new ArgumentException("Bandbreiteneinstellungen sind ungültig.");
         if (PeerTtl < TimeSpan.FromSeconds(1) || PeerTtl > TimeSpan.FromSeconds(30) ||
@@ -81,19 +78,16 @@ public sealed record PeerAdvertisement(Guid DeviceId, string DeviceName, bool Is
 /// </summary>
 public sealed record DownloadBudgetProposal(double LineMbps, double HeadroomPercent, double GamingReserveMbps,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    double? UploadCapacityMbps = null,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    double? SharedDownloadMaximumMbps = null)
+    double? UploadCapacityMbps = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsValid => double.IsFinite(LineMbps) && LineMbps is >= 1 and <= 100000 &&
         double.IsFinite(HeadroomPercent) && HeadroomPercent is >= 0 and <= 90 &&
         double.IsFinite(GamingReserveMbps) && GamingReserveMbps is >= 0 and <= 100000 &&
-        (UploadCapacityMbps is null || double.IsFinite(UploadCapacityMbps.Value) && UploadCapacityMbps is >= .1 and <= 100000) &&
-        (SharedDownloadMaximumMbps is null || double.IsFinite(SharedDownloadMaximumMbps.Value) && SharedDownloadMaximumMbps is >= .1 and <= 100000);
+        (UploadCapacityMbps is null || double.IsFinite(UploadCapacityMbps.Value) && UploadCapacityMbps is >= .1 and <= 100000);
 
     internal static DownloadBudgetProposal FromSettings(DynexSettings settings) =>
-        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps, settings.UploadCapacityMbps, settings.SharedDownloadMaximumMbps);
+        new(settings.LineMbps, settings.HeadroomPercent, settings.GamingReserveMbps, settings.UploadCapacityMbps);
 
     internal double Remaining(int gamingCount) => Math.Max(0, LineMbps * (1 - HeadroomPercent / 100) - gamingCount * GamingReserveMbps);
 }
@@ -106,8 +100,8 @@ public sealed record ProbeStats(DateTimeOffset TimestampUtc, double? ExternalLat
 /// <summary>
 /// Shared metadata describes the conservative planning pool, not proof that a driver applied it.
 /// Complete means the shares can be represented and either every participant supplied a valid
-/// capacity proposal (legacy pool), or a measured maximum source and current activity telemetry
-/// from every participant are available (shared maximum). It does not establish a globally
+/// capacity proposal (legacy pool), or a measured capacity source and current activity telemetry
+/// from every participant are available. It does not establish a globally
 /// converged membership view or detect partitions.
 /// AppliedLimitMbps/ShaperActive remain the separate confirmations; missing/disabled filters cannot
 /// be controlled by this policy. Zero gamers means there is no automatic shared pool.

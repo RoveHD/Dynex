@@ -1,14 +1,24 @@
 using Dynex.Desktop;
+using Dynex.Core;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 internal static class NetworkProfileChecks
 {
+    private static double? Budget(UserSettings settings) => new LimitPlanner(new DynexSettings
+    {
+        LineMbps = settings.CapacityMbps, CapacityMeasured = settings.CapacityMeasuredAtUtc.HasValue,
+        HeadroomPercent = 100 - settings.BackgroundPercent, GamingReserveMbps = settings.ReservePerGamerMbps,
+        AdaptiveEnabled = false
+    }).Plan(true, []).SharedDownloadBudgetMbps;
+
     internal static async Task RunAsync(Action<bool, string> check)
     {
         var now = DateTimeOffset.UtcNow;
         var a = new NetworkIdentity(Guid.NewGuid().ToString("D"), "Zuhause");
         var b = new NetworkIdentity(Guid.NewGuid().ToString("D"), "Hotspot");
         var original = new UserSettings { CapacityMbps = 80, CapacityMeasuredAtUtc = now, AutomaticSpeedTestAttempted = true,
-            Profile = "Turnier", BackgroundPercent = 40, ManualLimitMbps = 30, SharedDownloadMaximumMbps = 25, UploadCapacityMbps = 12,
+            Profile = "Turnier", BackgroundPercent = 40, ManualLimitMbps = 30, UploadCapacityMbps = 12,
             DirectPeers = "10.0.0.4", AutoConnectLan = false, GameProcesses = "ExampleGame",
             ApplicationRules = [new("steam", 30)] };
         var home = SettingsStore.Normalize(NetworkProfiles.Activate(original, a, now));
@@ -19,27 +29,32 @@ internal static class NetworkProfileChecks
             "new network has its own unmeasured capacity and automatic discovery without old direct peers");
         check(hotspot.GameProcesses == original.GameProcesses && hotspot.ApplicationRules.Single().DownloadMbps == 30,
             "network switch preserves computer-wide games and program rules");
-        check(hotspot.SharedDownloadMaximumMbps is null, "shared maximum is specific to the home network");
         hotspot = SettingsStore.Normalize(hotspot with { CapacityMbps = 45, CapacityMeasuredAtUtc = now.AddMinutes(2), AutomaticSpeedTestAttempted = true });
         var restored = SettingsStore.Normalize(NetworkProfiles.Activate(hotspot, a, now.AddMinutes(3)));
         check(restored.CapacityMbps == 80 && restored.ManualLimitMbps == 30 && restored.UploadCapacityMbps == 12 && restored.DirectPeers == "10.0.0.4",
             "return to home restores its measured speeds and connection settings");
-        check(restored.SharedDownloadMaximumMbps == 25, "return to home restores shared maximum separately from local cap");
         check(NetworkProfiles.Activate(restored, b, now.AddMinutes(4)).CapacityMbps == 45,
             "each network keeps independent latest measurement");
         using var profile = new TestProfile(measured: true);
         var store = new SettingsStore(profile.Path);
         store.Save(restored);
+        var settingsPath = System.IO.Path.Combine(profile.Path, "settings.json");
+        var legacy = JsonNode.Parse(File.ReadAllText(settingsPath))!;
+        legacy["SharedDownloadMaximumMbps"] = 25;
+        foreach (var saved in legacy["NetworkProfiles"]!.AsArray()) saved!["Policy"]!["SharedDownloadMaximumMbps"] = 25;
+        File.WriteAllText(settingsPath, legacy.ToJsonString());
         var loaded = store.Load();
         check(loaded.NetworkProfiles.Length == 2 && loaded.NetworkProfiles.Single(p => p.Id == b.Id).Policy.CapacityMbps == 45,
             "atomic settings persistence restores all network policies");
-        check(loaded.SharedDownloadMaximumMbps == 25 && loaded.NetworkProfiles.Single(p => p.Id == a.Id).Policy.SharedDownloadMaximumMbps == 25,
-            "shared maximum survives persistence in current and saved network policy");
-        foreach (var invalid in new[] { -1d, 0d, double.NaN, double.PositiveInfinity, 10001d })
-        {
-            try { SettingsStore.Validate(original with { SharedDownloadMaximumMbps = invalid }); check(false, "invalid shared maximum rejected"); }
-            catch (ArgumentException) { check(true, "invalid shared maximum rejected"); }
-        }
+        check(!JsonSerializer.Serialize(loaded).Contains("SharedDownloadMaximumMbps"),
+            "loading old settings removes obsolete maximum from current settings and every saved network policy");
+        var restoredLegacy = SettingsStore.Normalize(NetworkProfiles.Activate(
+            SettingsStore.Normalize(NetworkProfiles.Activate(loaded, b, now)), a, now));
+        check(Budget(restoredLegacy) == 28 && restoredLegacy.CapacityMeasuredAtUtc == now,
+            "network switches preserve the measured 80 Mbps profile budget of 28 rather than resurrecting legacy 25");
+        store.Save(restoredLegacy);
+        check(!File.ReadAllText(settingsPath).Contains("SharedDownloadMaximumMbps"),
+            "saving migrated settings strips obsolete maximum from disk and inactive profiles");
 
         // Both simulated networks use loopback targets; these tests never probe the actual LAN/Internet.
         var local = new UserSettings { CapacityMbps = 80, CapacityMeasuredAtUtc = now, AutomaticSpeedTestAttempted = true,
@@ -63,6 +78,13 @@ internal static class NetworkProfileChecks
         check(runtime.ActiveNetworkName == "Mein Hotspot", "network aliases persist independently of Windows names");
         var backup = runtime.ExportSettings();
         check(!backup.Contains(a.Id) && !backup.Contains(b.Id), "portable backup excludes network identifiers and saved network measurements");
+        var oldBackup = JsonNode.Parse(backup)!;
+        oldBackup["Settings"]!["SharedDownloadMaximumMbps"] = 25;
+        oldBackup["Settings"]!["NetworkProfiles"] = legacy["NetworkProfiles"]!.DeepClone();
+        await runtime.ImportSettingsAsync(oldBackup.ToJsonString());
+        check(runtime.Settings.CapacityMbps == 45 && Budget(runtime.Settings) == 27 &&
+            !runtime.ExportSettings().Contains("SharedDownloadMaximumMbps") && !File.ReadAllText(settingsPath).Contains("SharedDownloadMaximumMbps"),
+            "importing a legacy maximum and saved profiles preserves local measurement and automatic 27 Mbps budget without writing obsolete limits");
         var measurement = runtime.MeasureCapacityAsync();
         var request = await speed.NextAsync().WaitAsync(TimeSpan.FromSeconds(12));
         current = a;

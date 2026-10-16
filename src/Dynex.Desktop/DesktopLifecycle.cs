@@ -261,19 +261,6 @@ internal static class DesktopLifecycle
     private static async Task VerifyPagesAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
         var originalSettings = runtime.Settings;
-        var sharedLimit = (System.Windows.Controls.TextBox)window.FindName("SharedLimitBox");
-        var sharedButton = (System.Windows.Controls.Button)window.FindName("SharedLimitButton");
-        foreach (var value in new double?[] { 25, null })
-        {
-            sharedLimit.Text = value?.ToString(System.Globalization.CultureInfo.CurrentCulture) ?? "";
-            sharedButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (runtime.Settings.SharedDownloadMaximumMbps != value && DateTime.UtcNow < deadline) await Task.Delay(20);
-            if (runtime.Settings.SharedDownloadMaximumMbps != value || new SettingsStore(ProfilePath).Load().SharedDownloadMaximumMbps != value)
-                throw new InvalidOperationException("Das gemeinsame Downloadmaximum wird über die Oberfläche nicht gespeichert/aufgehoben.");
-        }
-        if (originalSettings.SharedDownloadMaximumMbps is not null)
-            await runtime.SaveSettingsAsync(runtime.Settings with { SharedDownloadMaximumMbps = originalSettings.SharedDownloadMaximumMbps });
         var configuredProcesses = (System.Windows.Controls.ListBox)window.FindName("ConfiguredProcessesList");
         var configuredNames = (System.Collections.ObjectModel.ObservableCollection<string>)configuredProcesses.ItemsSource;
         var originalNames = configuredNames.ToArray();
@@ -281,7 +268,7 @@ internal static class DesktopLifecycle
         var sizes = new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) };
         var sections = new Dictionary<string, string[]>
         {
-            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "ManualLimitBox", "SharedLimitBox", "SharedLimitButton"],
+            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "ManualLimitBox", "AutomaticBudgetText"],
             ["games"] = ["ModeCombo", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList"],
             ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton"],
             ["updates"] = ["InstalledVersionText", "AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"],
@@ -352,9 +339,40 @@ internal static class DesktopLifecycle
             throw new Exception("Seitenwechsel verliert ungespeicherte Eingaben oder speichert ohne Aktion.");
         configuredNames.Clear();
         foreach (var name in originalNames) configuredNames.Add(name);
+        await VerifyToolTipsAsync(window, directory);
         window.ShowOverview(); window.UpdateLayout();
         await File.WriteAllTextAsync(Path.Combine(directory, "pages-result.txt"),
             "PASS: overview, dedicated PC view and all six settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; no page scrolling; controls reachable; navigation preserves unsaved fields and settings.\n");
+    }
+    private static async Task VerifyToolTipsAsync(MainWindow window, string directory)
+    {
+        window.ShowSettings("general");
+        window.UpdateLayout();
+        double shortHeight = 0;
+        foreach (var name in new[] { "NotificationsCheck", "AutomaticBudgetText" })
+        {
+            var owner = (FrameworkElement)window.FindName(name);
+            var tip = new System.Windows.Controls.ToolTip { Content = owner.ToolTip, PlacementTarget = owner };
+            try
+            {
+                tip.IsOpen = true;
+                await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                tip.UpdateLayout();
+                var text = FindVisualChild<System.Windows.Controls.TextBlock>(tip);
+                var border = FindVisualChild<System.Windows.Controls.Border>(tip);
+                if (text is null || string.IsNullOrWhiteSpace(text.Text) || text.Text != owner.ToolTip as string ||
+                    text.Foreground is not SolidColorBrush foreground || border?.Background is not SolidColorBrush background ||
+                    foreground.Color.R - background.Color.R < 120 || tip.ActualWidth > 361 || tip.ActualWidth < 40)
+                    throw new InvalidOperationException("Der Hinweistext ist nicht lesbar oder der Hinweisbalken ist zu breit.");
+                if (name == "NotificationsCheck") shortHeight = tip.ActualHeight;
+                else if (text.TextWrapping != TextWrapping.Wrap || tip.ActualHeight <= shortHeight)
+                    throw new InvalidOperationException("Lange Hinweistexte werden nicht mehrzeilig angezeigt.");
+                Capture(tip, Path.Combine(directory, $"tooltip-{name}.png"));
+            }
+            finally { tip.IsOpen = false; }
+        }
+        await File.WriteAllTextAsync(Path.Combine(directory, "tooltips-result.txt"),
+            "PASS: short and long settings tooltips render readable text on a dark background; width bounded; long text wraps.\n");
     }
     private static async Task VerifyFeedbackPreferencesAsync(MainWindow window, DynexRuntime runtime)
     {
@@ -729,8 +747,10 @@ internal static class DesktopLifecycle
         await WaitFor(() => runtime.Snapshot is { SharedDownloadBudgetMbps: 90, ParticipantCount: 2, GamingCount: 1,
             SharedCapacityMbps: 150, SharedBudgetComplete: true, ConfirmedParticipantCount: 1 });
         var budgetLabel = (System.Windows.Controls.TextBlock)window.FindName("SharedBudgetText");
+        var automaticBudget = (System.Windows.Controls.TextBlock)window.FindName("AutomaticBudgetText");
         var coordinationLabel = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
-        if (!budgetLabel.Text.Contains($"{90:0.0} Mbit/s insgesamt") || !coordinationLabel.Text.Contains("1/2 Geräten bestätigt"))
+        if (!budgetLabel.Text.Contains($"{90:0.0} Mbit/s insgesamt") || automaticBudget.Text != $"{90:0.##} Mbit/s · automatisch" ||
+            !coordinationLabel.Text.Contains("1/2 Geräten bestätigt"))
             throw new Exception("Gemeinsames Budget oder bestätigte Filteranzahl fehlen in der Oberfläche.");
         var grid = (System.Windows.Controls.DataGrid)window.FindName("DeviceGrid");
         string Cell(string property)

@@ -337,8 +337,8 @@ foreach (var peerFeedback in new[] { false, true })
     Check(noBaselineDecision.DownloadLimitMbps == 25 && !noBaselineDecision.AdaptiveReduced,
         $"manual {(peerFeedback ? "peer" : "local")} adaptation still requires a valid baseline");
 }
-// Each consumer adapts only its assigned share of the original common maximum.
-var commonSettings = settings with { SharedDownloadMaximumMbps = 25 };
+// Each consumer adapts only its assigned share of the automatic measured-capacity budget.
+var commonSettings = settings;
 for (var downloaders = 1; downloaders <= 3; downloaders++)
 {
     var ids = Enumerable.Range(0, downloaders).Select(_ => Guid.NewGuid()).ToArray();
@@ -350,16 +350,16 @@ for (var downloaders = 1; downloaders <= 3; downloaders++)
         {
             var t = sample * 5;
             var peers = ids.Where(other => other != id).Select(other => new PeerAdvertisement(other, "Downloader", false,
-                80, 20, origin.AddSeconds(t), ShareWeight: 1, LimitedDownloadMbps: 25)).Append(
+                80, 20, origin.AddSeconds(t), ShareWeight: 1, LimitedDownloadMbps: 120)).Append(
                 Gamer(t, sample + 1) with { ShareWeight = 1, LimitedDownloadMbps = 0 }).ToArray();
-            decision = adaptive.Plan(false, peers, Local(t, 80) with { LimitedDownloadMbps = 25 }, origin.AddSeconds(t));
+            decision = adaptive.Plan(false, peers, Local(t, 80) with { LimitedDownloadMbps = 120 }, origin.AddSeconds(t));
         }
         plans.Add(decision);
     }
-    Check(plans.All(p => p.AdaptiveReduced && p.SharedDownloadBudgetMbps == 25 && p.DownloadParticipantCount == downloaders),
-        $"{downloaders} consumers adapt allocated shares without modifying or duplicating the original shared maximum");
-    Check(plans.Sum(p => p.DownloadLimitMbps) <= 21.25 && plans.All(p => p.DownloadLimitMbps <= 25d / downloaders),
-        $"{downloaders} adaptive consumers cannot overdraw the 25 Mbps common pool");
+    Check(plans.All(p => p.AdaptiveReduced && p.SharedDownloadBudgetMbps == 120 && p.DownloadParticipantCount == downloaders),
+        $"{downloaders} consumers adapt allocated shares without modifying or duplicating the automatic measured-capacity budget");
+    Check(plans.Sum(p => p.DownloadLimitMbps) <= 102 && plans.All(p => p.DownloadLimitMbps <= 120d / downloaders),
+        $"{downloaders} adaptive consumers cannot overdraw the 120 Mbps automatic pool");
 }
 var gameOnlyLoad = new LimitPlanner(commonSettings);
 for (var sample = 0; sample < 3; sample++)
@@ -368,6 +368,6 @@ for (var sample = 0; sample < 3; sample++)
     decision = gameOnlyLoad.Plan(false, [Gamer(t, sample + 1) with { ShareWeight = 1, LimitedDownloadMbps = 0 }],
         Local(t, 115) with { LimitedDownloadMbps = 0 }, origin.AddSeconds(t));
 }
-Check(!decision.AdaptiveReduced && decision.DownloadLimitMbps == 25,
+Check(!decision.AdaptiveReduced && decision.DownloadLimitMbps == 120,
     "known zero classified bulk overrides high interface/game traffic as adaptation load evidence");
 Console.WriteLine($"{checks} adaptive checks passed; pure policy, no sockets, router or shaper changes.");

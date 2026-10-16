@@ -246,7 +246,6 @@ public sealed partial class DynexRuntime : IAsyncDisposable
         UploadCapacityMbps = Settings.CapacityMeasuredAtUtc is not null ? Settings.UploadCapacityMbps : null,
         LineMbps = Settings.CapacityMbps, HeadroomPercent = 100 - EffectiveBackgroundPercent(Settings),
         GamingReserveMbps = Settings.ReservePerGamerMbps, ManualDownloadLimitMbps = Settings.ManualLimitMbps,
-        SharedDownloadMaximumMbps = Settings.SharedDownloadMaximumMbps,
         AdaptiveEnabled = Settings.Adaptive, LoopbackOnly = isolated, Port = PeerPort, AppVersion = AppVersion, ShareWeight = Settings.SharePriority,
         // Test profiles may exercise real address editing/import, but must never send to that LAN.
         DirectPeers = isolated ? [] : SettingsStore.Split(Settings.DirectPeers).Select(ip => new IPEndPoint(IPAddress.Parse(ip), 39274)).ToArray()
@@ -489,7 +488,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
         var settings = Settings;
         var service = peers;
         var token = cancellation.Token;
-        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.UploadCapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.SharedDownloadMaximumMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
+        var policy = JsonSerializer.Serialize(new { settings.CapacityMbps, settings.UploadCapacityMbps, settings.CapacityMeasuredAtUtc, settings.BackgroundPercent, settings.ReservePerGamerMbps, settings.ManualLimitMbps, settings.Adaptive, settings.SharePriority, settings.RouterTarget, settings.ExternalTarget, settings.AutoConnectLan, Group = settings.AutoConnectLan ? "LAN" : Fingerprint() });
         if (activePlanner == null || plannerPolicy != policy)
         { activePlanner = new LimitPlanner(CoreSettings()); plannerPolicy = policy; }
         var planner = activePlanner;

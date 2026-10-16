@@ -227,7 +227,6 @@ public partial class MainWindow : Window
         foreach (var process in SettingsStore.Split(s.GameProcesses)) _configuredProcesses.Add(process);
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
         ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
-        SharedLimitBox.Text = s.SharedDownloadMaximumMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         UploadLimitCheck.IsChecked = s.UploadLimitEnabled;
         ManualUploadBox.Text = s.ManualUploadLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
@@ -257,7 +256,6 @@ public partial class MainWindow : Window
                 NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
                 WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                 ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
-                SharedDownloadMaximumMbps = ReadSharedLimit(),
                 GameProcesses = ConfiguredProcessesText, DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
@@ -421,7 +419,6 @@ public partial class MainWindow : Window
                 ExternalBox.Text.Trim() != saved.ExternalTarget ||
                 ((WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != saved.WeekendProfile ||
                 !MatchesLimit(ManualLimitBox.Text, saved.ManualLimitMbps) ||
-                !MatchesLimit(SharedLimitBox.Text, saved.SharedDownloadMaximumMbps) ||
                 !MatchesLimit(ManualUploadBox.Text, saved.ManualUploadLimitMbps);
         }
     }
@@ -551,6 +548,9 @@ public partial class MainWindow : Window
         // Effective capacity is a placeholder, never a stored manual maximum.
         ManualUploadBox.Tag = uploadCapacity?.ToString("0.##", CultureInfo.CurrentCulture) ?? "—";
         CapacityBox.Opacity = capacity.HasValue ? 1 : 0.6;
+        AutomaticBudgetText.Text = snapshot?.SharedDownloadBudgetMbps is { } pool
+            ? $"{pool:0.##} Mbit/s · automatisch"
+            : capacity.HasValue ? "Automatisch aus Speedtest" : "Wartet auf Speedtest";
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
         {
@@ -590,22 +590,6 @@ public partial class MainWindow : Window
         await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = value });
         ErrorText.Text = "Obergrenze gespeichert. Gilt bei bestätigtem Spiel-Netzwerkverkehr.";
     });
-    private async void SharedLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        var value = ReadSharedLimit();
-        await _runtime.SaveSettingsAsync(_runtime.Settings with { SharedDownloadMaximumMbps = value });
-        ErrorText.Text = value is { } rate
-            ? $"Gemeinsames Gaming-Budget: höchstens {rate:0.##} Mbit/s für alle aktiven Downloads."
-            : "Gemeinsames Gaming-Budget wird aus der Anschlussmessung berechnet.";
-    });
-    private double? ReadSharedLimit()
-    {
-        if (string.IsNullOrWhiteSpace(SharedLimitBox.Text)) return null;
-        if (_runtime.Settings.CapacityMeasuredAtUtc is null)
-            throw new ArgumentException("Für ein gemeinsames Downloadmaximum zuerst auf diesem PC den Anschluss messen. Dann wird die Obergrenze mit seinem Leitungsbudget an alle Geräte übertragen.");
-        return Number(SharedLimitBox.Text, "Gemeinsames Downloadbudget");
-    }
     private async void ClearLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
         EnsureNetworkEditContext();

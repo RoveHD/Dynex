@@ -14,7 +14,6 @@ public sealed record UserSettings
     public double BackgroundPercent { get; init; } = 65;
     public double ReservePerGamerMbps { get; init; } = 10;
     public double? ManualLimitMbps { get; init; }
-    public double? SharedDownloadMaximumMbps { get; init; }
     public bool Adaptive { get; init; } = true;
     public bool DriverEnabled { get; init; } = true;
     public bool AutoStart { get; init; } = true;

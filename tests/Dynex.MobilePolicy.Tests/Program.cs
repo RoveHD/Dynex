@@ -196,76 +196,76 @@ foreach (var seconds in new[] { 0, 5, 10 })
     var result = orderedPlanner.Plan(handset, ordered, Load(seconds), gamingDownloadLimitMbps: 25, now: now.AddSeconds(seconds));
     Near(result.DownloadLimitMbps, seconds == 10 ? 21.25 : 25, "peer order and ordinary heartbeats preserve the adaptive window: " + seconds);
 }
-var sharedGamer = pc with { BudgetProposal = new(200, 15, 12, 40, 25), LimitedDownloadMbps = 0 };
+var sharedGamer = pc with { BudgetProposal = new(80, 35, 4, 40), LimitedDownloadMbps = 0 };
 ProbeStats Bulk(double? value, int ageSeconds = 0) => new(now.AddSeconds(-ageSeconds), null, 99, false, "", value);
 MobileLimitDecision Shared(ProbeStats? load, params PeerAdvertisement[] devices) =>
     MobileLimitPolicy.Plan(handset, devices, now: now, localDownload: load);
 var onlyHandset = Shared(Bulk(24), sharedGamer);
-Near(onlyHandset.DownloadLimitMbps, 25, "one actual handset downloader receives the complete common 25 Mbps gaming maximum");
+Near(onlyHandset.DownloadLimitMbps, 48, "one actual handset downloader receives the complete automatic 48 Mbps gaming budget");
 Check(onlyHandset is { ParticipantCount: 2, DownloadParticipantCount: 1, DownloadActivityComplete: true,
-    SharedDownloadBudgetMbps: 25, SharedCapacityMbps: 200, ShareWeightTotal: 2, DownloadShareWeightTotal: 1,
+    SharedDownloadBudgetMbps: 48, SharedCapacityMbps: 80, ShareWeightTotal: 2, DownloadShareWeightTotal: 1,
     SharedUploadCapacityMbps: 40, SharedBudgetComplete: true }, "idle gamer is excluded only from download allocation; upload membership and measured capacities are preserved");
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = 12 }).DownloadLimitMbps, 12.5,
-    "two actual downloaders split the common 25 Mbps into 12.5 each");
-var otherDownloader = Peer(false) with { LimitedDownloadMbps = 8, BudgetProposal = new(200, 15, 12, 40, 25) };
+Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = 12 }).DownloadLimitMbps, 24,
+    "two actual downloaders split the common 48 Mbps into 24 each");
+var otherDownloader = Peer(false) with { LimitedDownloadMbps = 8, BudgetProposal = new(80, 35, 4, 40) };
 var secondHandset = otherDownloader with { BudgetProposal = null, LimitedDownloadMbps = 12 };
 var twoHandsets = Shared(Bulk(12), sharedGamer, secondHandset);
-Near(twoHandsets.DownloadLimitMbps, 12.5, "two downloading handsets share the measured PC's common maximum without inventing handset capacity");
+Near(twoHandsets.DownloadLimitMbps, 24, "two downloading handsets share the measured PC's automatic budget without inventing handset capacity");
 Check(twoHandsets is { SharedBudgetComplete: true, DownloadActivityComplete: true, ParticipantCount: 3, DownloadParticipantCount: 2 },
-    "measured PC and two activity-reporting consumer handsets confirm a complete shared maximum");
+    "measured PC and two activity-reporting consumer handsets confirm a complete automatic budget");
 var legacyHandset = Shared(Bulk(12), sharedGamer, secondHandset with { LimitedDownloadMbps = null });
-Near(legacyHandset.DownloadLimitMbps, 8.33, "unknown legacy handset activity retains a conservative three-participant share");
+Near(legacyHandset.DownloadLimitMbps, 16, "unknown legacy handset activity retains a conservative three-participant share");
 Check(!legacyHandset.SharedBudgetComplete && !legacyHandset.DownloadActivityComplete,
-    "legacy handset with unknown activity cannot confirm complete enforcement of the shared maximum");
-Near(Shared(Bulk(8), sharedGamer with { LimitedDownloadMbps = 8 }, otherDownloader).DownloadLimitMbps, 8.33,
-    "three active downloaders share the same maximum with conservative rounding");
-Near(Shared(Bulk(24), sharedGamer, otherDownloader with { LimitedDownloadMbps = 0 }).DownloadLimitMbps, 25,
-    "two idle peers leave the full common maximum to the only active handset");
-var idleHandset = Shared(Bulk(0), sharedGamer with { LimitedDownloadMbps = 25 });
-Near(idleHandset.DownloadLimitMbps, 12.5, "idle handset receives a prospective starting share beside one active PC");
+    "legacy handset with unknown activity cannot confirm complete enforcement of the automatic budget");
+Near(Shared(Bulk(8), sharedGamer with { LimitedDownloadMbps = 8 }, otherDownloader).DownloadLimitMbps, 16,
+    "three active downloaders share the same automatic budget with conservative rounding");
+Near(Shared(Bulk(24), sharedGamer, otherDownloader with { LimitedDownloadMbps = 0 }).DownloadLimitMbps, 48,
+    "two idle peers leave the full automatic budget to the only active handset");
+var idleHandset = Shared(Bulk(0), sharedGamer with { LimitedDownloadMbps = 48 });
+Near(idleHandset.DownloadLimitMbps, 24, "idle handset receives a prospective starting share beside one active PC");
 Check(idleHandset.DownloadParticipantCount == 2 && idleHandset.DownloadActivityComplete,
     "prospective idle share exposes its actual download denominator");
-Near(Shared(Bulk(0), sharedGamer).DownloadLimitMbps, 25, "all measured idle participants retain bounded prospective starts");
+Near(Shared(Bulk(0), sharedGamer).DownloadLimitMbps, 48, "all measured idle participants retain bounded prospective starts");
 foreach (var missingBulk in new double?[] { null, double.NaN, -1, double.PositiveInfinity })
 {
     var fallback = Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = missingBulk });
-    Near(fallback.DownloadLimitMbps, 12.5, "legacy or invalid peer bulk telemetry falls back to all participants: " + missingBulk);
-    Check(!fallback.DownloadActivityComplete && !fallback.SharedBudgetComplete && fallback.DownloadShareWeightTotal == 2,
+    Near(fallback.DownloadLimitMbps, 24, "legacy or invalid peer bulk telemetry falls back to all participants: " + missingBulk);
+    Check(!fallback.DownloadActivityComplete && fallback.DownloadShareWeightTotal == 2,
         "unknown peer activity is explicitly incomplete rather than treated as idle");
 }
 foreach (var load in new ProbeStats?[] { null, Bulk(null), Bulk(0, 10), Bulk(0, 11) })
 {
     var fallback = Shared(load, sharedGamer);
-    Near(fallback.DownloadLimitMbps, 12.5, "unknown or expired local bulk probe conservatively includes every participant");
-    Check(!fallback.DownloadActivityComplete && !fallback.SharedBudgetComplete, "expired or missing local activity cannot claim a complete active set");
+    Near(fallback.DownloadLimitMbps, 24, "unknown or expired local bulk probe conservatively includes every participant");
+    Check(!fallback.DownloadActivityComplete, "expired or missing local activity cannot claim a complete active set");
 }
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .05 }).DownloadLimitMbps, 25,
+Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .05 }).DownloadLimitMbps, 48,
     "bulk activity must exceed 0.05 Mbps to count as an active downloader");
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .051 }).DownloadLimitMbps, 12.5,
-    "bulk activity above the explicit threshold joins the shared maximum");
+Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .051 }).DownloadLimitMbps, 24,
+    "bulk activity above the explicit threshold joins the automatic budget");
 Near(MobileLimitPolicy.Plan(handset, [sharedGamer], gamingDownloadLimitMbps: 20, now: now, localDownload: Bulk(24)).DownloadLimitMbps, 20,
     "handset manual maximum remains local and cannot increase its shared allocation");
-Near(MobileLimitPolicy.Plan(handset, [sharedGamer with { LimitedDownloadMbps = 12 }], gamingDownloadLimitMbps: 20,
-    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 12.5, "handset local maximum does not replace the common pool");
+Near(MobileLimitPolicy.Plan(handset, [sharedGamer with { LimitedDownloadMbps = 12 }], gamingDownloadLimitMbps: 30,
+    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 24, "handset local maximum does not replace the common pool");
 Near(MobileLimitPolicy.Plan(handset, [sharedGamer with { LimitedDownloadMbps = 12, ShareWeight = 2 }], shareWeight: 1,
-    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 8.33, "active download priority uses the Core weighted allocation");
-Near(Shared(Bulk(24), sharedGamer, otherDownloader with { BudgetProposal = new(200, 15, 12, 40, 10), LimitedDownloadMbps = 0 }).DownloadLimitMbps,
-    10, "lowest original authenticated common maximum wins independently of an idle proposer's activity");
+    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 16, "active download priority uses the Core weighted allocation");
+Near(Shared(Bulk(24), sharedGamer, otherDownloader with { BudgetProposal = new(20, 50, 0, 40), LimitedDownloadMbps = 0 }).DownloadLimitMbps,
+    10, "lowest original authenticated capacity/profile pool wins independently of an idle proposer's activity");
 Check(Shared(Bulk(24), sharedGamer with { IsGaming = false }).DownloadLimitMbps is null,
-    "common maximum remains gaming-only and does not create a permanent mobile limit");
+    "automatic budget remains gaming-only and does not create a permanent mobile limit");
 foreach (var mode in new[] { "paused", "disabled", "no wifi", "capacity missing" })
 {
     var gated = new MobileLimitPlanner().Plan(handset,
         [mode == "capacity missing" ? sharedGamer with { BudgetProposal = null } : sharedGamer], Bulk(24),
         paused: mode == "paused", autoConnect: mode != "disabled", wifiConnected: mode != "no wifi", now: now);
-    Check(gated.DownloadLimitMbps is null, "shared maximum preserves mobile protection release gate: " + mode);
+    Check(gated.DownloadLimitMbps is null, "automatic budget preserves mobile protection release gate: " + mode);
 }
 var sharedAdaptive = new MobileLimitPlanner();
 foreach (var seconds in new[] { 0, 5, 10 })
 {
     var result = sharedAdaptive.Plan(handset, [Feedback(seconds) with { BudgetProposal = sharedGamer.BudgetProposal, LimitedDownloadMbps = 0 }],
-        Bulk(24) with { TimestampUtc = now.AddSeconds(seconds) }, now: now.AddSeconds(seconds));
-    Near(result.DownloadLimitMbps, seconds == 10 ? 21.25 : 25, "mobile adaptation and allocation use the same current bulk-active share: " + seconds);
+        Bulk(48) with { TimestampUtc = now.AddSeconds(seconds) }, now: now.AddSeconds(seconds));
+    Near(result.DownloadLimitMbps, seconds == 10 ? 40.79 : 48, "mobile adaptation conservatively rounds its automatic bulk-active share: " + seconds);
     Check(result.DownloadParticipantCount == 1 && result.DownloadActivityComplete,
         "stateful mobile wrapper preserves Core download activity metadata");
 }

@@ -110,6 +110,33 @@
       <Setter Property="FontSize" Value="{DynamicResource UiBodyFontSize}" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
+    <Style TargetType="ToolTip">
+      <Setter Property="Background" Value="#202833" />
+      <Setter Property="Foreground" Value="#F2F2F4" />
+      <Setter Property="BorderBrush" Value="#536075" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="FontFamily" Value="Segoe UI" />
+      <Setter Property="FontSize" Value="{DynamicResource UiSmallFontSize}" />
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="MaxWidth" Value="360" />
+      <Setter Property="HasDropShadow" Value="False" />
+      <Setter Property="VerticalOffset" Value="8" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToolTip">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="4" SnapsToDevicePixels="True">
+              <ContentPresenter>
+                <ContentPresenter.Resources>
+                  <DataTemplate DataType="{x:Type sys:String}">
+                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToolTip}}" FontSize="{Binding FontSize, RelativeSource={RelativeSource AncestorType=ToolTip}}" />
+                  </DataTemplate>
+                </ContentPresenter.Resources>
+              </ContentPresenter>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="Button">
       <Setter Property="Foreground" Value="#F4F6FA" />
       <Setter Property="Background" Value="#202833" />

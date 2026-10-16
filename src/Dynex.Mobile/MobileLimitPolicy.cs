@@ -44,12 +44,9 @@ public static class MobileLimitPolicy
         }).Plan(false, live, localDownload, at);
         var pool = core.SharedDownloadBudgetMbps;
         var downloadWeight = core.DownloadShareWeightTotal ?? core.ShareWeightTotal ?? core.ParticipantCount;
-        // With an explicit shared maximum, Core confirms measured activity from
-        // all participants, including consumers without a capacity proposal.
-        // Preserve the older PC-proposal completeness behavior for capacity-only LANs.
-        var hasSharedMaximum = live.Any(peer => peer.BudgetProposal is { IsValid: true, SharedDownloadMaximumMbps: not null });
-        var complete = hasSharedMaximum ? core.SharedBudgetComplete
-            : live.Length != 0 && live.All(peer => peer.BudgetProposal is { IsValid: true }) &&
+        // Current consumers share the measured PC pool without inventing capacity.
+        // Legacy peers can still establish a capacity pool via their original proposals.
+        var complete = core.SharedBudgetComplete || live.Length != 0 && live.All(peer => peer.BudgetProposal is { IsValid: true }) &&
                 (pool is null || pool * core.LocalShareWeight / downloadWeight >= .1);
         MobileLimitDecision Decision(double? rate, string reason) => new(rate, core.GamingActive, reason,
             pool, core.SharedCapacityMbps, core.ParticipantCount, core.GamingCount, complete,
