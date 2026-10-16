@@ -5,13 +5,17 @@ using System.Net.Sockets;
 
 namespace Dynex.Core;
 
-/// <summary>Automatic first-contact trust confined to on-link Windows private networks.</summary>
+/// <summary>Automatic first-contact trust confined to Windows private networks or an explicitly supplied platform scope.</summary>
 public sealed partial class AutoLanPeerService : IPeerService
 {
     private static readonly IPAddress Multicast = IPAddress.Parse("239.255.39.74");
     private readonly DynexSettings _settings;
     private readonly string _privateKey;
     private readonly Func<(AutoLanBinding[] Bindings, string? Error)> _readScope;
+    private readonly bool _subscribeNetworkChanges;
+    private readonly bool _lowPowerDiscovery;
+    private readonly SemaphoreSlim _discoverySignal = new(0, 1);
+    private int _scopeDiscoveryRequested;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly Dictionary<Guid, Session> _channels = new();
@@ -43,8 +47,29 @@ public sealed partial class AutoLanPeerService : IPeerService
     public AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64)
         : this(settings, signingPrivateKeyBase64, AutoLanNetworkScope.Read) { }
 
+    /// <summary>
+    /// Uses the same authenticated peer protocol on an explicitly approved active network.
+    /// The platform supplies its current Wi-Fi address/prefix/interface snapshot; return
+    /// AutoLanNetworkSnapshot.Empty when disconnected or permission/trust is unavailable.
+    /// Called on startup and every heartbeat, so the provider should return a cached snapshot.
+    /// No Windows profile, ARP dependency or global NetworkChange subscription is required.
+    /// lowPowerDiscovery limits unicast to an initial/requested/network-change
+    /// burst of at most 256 local-/24 targets, then waits without a polling timer.
+    /// </summary>
+    public AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64,
+        Func<AutoLanNetworkSnapshot> readNetworkScope, bool lowPowerDiscovery = false)
+        : this(settings, signingPrivateKeyBase64, PlatformScope(readNetworkScope), subscribeNetworkChanges: false,
+            lowPowerDiscovery: lowPowerDiscovery) { }
+
+    private static Func<(AutoLanBinding[] Bindings, string? Error)> PlatformScope(Func<AutoLanNetworkSnapshot> provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        return () => AutoLanNetworkScope.ReadProvided(provider);
+    }
+
     internal AutoLanPeerService(DynexSettings settings, string signingPrivateKeyBase64,
-        Func<(AutoLanBinding[] Bindings, string? Error)> readScope)
+        Func<(AutoLanBinding[] Bindings, string? Error)> readScope, bool subscribeNetworkChanges = true,
+        bool lowPowerDiscovery = false)
     {
         settings.Validate(false);
         if (AutoLanIdentity.GetDeviceId(signingPrivateKeyBase64) != settings.DeviceId)
@@ -52,6 +77,8 @@ public sealed partial class AutoLanPeerService : IPeerService
         _settings = settings with { DirectPeers = settings.DirectPeers.Select(p => new IPEndPoint(p.Address, p.Port)).ToArray() };
         _privateKey = signingPrivateKeyBase64;
         _readScope = readScope;
+        _subscribeNetworkChanges = subscribeNetworkChanges;
+        _lowPowerDiscovery = lowPowerDiscovery;
         _connectionProbe = new(settings, signingPrivateKeyBase64, IsExcluded);
     }
 
@@ -79,7 +106,7 @@ public sealed partial class AutoLanPeerService : IPeerService
                 RefreshScope(socket, true);
                 _socket = socket;
                 _stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                if (!_settings.LoopbackOnly)
+                if (!_settings.LoopbackOnly && _subscribeNetworkChanges)
                 { NetworkChange.NetworkAddressChanged += OnNetworkChanged; _subscribed = true; }
                 _tasks = [ReceiveLoopAsync(socket, _stop.Token), HeartbeatLoopAsync(socket, _stop.Token), DiscoveryLoopAsync(socket, _stop.Token)];
             }
@@ -140,7 +167,19 @@ public sealed partial class AutoLanPeerService : IPeerService
         }
     }
 
-    public void RequestDiscovery() => Interlocked.Exchange(ref _discoveryRequested, 1);
+    public void RequestDiscovery()
+    {
+        Interlocked.Exchange(ref _discoveryRequested, 1);
+        WakeDiscovery();
+    }
+
+    private void WakeDiscovery()
+    {
+        if (!_lowPowerDiscovery || _disposed) return;
+        try { _discoverySignal.Release(); }
+        catch (SemaphoreFullException) { }
+        catch (ObjectDisposedException) when (_disposed) { }
+    }
 
     private async Task ReceiveLoopAsync(Socket socket, CancellationToken token)
     {
@@ -327,6 +366,7 @@ public sealed partial class AutoLanPeerService : IPeerService
     private async Task DiscoveryLoopAsync(Socket socket, CancellationToken token)
     {
         if (_settings.LoopbackOnly) return; // Tests never probe the user's LAN.
+        if (_lowPowerDiscovery) { await LowPowerDiscoveryLoopAsync(socket, token).ConfigureAwait(false); return; }
         var sweep = new AutoLanDiscovery();
         var neighbors = new Queue<IPAddress>();
         AutoLanBinding[] previous = [];
@@ -376,6 +416,43 @@ public sealed partial class AutoLanPeerService : IPeerService
         catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
     }
 
+    private async Task LowPowerDiscoveryLoopAsync(Socket socket, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                // No periodic timer while idle: only a user request or an actual
+                // scope change wakes unicast discovery. Heartbeats stay separate.
+                await _discoverySignal.WaitAsync(token).ConfigureAwait(false);
+                var changed = Interlocked.Exchange(ref _scopeDiscoveryRequested, 0) != 0;
+                var requested = Interlocked.Exchange(ref _discoveryRequested, 0) != 0;
+                if (!_deviceNetworkEnabled || !changed && (!requested || _lastDiscoveryRequest != 0 &&
+                    Stopwatch.GetElapsedTime(_lastDiscoveryRequest) < TimeSpan.FromSeconds(10))) continue;
+                var bindings = Volatile.Read(ref _bindings);
+                if (bindings.Length == 0) continue;
+                var targets = AutoLanDiscovery.LocalBurst(bindings);
+                _lastDiscoveryRequest = Stopwatch.GetTimestamp();
+                byte[] hello;
+                lock (_gate) hello = _crypto!.Hello(DateTimeOffset.UtcNow);
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    if (!_deviceNetworkEnabled || !bindings.SequenceEqual(Volatile.Read(ref _bindings))) break;
+                    if (i != 0 && i % 8 == 0) await Task.Delay(250, token).ConfigureAwait(false);
+                    if (!EndpointAllowed(targets[i])) continue;
+                    try
+                    {
+                        await socket.SendToAsync(hello.AsMemory(), SocketFlags.None, new IPEndPoint(targets[i], _settings.Port), token).ConfigureAwait(false);
+                        Interlocked.Increment(ref _sent); Interlocked.Increment(ref _discoveryProbes);
+                    }
+                    catch (SocketException) { }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (token.IsCancellationRequested) { }
+    }
+
     private void RefreshScope(Socket socket, bool force)
     {
         if (_settings.LoopbackOnly) return;
@@ -388,6 +465,8 @@ public sealed partial class AutoLanPeerService : IPeerService
             try { socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.DropMembership, new MulticastOption(Multicast, binding.Address)); }
             catch (SocketException) { }
         Volatile.Write(ref _bindings, current);
+        if (force || !previous.SequenceEqual(current))
+        { Interlocked.Exchange(ref _scopeDiscoveryRequested, 1); WakeDiscovery(); }
         Volatile.Write(ref _networkStatus, error ?? Volatile.Read(ref _receiveError));
         foreach (var binding in current)
             try { socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.AddMembership, new MulticastOption(Multicast, binding.Address)); }
@@ -485,6 +564,7 @@ public sealed partial class AutoLanPeerService : IPeerService
         try { if (_disposed) return; _disposed = true; }
         finally { _lifecycle.Release(); }
         await StopAsync().ConfigureAwait(false);
+        _discoverySignal.Dispose();
     }
     private sealed record State(bool Gaming, double? Download, double? Latency, double? Limit, string? Game, bool Shaper,
         double? Baseline, string? Target, DateTimeOffset? BaselineAt, long SampleSequence, double? Upload, long PublishedAtTick, string? TopProgram = null);

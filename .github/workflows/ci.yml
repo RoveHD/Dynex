@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [Core, Update, UpdateLifecycle, Adaptive, SpeedTest]
+        suite: [Core, Update, UpdateLifecycle, Adaptive, SpeedTest, MobilePolicy, MobileRoutes, MobileProxy]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

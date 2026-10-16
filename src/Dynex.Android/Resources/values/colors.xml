@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="dynex_background">#090A0D</color>
+  <color name="dynex_surface">#111318</color>
+  <color name="dynex_surface_raised">#181A20</color>
+  <color name="dynex_line">#292B33</color>
+  <color name="dynex_accent">#C91F32</color>
+  <color name="dynex_accent_bright">#FF4655</color>
+  <color name="dynex_text">#F3F3F5</color>
+  <color name="dynex_muted">#9296A1</color>
+  <color name="dynex_success">#69C69A</color>
+</resources>

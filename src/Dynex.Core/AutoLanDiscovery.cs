@@ -18,6 +18,15 @@ internal sealed class AutoLanDiscovery
         _nextBinding = 0;
     }
 
+    internal static IReadOnlyList<IPAddress> LocalBurst(AutoLanBinding[] bindings)
+    {
+        // Narrow even a trusted /8 or /16 to its local /24 for battery-sensitive
+        // discovery. Next additionally excludes local, network and broadcast IPs.
+        var local = bindings.Select(binding => binding with
+            { Mask = Address(Number(binding.Mask) | 0xffffff00u) }).ToArray();
+        return new AutoLanDiscovery().Next(local, 256);
+    }
+
     internal IReadOnlyList<IPAddress> Next(AutoLanBinding[] bindings, int count)
     {
         if (!_bindings.SequenceEqual(bindings)) Reset(bindings);

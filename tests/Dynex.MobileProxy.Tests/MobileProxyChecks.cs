@@ -1,0 +1,492 @@
+using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using Dynex.Mobile;
+
+namespace Dynex.Mobile.Tests;
+
+public static class MobileProxyChecks
+{
+    public static async Task RunAsync(string[] args, Action<string>? output = null)
+    {
+        Action<string> write = output ?? Console.WriteLine;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var token = deadline.Token;
+        var checks = 0;
+        void Check(bool value, string label)
+        {
+            if (!value) throw new InvalidOperationException("FAIL: " + label);
+            checks++;
+            write("PASS: " + label);
+        }
+
+        async Task ExpectFailure<T>(Func<Task> action, string label) where T : Exception
+        {
+            try { await action(); }
+            catch (T) { Check(true, label); return; }
+            throw new InvalidOperationException("FAIL: " + label);
+        }
+
+        async Task WaitUntil(Func<bool> condition)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            while (!condition()) await Task.Delay(10, timeout.Token);
+        }
+
+        async Task<Socket> Auth(LocalSocksProxy proxy, bool valid = true)
+        {
+            var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                await client.ConnectAsync(IPAddress.Loopback, proxy.Port, token);
+                await Send(client, [5, 1, 2]);
+                Check((await Read(client, 2)).SequenceEqual(new byte[] { 5, 2 }), "RFC1929 method selected");
+                var user = Encoding.ASCII.GetBytes(proxy.Username);
+                var pass = Encoding.ASCII.GetBytes(valid ? proxy.Password : "invalid");
+                await Send(client, [1, (byte)user.Length, .. user, (byte)pass.Length, .. pass]);
+                Check((await Read(client, 2)).SequenceEqual(new byte[] { 1, valid ? (byte)0 : (byte)1 }),
+                    valid ? "random credentials accepted" : "wrong credentials rejected");
+                return client;
+            }
+            catch { client.Dispose(); throw; }
+        }
+
+        async Task Send(Socket socket, byte[] data)
+        {
+            var remaining = data.AsMemory();
+            while (!remaining.IsEmpty)
+            {
+                var sent = await socket.SendAsync(remaining, SocketFlags.None, token);
+                if (sent == 0) throw new EndOfStreamException();
+                remaining = remaining[sent..];
+            }
+        }
+
+        async Task<byte[]> Read(Socket socket, int length)
+        {
+            var data = new byte[length];
+            var offset = 0;
+            while (offset < length)
+            {
+                var size = await socket.ReceiveAsync(data.AsMemory(offset), SocketFlags.None, token);
+                if (size == 0) throw new EndOfStreamException();
+                offset += size;
+            }
+            return data;
+        }
+
+        async Task<bool> Closed(Socket socket)
+        {
+            try { return await socket.ReceiveAsync(new byte[1], SocketFlags.None, token) == 0; }
+            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted) { return true; }
+        }
+
+        byte[] AddressBytes(IPEndPoint endpoint)
+        {
+            var address = endpoint.Address.GetAddressBytes();
+            return [address.Length == 4 ? (byte)1 : (byte)4, .. address, (byte)(endpoint.Port >> 8), (byte)endpoint.Port];
+        }
+
+        async Task<(byte Code, IPEndPoint Endpoint)> Reply(Socket client)
+        {
+            var header = await Read(client, 4);
+            Check(header[0] == 5 && header[2] == 0 && header[3] is 1 or 4, "valid SOCKS reply framing");
+            var address = await Read(client, header[3] == 1 ? 4 : 16);
+            var port = await Read(client, 2);
+            return (header[1], new IPEndPoint(new IPAddress(address), BinaryPrimitives.ReadUInt16BigEndian(port)));
+        }
+
+        async Task<Socket> Connect(LocalSocksProxy proxy, IPEndPoint target, string? hostname = null)
+        {
+            var client = await Auth(proxy);
+            try
+            {
+                byte[] address = hostname is null ? AddressBytes(target)
+                    : [3, (byte)hostname.Length, .. Encoding.ASCII.GetBytes(hostname), (byte)(target.Port >> 8), (byte)target.Port];
+                await Send(client, [5, 1, 0, .. address]);
+                Check((await Reply(client)).Code == 0, "CONNECT succeeded");
+                return client;
+            }
+            catch { client.Dispose(); throw; }
+        }
+
+        async Task<(Socket Control, Socket Client, IPEndPoint Relay)> Associate(LocalSocksProxy proxy)
+        {
+            var control = await Auth(proxy);
+            var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            udp.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            await Send(control, [5, 3, 0, .. AddressBytes((IPEndPoint)udp.LocalEndPoint!)]);
+            var response = await Reply(control);
+            Check(response.Code == 0 && IPAddress.IsLoopback(response.Endpoint.Address), "UDP relay bound exclusively to loopback");
+            return (control, udp, response.Endpoint);
+        }
+
+        async Task<byte[]> UdpReceive(Socket socket, int timeoutMs = 3000)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(timeoutMs);
+            var buffer = new byte[65535];
+            var result = await socket.ReceiveFromAsync(buffer, SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), timeout.Token);
+            return buffer[..result.ReceivedBytes];
+        }
+
+        Check(!LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("192.168.1.5"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("10.2.3.4"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("172.31.1.1"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("169.254.2.2"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.IPv6Loopback, 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("fd00::1"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("fe80::1"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("::ffff:192.168.1.5"), 443))
+            && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("1.1.1.1"), 53)), "LAN and DNS bypass policy covers IPv4, IPv6 and mapped addresses");
+        Check(LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("8.8.8.8"), 443))
+            && LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("2606:4700::1111"), 443)), "public destinations are shaped (classification only; no WAN traffic)");
+
+        using (var limiter = new DownloadRateLimiter(1024))
+        {
+            limiter.SetLimit(1024);
+            var watch = Stopwatch.StartNew();
+            await Task.WhenAll(limiter.WaitAsync(512, token).AsTask(), limiter.WaitAsync(512, token).AsTask());
+            Check(watch.Elapsed.TotalSeconds >= .85 && watch.Elapsed.TotalSeconds < 3, "aggregate token bucket limits two waiters to shared rate");
+            limiter.SetLimit(1);
+            var waiting = limiter.WaitAsync(1024, token).AsTask();
+            Check(!waiting.IsCompleted, "low-rate download remains pending");
+            limiter.SetLimit(null);
+            await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+            Check(true, "switching to unlimited wakes pending download promptly");
+            limiter.SetLimit(1);
+            waiting = limiter.WaitAsync(1024, token).AsTask();
+            limiter.SetLimit(1024 * 1024);
+            await waiting.WaitAsync(TimeSpan.FromSeconds(1));
+            Check(true, "increasing rate wakes a pending deadline promptly");
+            limiter.SetLimit(1);
+            using var cancelled = new CancellationTokenSource();
+            var first = limiter.WaitAsync(1024, cancelled.Token).AsTask();
+            var second = limiter.WaitAsync(1, token).AsTask();
+            cancelled.Cancel();
+            await ExpectFailure<OperationCanceledException>(() => first, "cancelled head leaves FIFO queue");
+            limiter.SetLimit(null);
+            await second.WaitAsync(TimeSpan.FromSeconds(1));
+            limiter.SetLimit(1);
+            waiting = limiter.WaitAsync(1024, token).AsTask();
+            limiter.Dispose();
+            await ExpectFailure<ObjectDisposedException>(() => waiting, "disposal releases a pending limiter wait");
+        }
+        using (var bounded = new DownloadRateLimiter(100, 1))
+        {
+            bounded.SetLimit(1);
+            using var cancel = new CancellationTokenSource();
+            var pending = bounded.WaitAsync(100, cancel.Token).AsTask();
+            await ExpectFailure<InvalidOperationException>(() => bounded.WaitAsync(1, token).AsTask(), "limiter queue has a hard bound");
+            cancel.Cancel();
+            await ExpectFailure<OperationCanceledException>(() => pending, "bounded limiter cleans up cancellation");
+            await ExpectFailure<ArgumentOutOfRangeException>(() => bounded.WaitAsync(101, token).AsTask(), "oversize reservation rejected");
+        }
+
+        var prepared = 0;
+        await using var proxy = new LocalSocksProxy(socket =>
+        {
+            Check(!socket.Connected && socket.LocalEndPoint is null, "outgoing socket prepared before connect/bind/send");
+            Interlocked.Increment(ref prepared);
+        }, resolveHost: (host, _) => host == "loopback.test" ? Task.FromResult(new[] { IPAddress.Loopback }) : throw new InvalidOperationException("Unexpected DNS query"));
+        var observedDownloads = 0;
+        proxy.DownloadObserved += () => Interlocked.Increment(ref observedDownloads);
+        await proxy.StartAsync(token);
+        Check(proxy.Port > 0 && proxy.Username.Length >= 16 && proxy.Password.Length >= 32, "random listener port and process credentials available");
+        await using (var other = new LocalSocksProxy(_ => { }))
+            Check(other.Username != proxy.Username && other.Password != proxy.Password, "independent proxy instances use independent credentials");
+        await using (var persisted = new LocalSocksProxy(_ => { }, username: "stable-user", password: "stable-password"))
+        {
+            await persisted.StartAsync(token);
+            Check(persisted.Username == "stable-user" && persisted.Password == "stable-password", "explicit persistent credentials preserved");
+            using var authenticated = await Auth(persisted);
+        }
+        await using (var occupied = new LocalSocksProxy(_ => { }, listenPort: proxy.Port))
+            await ExpectFailure<SocketException>(() => occupied.StartAsync(token), "occupied fixed port fails without a silent fallback");
+        await ExpectFailure<ArgumentException>(() => Task.FromResult(new LocalSocksProxy(_ => { }, username: "only-one")), "partial credential configuration rejected");
+        await ExpectFailure<ArgumentException>(() => Task.FromResult(new LocalSocksProxy(_ => { }, username: "user", password: "bad\npassword")), "control characters in persistent credentials rejected");
+        await ExpectFailure<ArgumentException>(() => Task.FromResult(new LocalSocksProxy(_ => { }, username: "user", password: new string('x', 256))), "RFC1929 credential length bounded");
+
+        using (var unauth = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+        {
+            await unauth.ConnectAsync(IPAddress.Loopback, proxy.Port, token);
+            await Send(unauth, [5, 1, 0]);
+            Check((await Read(unauth, 2)).SequenceEqual(new byte[] { 5, 255 }), "unauthenticated SOCKS method is refused");
+        }
+        using (var invalid = await Auth(proxy, false))
+            Check(await Closed(invalid), "failed authentication closes connection");
+        Check(prepared == 0, "authentication failures never create outbound sockets");
+        Check(observedDownloads == 0, "idle listener and authentication do not confirm forwarding");
+
+        var baselineListener = new TcpListener(IPAddress.Loopback, 0);
+        baselineListener.Start();
+        var halfCloseSupported = false;
+        using (var baselineClient = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp))
+        {
+            await baselineClient.ConnectAsync(baselineListener.LocalEndpoint, token);
+            using var baselineServer = await baselineListener.AcceptSocketAsync(token);
+            baselineClient.Shutdown(SocketShutdown.Send);
+            Check(await baselineServer.ReceiveAsync(new byte[1], SocketFlags.None, token) == 0, "baseline socket half-close arrives");
+            try
+            {
+                await Send(baselineServer, [42]);
+                halfCloseSupported = (await Read(baselineClient, 1))[0] == 42;
+            }
+            catch (Exception ex) when (ex is IOException or SocketException)
+            {
+                write($"SKIP: relay half-close assertions: direct socket baseline fails on this host ({ex.GetType().Name}).");
+            }
+        }
+        baselineListener.Stop();
+        if (args.Contains("--require-half-close")) Check(halfCloseSupported, "host must support direct TCP half-close");
+
+        foreach (var address in Socket.OSSupportsIPv6 ? new[] { IPAddress.Loopback, IPAddress.IPv6Loopback } : [IPAddress.Loopback])
+        {
+            var listener = new TcpListener(address, 0);
+            listener.Start();
+            try
+            {
+                var accepting = listener.AcceptSocketAsync(token).AsTask();
+                using var client = await Connect(proxy, (IPEndPoint)listener.LocalEndpoint);
+                using var remote = await accepting;
+                var payload = Encoding.ASCII.GetBytes("payload-" + address);
+                await Send(client, payload);
+                if (halfCloseSupported) client.Shutdown(SocketShutdown.Send);
+                Check((await Read(remote, payload.Length)).SequenceEqual(payload), $"{address} TCP upload forwarded");
+                if (halfCloseSupported) Check(await remote.ReceiveAsync(new byte[1], SocketFlags.None, token) == 0, "TCP send half-close reaches target");
+                await Send(remote, payload);
+                if (halfCloseSupported) remote.Shutdown(SocketShutdown.Send);
+                Check((await Read(client, payload.Length)).SequenceEqual(payload), "TCP download forwarded");
+                if (halfCloseSupported) Check(await client.ReceiveAsync(new byte[1], SocketFlags.None, token) == 0, "TCP response half-close reaches client");
+            }
+            finally { listener.Stop(); }
+        }
+
+        await WaitUntil(() => Volatile.Read(ref observedDownloads) == 1);
+        Check(proxy.DownloadBytes > 0 && observedDownloads == 1, "forwarded payload wakes status exactly once across multiple streams");
+        var dnsListener = new TcpListener(IPAddress.Loopback, 0);
+        dnsListener.Start();
+        try
+        {
+            var accepting = dnsListener.AcceptSocketAsync(token).AsTask();
+            using var client = await Connect(proxy, (IPEndPoint)dnsListener.LocalEndpoint, "loopback.test");
+            using var remote = await accepting;
+            Check(remote.Connected, "DNS CONNECT uses injected network-aware resolver");
+            proxy.ObserveNextDownload();
+            await Send(remote, [0x42]);
+            Check((await Read(client, 1))[0] == 0x42, "setup recheck observes newly forwarded payload");
+            await WaitUntil(() => Volatile.Read(ref observedDownloads) == 2);
+            Check(observedDownloads == 2, "setup can rearm one status wake without periodic polling");
+        }
+        finally { dnsListener.Stop(); }
+
+        using (var unsupported = await Auth(proxy))
+        {
+            await Send(unsupported, [5, 2, 0, .. AddressBytes(new(IPAddress.Loopback, 80))]);
+            Check((await Reply(unsupported)).Code == 7, "unsupported BIND command returns REP 7");
+        }
+        using (var malformed = await Auth(proxy))
+        {
+            await Send(malformed, [5, 1, 0, 9]);
+            Check((await Reply(malformed)).Code == 8, "unsupported address type returns REP 8 without hanging");
+        }
+        using (var malformed = await Auth(proxy))
+        {
+            await Send(malformed, [5, 1, 0, 3, 3, (byte)'a', 0, (byte)'b', 0, 80]);
+            Check((await Reply(malformed)).Code == 8, "NUL hostname is rejected");
+        }
+        await using (var protectedProxy = new LocalSocksProxy(_ => throw new InvalidOperationException("protect failed")))
+        {
+            await protectedProxy.StartAsync(token);
+            using var client = await Auth(protectedProxy);
+            await Send(client, [5, 1, 0, .. AddressBytes(new(IPAddress.Loopback, 9))]);
+            Check((await Reply(client)).Code != 0, "protection failure rejects CONNECT");
+        }
+
+        // The target is isolated loopback. Override only its shaping classification for rate tests.
+        await using (var limitedProxy = new LocalSocksProxy(_ => { }, shouldLimitDownload: _ => true))
+        {
+            await limitedProxy.StartAsync(token);
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var clients = new List<Socket>();
+            var remotes = new List<Socket>();
+            try
+            {
+                for (var i = 0; i < 2; i++)
+                {
+                    var accepting = listener.AcceptSocketAsync(token).AsTask();
+                    clients.Add(await Connect(limitedProxy, (IPEndPoint)listener.LocalEndpoint));
+                    remotes.Add(await accepting);
+                }
+                limitedProxy.SetDownloadLimit(65_536);
+                var watch = Stopwatch.StartNew();
+                var payload = new byte[65_536];
+                await Task.WhenAll(remotes.Select(remote => Send(remote, payload)));
+                await Task.WhenAll(clients.Select(client => Read(client, payload.Length)));
+                Check(watch.Elapsed.TotalSeconds >= 1.7 && watch.Elapsed.TotalSeconds < 5,
+                    "two TCP streams share a real aggregate 64 KiB/s download limit");
+                Check(limitedProxy.DownloadBytes == 131_072 && limitedProxy.UploadBytes == 0,
+                    "TCP counters include actual payload only, not authentication/framing");
+                limitedProxy.SetDownloadLimit(1);
+                await Send(clients[1], new byte[32_768]);
+                await Read(remotes[1], 32_768).WaitAsync(TimeSpan.FromSeconds(1));
+                Check(limitedProxy.UploadBytes == 32_768, "upload remains unlimited while download rate is one byte per second");
+                await Send(remotes[0], new byte[32_768]);
+                var pending = Read(clients[0], 32_768);
+                await Task.Delay(60, token);
+                Check(!pending.IsCompleted, "TCP relay blocks at reduced rate");
+                limitedProxy.SetDownloadLimit(null);
+                await pending.WaitAsync(TimeSpan.FromSeconds(1));
+                Check(true, "unlimited releases waiting TCP relay");
+                limitedProxy.SetDownloadLimit(1);
+                await Send(remotes[0], new byte[32_768]);
+                await limitedProxy.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                Check(limitedProxy.Port == 0 && limitedProxy.Snapshot().ActiveSessions == 0, "dispose cancels stalled TCP streams and closes listener");
+            }
+            finally
+            {
+                foreach (var client in clients) client.Dispose();
+                foreach (var remote in remotes) remote.Dispose();
+                listener.Stop();
+            }
+        }
+
+        await WaitUntil(() => proxy.Snapshot().ActiveSessions == 0);
+        var initial = proxy.Snapshot();
+        if (!args.Contains("--tcp-only"))
+        {
+        using (var baselineUdpServer = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+        using (var baselineUdpClient = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+        {
+            baselineUdpServer.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            baselineUdpClient.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            await baselineUdpClient.SendToAsync(new byte[] { 42 }, SocketFlags.None, baselineUdpServer.LocalEndPoint!, token);
+            Check((await UdpReceive(baselineUdpServer))[0] == 42, "baseline direct UDP works on host");
+        }
+        foreach (var address in Socket.OSSupportsIPv6 ? new[] { IPAddress.Loopback, IPAddress.IPv6Loopback } : [IPAddress.Loopback])
+        {
+            var association = await Associate(proxy);
+            using var control = association.Control;
+            using var client = association.Client;
+            using var target = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            target.Bind(new IPEndPoint(address, 0));
+            var targetAddress = (IPEndPoint)target.LocalEndPoint!;
+            var payload = Encoding.ASCII.GetBytes("udp-" + address);
+            await client.SendToAsync((byte[])[0, 0, 0, .. AddressBytes(targetAddress), .. payload], SocketFlags.None, association.Relay, token);
+            var buffer = new byte[1024];
+            var received = await target.ReceiveFromAsync(buffer, SocketFlags.None, new IPEndPoint(address.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any, 0), token);
+            Check(buffer[..received.ReceivedBytes].SequenceEqual(payload), $"UDP upload forwarded to {address}");
+            await target.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
+            var response = await UdpReceive(client);
+            Check(response.SequenceEqual((byte[])[0, 0, 0, .. AddressBytes(targetAddress), .. payload]), "UDP response carries true source address and payload");
+
+            using var attacker = new Socket(address.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            attacker.Bind(new IPEndPoint(address, 0));
+            await attacker.SendToAsync(new byte[] { 0x66 }, SocketFlags.None, received.RemoteEndPoint, token);
+            await ExpectFailure<OperationCanceledException>(() => UdpReceive(client, 100), "unsolicited UDP source-port cannot use authorized return route");
+
+            using var localAttacker = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            localAttacker.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            await localAttacker.SendToAsync((byte[])[0, 0, 0, .. AddressBytes(targetAddress), 0x77], SocketFlags.None, association.Relay, token);
+            await client.SendToAsync((byte[])[0, 0, 1, .. AddressBytes(targetAddress), 0x88], SocketFlags.None, association.Relay, token);
+            await client.SendToAsync(new byte[] { 0, 0, 0, 3, 255, 0x99 }, SocketFlags.None, association.Relay, token);
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                timeout.CancelAfter(100);
+                await ExpectFailure<OperationCanceledException>(async () => await target.ReceiveFromAsync(buffer, SocketFlags.None,
+                    new IPEndPoint(address.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any, 0), timeout.Token),
+                    "UDP rejects wrong local source, fragments and truncated host field");
+            }
+            // Earlier malformed datagrams must not break the established association.
+            await client.SendToAsync((byte[])[0, 0, 0, .. AddressBytes(targetAddress), 42], SocketFlags.None, association.Relay, token);
+            received = await target.ReceiveFromAsync(buffer, SocketFlags.None, new IPEndPoint(address.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any, 0), token);
+            await target.SendToAsync(new byte[] { 42 }, SocketFlags.None, received.RemoteEndPoint, token);
+            Check((await UdpReceive(client))[^1] == 42, "valid UDP traffic still flows after malformed inputs");
+        }
+        await WaitUntil(() => proxy.Snapshot().ActiveSessions == 0);
+        var final = proxy.Snapshot();
+        var expectedUdpPayload = Encoding.ASCII.GetByteCount("udp-" + IPAddress.Loopback) + 1
+            + (Socket.OSSupportsIPv6 ? Encoding.ASCII.GetByteCount("udp-" + IPAddress.IPv6Loopback) + 1 : 0);
+        Check(final.DownloadBytes - initial.DownloadBytes == expectedUdpPayload && final.UploadBytes - initial.UploadBytes == expectedUdpPayload,
+            "UDP counters exclude malformed/unauthorized traffic and SOCKS framing");
+
+        await using (var mixed = new LocalSocksProxy(_ => { }, shouldLimitDownload: _ => true))
+        {
+            await mixed.StartAsync(token);
+            var association = await Associate(mixed);
+            using var control = association.Control;
+            using var udpClient = association.Client;
+            using var udpTarget = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            udpTarget.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                var accepting = listener.AcceptSocketAsync(token).AsTask();
+                using var tcpClient = await Connect(mixed, (IPEndPoint)listener.LocalEndpoint);
+                using var tcpTarget = await accepting;
+                var payload = new byte[32_768];
+                await udpClient.SendToAsync((byte[])[0, 0, 0, .. AddressBytes((IPEndPoint)udpTarget.LocalEndPoint!), 42],
+                    SocketFlags.None, association.Relay, token);
+                var received = await udpTarget.ReceiveFromAsync(new byte[16], SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), token);
+                mixed.SetDownloadLimit(65_536);
+                var watch = Stopwatch.StartNew();
+                await Send(tcpTarget, payload);
+                await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
+                await Task.WhenAll(Read(tcpClient, payload.Length), UdpReceive(udpClient));
+                Check(watch.Elapsed.TotalSeconds >= .85 && watch.Elapsed.TotalSeconds < 4,
+                    "TCP and UDP downloads share the same aggregate byte budget");
+                mixed.SetDownloadLimit(1);
+                await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
+                var pending = UdpReceive(udpClient);
+                await Task.Delay(60, token);
+                Check(!pending.IsCompleted, "UDP payload waits at low download rate");
+                mixed.SetDownloadLimit(null);
+                await pending.WaitAsync(TimeSpan.FromSeconds(1));
+                Check(true, "unlimited promptly releases a pending UDP response");
+                mixed.SetDownloadLimit(1);
+                await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
+                await mixed.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+                Check(mixed.Snapshot().ActiveSessions == 0, "disposal cancels mixed UDP and TCP sessions");
+            }
+            finally { listener.Stop(); }
+        }
+        }
+        else write("SKIP: UDP tests explicitly excluded by --tcp-only (run default suite on a host with working UDP loopback).");
+
+        await using (var bounded = new LocalSocksProxy(_ => { }, maxSessions: 1))
+        {
+            await bounded.StartAsync(token);
+            using var first = await Auth(bounded);
+            using var extra = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            await extra.ConnectAsync(IPAddress.Loopback, bounded.Port, token);
+            Check(await Closed(extra), "active session count has a hard bound");
+            await bounded.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+            Check(bounded.Snapshot().ActiveSessions == 0, "dispose cancels incomplete authenticated handshake");
+        }
+
+        await using (var hangingDns = new LocalSocksProxy(_ => { }, resolveHost: (_, _) => new TaskCompletionSource<IPAddress[]>().Task))
+        {
+            await hangingDns.StartAsync(token);
+            using var client = await Auth(hangingDns);
+            await Send(client, [5, 1, 0, 3, 1, (byte)'a', 0, 80]);
+            await hangingDns.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+            Check(true, "disposal cannot hang on a platform resolver ignoring cancellation");
+        }
+        await using (var udpControlProxy = new LocalSocksProxy(_ => { }))
+        {
+            await udpControlProxy.StartAsync(token);
+            var association = await Associate(udpControlProxy);
+            using var control = association.Control;
+            using var udp = association.Client;
+            await udpControlProxy.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+            Check(udpControlProxy.Snapshot().ActiveSessions == 0, "UDP association control and pending receive cancel on disposal");
+        }
+
+        write($"{checks} executed mobile proxy checks passed. TCP half-close {(halfCloseSupported ? "included" : "blocked by direct host baseline")}; UDP {(args.Contains("--tcp-only") ? "explicitly excluded" : "included")}. No WAN traffic or VPN/filter was started.");
+    }
+}

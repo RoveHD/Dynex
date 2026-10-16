@@ -14,6 +14,12 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name);
 }
 void Near(double? actual, double expected, string name) => Check(actual is { } d && Math.Abs(d - expected) < 0.02, name);
+if (args.Contains("--mobile-network-scope"))
+{
+    await MobileNetworkScopeTests.Run(Check);
+    Console.WriteLine($"{checks} mobile network scope checks passed; UDP integration ran on loopback only.");
+    return;
+}
 if (args.Contains("--peer-connections"))
 {
     await PeerConnectionTests.Run(Check);
@@ -276,6 +282,7 @@ await using (var observer = new PeerService(aSettings with
     Check(observer.Snapshot().Single() is { IsGaming: true, DownloadMbps: 1, BudgetProposal: null },
         "fresh unmeasured PSK peer publishes gaming and throughput without a default budget proposal");
 }
+await MobileNetworkScopeTests.Run(Check);
 await AutoLanTests.Run(Check);
 await ConnectionAdviceTests.Run(Check);
 LimitExplanationTests.Run(Check);

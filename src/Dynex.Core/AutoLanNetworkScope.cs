@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -6,6 +7,61 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
 namespace Dynex.Core;
+
+/// <summary>One explicitly trusted active IPv4 Wi-Fi/LAN address, its on-link prefix and OS interface index.</summary>
+public sealed record AutoLanNetworkBinding(IPAddress Address, int PrefixLength, int InterfaceIndex);
+
+/// <summary>
+/// Immutable, bounded scope supplied by a platform adapter. Supply only the app's
+/// explicitly approved active network; this does not infer trust from an address.
+/// An empty snapshot immediately closes discovery and acceptance on the next heartbeat.
+/// </summary>
+public sealed class AutoLanNetworkSnapshot
+{
+    private readonly AutoLanBinding[] _bindings;
+    public static AutoLanNetworkSnapshot Empty { get; } = new([]);
+    public int BindingCount => _bindings.Length;
+
+    public AutoLanNetworkSnapshot(IEnumerable<AutoLanNetworkBinding> bindings)
+    {
+        ArgumentNullException.ThrowIfNull(bindings);
+        var supplied = bindings.Take(17).ToArray();
+        if (supplied.Length > 16) throw new ArgumentException("Höchstens 16 AutoLAN-Netzwerkadressen sind erlaubt.", nameof(bindings));
+        var validated = new List<AutoLanBinding>();
+        foreach (var binding in supplied)
+        {
+            if (binding is null || binding.Address is null || binding.Address.AddressFamily != AddressFamily.InterNetwork ||
+                binding.PrefixLength is < 8 or > 30 || binding.InterfaceIndex <= 0)
+                throw new ArgumentException("AutoLAN benötigt eine private IPv4-Hostadresse, Präfix /8 bis /30 und einen positiven Interfaceindex.", nameof(bindings));
+            var address = new IPAddress(binding.Address.GetAddressBytes());
+            var value = BinaryPrimitives.ReadUInt32BigEndian(address.GetAddressBytes());
+            var mask = uint.MaxValue << (32 - binding.PrefixLength);
+            var network = value & mask;
+            var broadcast = network | ~mask;
+            // The entire prefix must stay inside one RFC1918 block. A private
+            // host with an overly broad mask must never grant public IP scope.
+            var privatePrefix = value >> 24 == 10 && binding.PrefixLength >= 8 ||
+                value >> 20 == 0xac1 && binding.PrefixLength >= 12 ||
+                value >> 16 == 0xc0a8 && binding.PrefixLength >= 16;
+            if (!privatePrefix || value == network || value == broadcast)
+                throw new ArgumentException("AutoLAN-Netzwerkadresse oder Präfix liegt außerhalb eines privaten Hostnetzes.", nameof(bindings));
+            var bytes = new byte[4]; BinaryPrimitives.WriteUInt32BigEndian(bytes, mask);
+            var current = new AutoLanBinding(address, new(bytes), binding.InterfaceIndex);
+            if (validated.Contains(current)) continue;
+            if (validated.Any(previous => previous.Address.Equals(current.Address) ||
+                previous.InterfaceIndex != current.InterfaceIndex && (previous.Contains(current.Address) || current.Contains(previous.Address))))
+                throw new ArgumentException("Widersprüchliche AutoLAN-Adressen oder überlappende Schnittstellen.", nameof(bindings));
+            validated.Add(current);
+        }
+        // OS adapters may enumerate identical addresses in a different order.
+        // This must not masquerade as a scope change and restart mobile bursts.
+        _bindings = validated.OrderBy(binding => binding.InterfaceIndex)
+            .ThenBy(binding => BinaryPrimitives.ReadUInt32BigEndian(binding.Address.GetAddressBytes())).ToArray();
+    }
+
+    internal AutoLanBinding[] CopyBindings() => _bindings.Select(binding => new AutoLanBinding(
+        new(binding.Address.GetAddressBytes()), new(binding.Mask.GetAddressBytes()), binding.InterfaceIndex)).ToArray();
+}
 
 internal sealed record AutoLanBinding(IPAddress Address, IPAddress Mask, int InterfaceIndex)
 {
@@ -29,6 +85,19 @@ internal sealed record AutoLanBinding(IPAddress Address, IPAddress Mask, int Int
 internal static class AutoLanNetworkScope
 {
     internal sealed record Candidate(Guid? AdapterId, string Name, AutoLanBinding Binding);
+
+    internal static (AutoLanBinding[] Bindings, string? Error) ReadProvided(Func<AutoLanNetworkSnapshot> provider)
+    {
+        try
+        {
+            var snapshot = provider();
+            if (snapshot is null) return ([], "AutoLAN-Netzwerkfreigabe fehlt.");
+            var bindings = snapshot.CopyBindings();
+            return bindings.Length == 0 ? ([], "Keine aktive, explizit freigegebene AutoLAN-Netzwerkverbindung.") : (bindings, null);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        { return ([], "AutoLAN-Netzwerkfreigabe nicht verfügbar (" + error.GetType().Name + ")."); }
+    }
 
     internal static (AutoLanBinding[] Bindings, string? Error) Read()
     {
