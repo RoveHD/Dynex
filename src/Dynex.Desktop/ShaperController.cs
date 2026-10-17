@@ -33,6 +33,11 @@ internal sealed class ShaperController : IAsyncDisposable
     private bool startAttempted, captureReleased;
     private long nextCommandId, pendingReleaseId;
     private string? releaseFailure;
+    private string? terminationReason;
+    private bool connectionEnded, recoveryAvailable;
+    private int recoveryAttempts;
+    private long pendingCommandId;
+    private TaskCompletionSource<bool>? pendingAcknowledgement;
     private ShaperStatus status = new(false, null, "Downloadbegrenzung ausgeschaltet");
     private long lastStatus;
     private Dictionary<GameTrafficIdentity, long> activeGameExpirations = [];
@@ -60,7 +65,7 @@ internal sealed class ShaperController : IAsyncDisposable
         lock (sync) if (releaseFailure is not null) { Set(new(false, null, releaseFailure)); return; }
         // One attempt per explicit enable/app lifecycle. A refused UAC prompt or
         // failed helper must not be retried by every monitoring heartbeat.
-        lock (sync) { if (startAttempted) return; startAttempted = true; }
+        lock (sync) { if (startAttempted) return; startAttempted = true; terminationReason = null; }
         if (pipe != null) return;
         if (process is not null)
         {
@@ -75,7 +80,11 @@ internal sealed class ShaperController : IAsyncDisposable
         if (!PacketFilterSetup.IsInstalled)
         { Set(new(false, null, "Downloadbegrenzung bitte einmal einrichten.")); return; }
         var pipeName = "DYNEX-" + Guid.NewGuid().ToString("N");
-        lock (sync) { captureRequested = false; shutdownConfirmed = false; captureReleased = false; pendingReleaseId = 0; }
+        lock (sync)
+        {
+            captureRequested = false; shutdownConfirmed = false; captureReleased = false; pendingReleaseId = 0;
+            connectionEnded = false; terminationReason = null; recoveryAvailable = false;
+        }
         Volatile.Write(ref stopping, 0);
         pipe = new(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         cancellation = new CancellationTokenSource();
@@ -107,7 +116,31 @@ internal sealed class ShaperController : IAsyncDisposable
         Func<bool>? applicationRulesStillNeeded = null)
     {
         var rules = ApplicationRules.Normalize(appRules).Where(r => r.Enabled).ToArray();
-        if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue || observeGameTraffic || rules.Length != 0) && !StartAttempted) await StartAsync();
+        // A helper can deliberately fail open (watchdog/network change). Dispose
+        // that connection first, then allow one fresh authenticated start only
+        // after both native release and process exit have been confirmed.
+        bool ended;
+        lock (sync) ended = connectionEnded;
+        if (ended && writer is not null) await StopAsync(resetStartAttempt: false);
+        var wantsCapture = mbps.HasValue || qosEnabled || uploadMbps.HasValue || observeGameTraffic || rules.Length != 0;
+        bool canRecover;
+        lock (sync) canRecover = wantsCapture && recoveryAvailable && recoveryAttempts == 0 &&
+            releaseFailure is null && shutdownConfirmed && process is null;
+        var recoveryStillNeeded = canRecover &&
+            (((mbps.HasValue || qosEnabled || uploadMbps.HasValue) && protectionStillNeeded?.Invoke() != false) ||
+             (observeGameTraffic && observationStillNeeded?.Invoke() != false) ||
+             (rules.Length != 0 && applicationRulesStillNeeded?.Invoke() != false));
+        lock (sync)
+        {
+            if (wantsCapture && recoveryStillNeeded && recoveryAvailable && recoveryAttempts == 0 && releaseFailure is null &&
+                shutdownConfirmed && process is null)
+            {
+                recoveryAttempts++;
+                recoveryAvailable = false;
+                startAttempted = false;
+            }
+        }
+        if (wantsCapture && !StartAttempted) await StartAsync();
         // UAC/connection setup can take seconds. Recheck live foreground/peer
         // state before activating capture instead of using the pre-prompt state.
         if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue) && protectionStillNeeded?.Invoke() == false)
@@ -126,6 +159,7 @@ internal sealed class ShaperController : IAsyncDisposable
             {
                 if (writer == null || Volatile.Read(ref stopping) != 0) return;
                 long commandId;
+                TaskCompletionSource<bool> acknowledgement;
                 lock (sync)
                 {
                     commandId = ++nextCommandId;
@@ -139,12 +173,20 @@ internal sealed class ShaperController : IAsyncDisposable
                         if (pendingReleaseId == 0) pendingReleaseId = commandId;
                         else commandId = pendingReleaseId;
                     }
+                    pendingCommandId = commandId;
+                    acknowledgement = pendingAcknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
                 await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps, uploadMbps, protectedProcesses, qosEnabled,
                     observeGameTraffic, applicationRules = rules.Select(r => new { processName = r.ProcessName,
                         downloadMbps = r.DownloadMbps, uploadMbps = r.UploadMbps }), commandId }).AsMemory(), timeout.Token);
+                if (!await acknowledgement.Task.WaitAsync(timeout.Token))
+                    throw new IOException("Der Download-Helfer wurde vor der Befehlsbestätigung beendet.");
             }
-            finally { writeGate.Release(); }
+            finally
+            {
+                lock (sync) { pendingAcknowledgement = null; pendingCommandId = 0; }
+                writeGate.Release();
+            }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         { await StopAsync(resetStartAttempt: false); Set(new(false, null, "Downloadbegrenzung wurde wegen einer Zeitüberschreitung beendet.")); }
@@ -207,26 +249,53 @@ internal sealed class ShaperController : IAsyncDisposable
                     { captureReleased = true; pendingReleaseId = 0; }
                     // An old inactive status is not an acknowledgement of this
                     // shutdown. Require the helper's explicit final frame.
-                    if (!active && !qosActive && !uploadActive && !observing && !appActive && limit is null && root.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True &&
+                    var terminating = root.TryGetProperty("stopped", out var stopped) && stopped.ValueKind == JsonValueKind.True;
+                    if (!active && !qosActive && !uploadActive && !observing && !appActive && limit is null && terminating &&
                         root.TryGetProperty("releaseError", out var released) && released.ValueKind == JsonValueKind.Null)
-                        shutdownConfirmed = true;
+                    { shutdownConfirmed = true; captureReleased = true; }
+                    if (terminating)
+                    {
+                        connectionEnded = true;
+                        observationRequested = false;
+                        if (error is not null) terminationReason ??= error;
+                        if (Volatile.Read(ref stopping) == 0) recoveryAvailable = shutdownConfirmed && releaseFailure is null;
+                        pendingAcknowledgement?.TrySetResult(false);
+                    }
+                    else if (root.TryGetProperty("commandId", out var applied) && applied.TryGetInt64(out var appliedId) && appliedId == pendingCommandId)
+                        pendingAcknowledgement?.TrySetResult(true);
                     // Publish the new status together with the release flags. Otherwise a snapshot taken
                     // in between sees "capture released" next to the previous "QoS active" status.
                     if (observationRequested && !observationSupported && error is null)
                         next = next with { Message = "Spielverkehr-Beobachtung wird vom Helfer nicht unterstützt. DYNEX bitte aktualisieren." };
-                    status = releaseFailure is null ? next : new(false, null, releaseFailure);
+                    status = releaseFailure is not null ? new(false, null, releaseFailure)
+                        : terminationReason is not null ? new(false, null, terminationReason) : next;
                     activeGameExpirations = releaseFailure is null ? expirations : [];
                     lastStatus = Stopwatch.GetTimestamp();
                 }
             }
             lock (sync)
+            {
+                connectionEnded = true;
+                observationRequested = false;
+                pendingAcknowledgement?.TrySetResult(false);
                 if (captureRequested && !shutdownConfirmed)
                     releaseFailure ??= "Freigabe der Downloadbegrenzung nicht bestätigt: Helferverbindung wurde ohne Abschaltbestätigung beendet.";
+            }
             Set(new(false, null, "Downloadbegrenzung beendet"));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or ObjectDisposedException)
-        { Set(new(false, null, "Helferstatus ungültig: " + ex.Message)); cancellation?.Cancel(); pipe?.Dispose(); }
+        {
+            lock (sync)
+            {
+                connectionEnded = true;
+                observationRequested = false;
+                terminationReason ??= "Helferstatus ungültig: " + ex.Message;
+                pendingAcknowledgement?.TrySetResult(false);
+            }
+            Set(new(false, null, terminationReason));
+            cancellation?.Cancel(); pipe?.Dispose();
+        }
     }
     private static async Task<string?> ReadStatusLineAsync(StreamReader input, char[] buffer, CancellationToken token)
     {
@@ -269,7 +338,8 @@ internal sealed class ShaperController : IAsyncDisposable
     {
         lock (sync)
         {
-            status = releaseFailure is null ? value : new(false, null, releaseFailure);
+            status = releaseFailure is not null ? new(false, null, releaseFailure)
+                : terminationReason is not null ? new(false, null, terminationReason) : value;
             activeGameExpirations.Clear();
             lastStatus = Stopwatch.GetTimestamp();
         }
@@ -292,7 +362,7 @@ internal sealed class ShaperController : IAsyncDisposable
                     finally { writeGate.Release(); }
                 }
                 catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
-                { pipe?.Dispose(); }
+                { /* Keep reading: the final release frame may already be buffered. */ }
             }
             var exited = true;
             if (process != null)
@@ -317,10 +387,15 @@ internal sealed class ShaperController : IAsyncDisposable
             {
                 if (!exited || captureRequested && !shutdownConfirmed)
                     releaseFailure ??= "Freigabe der Downloadbegrenzung nicht bestätigt: Der Helfer hat keine erfolgreiche Abschaltung bestätigt.";
+                if (!resetStartAttempt && exited && shutdownConfirmed && releaseFailure is null)
+                    recoveryAvailable = true;
                 Set(new(false, null, "Downloadbegrenzung ausgeschaltet"));
                 if (shutdownConfirmed) captureReleased = true;
                 observationRequested = false;
-                if (resetStartAttempt) startAttempted = false;
+                if (resetStartAttempt)
+                {
+                    startAttempted = false; recoveryAttempts = 0; recoveryAvailable = false;
+                }
                 if (requireExit && releaseFailure is not null) throw new InvalidOperationException(releaseFailure);
             }
         }

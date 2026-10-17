@@ -14,6 +14,12 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name);
 }
 void Near(double? actual, double expected, string name) => Check(actual is { } d && Math.Abs(d - expected) < 0.02, name);
+if (args.Contains("--limit-explanation-only"))
+{
+    LimitExplanationTests.Run(Check);
+    Console.WriteLine($"{checks} limit explanation checks passed; no network or shaper started.");
+    return;
+}
 if (args.Contains("--shared-download-activity"))
 {
     await SharedDownloadActivityTests.Run(Check);

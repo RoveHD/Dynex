@@ -215,9 +215,13 @@ internal static class GameTrafficChecks
         var games = new[] { new GameDetectionResult("Synthetic", "Synthetic", 301, started, true, "Configured") };
         var applying = controller.ApplyAsync(8, timeout.Token, games, true, () => false, 2, true, () => true);
         using (var command = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!))
+        {
             check(command.RootElement.GetProperty("mbps").ValueKind == JsonValueKind.Null &&
                 !command.RootElement.GetProperty("qosEnabled").GetBoolean() && command.RootElement.GetProperty("observeGameTraffic").GetBoolean(),
                 "post-start protection recheck can remove limits while preserving independently needed observation");
+            await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, observingGameTraffic = true,
+                activeGameProcesses = Array.Empty<object>(), commandId = command.RootElement.GetProperty("commandId").GetInt64() }));
+        }
         await applying;
         await output.WriteLineAsync("{\"active\":false,\"observingGameTraffic\":true,\"activeGameProcesses\":[],\"limitedDownloadMbps\":24.5}");
         await Wait(() => controller.Status.LimitedDownloadMbps == 24.5);
@@ -246,6 +250,8 @@ internal static class GameTrafficChecks
         check(controller.Status is { ObservingGameTraffic: false, ActiveGameProcesses: null }, "old helper cannot fake successful no-traffic observation");
         applying = controller.ApplyAsync(null, timeout.Token, games, observeGameTraffic: true, observationStillNeeded: () => false);
         using var idle = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
+        await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false,
+            commandId = idle.RootElement.GetProperty("commandId").GetInt64() }));
         await applying;
         check(!idle.RootElement.GetProperty("observeGameTraffic").GetBoolean(), "post-start observation recheck suppresses obsolete monitoring");
         var id = idle.RootElement.GetProperty("commandId").GetInt64();

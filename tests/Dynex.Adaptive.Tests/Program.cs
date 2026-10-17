@@ -1,13 +1,14 @@
 using Dynex.Core;
 
 var checks = 0;
+var failures = new List<string>();
 void Check(bool condition, string name)
 {
-    if (!condition) throw new InvalidOperationException("FAIL: " + name);
+    if (!condition) { failures.Add(name); Console.Error.WriteLine("FAIL: " + name); return; }
     checks++;
     Console.WriteLine("PASS: " + name);
 }
-void Near(double? actual, double expected, string name) => Check(actual is { } value && Math.Abs(value - expected) < .02, name);
+void Near(double? actual, double expected, string name) => Check(actual is { } value && Math.Abs(value - expected) < .02, name + $" (actual {actual}, expected {expected})");
 var origin = new DateTimeOffset(2026, 10, 14, 10, 0, 0, TimeSpan.Zero);
 var settings = new DynexSettings { LineMbps = 200, HeadroomPercent = 35, GamingReserveMbps = 10 };
 var gamerId = Guid.NewGuid();
@@ -40,7 +41,7 @@ Check(decision.AdaptiveReduced, "real gamer feedback reports adaptive reduction"
 
 var repeated = Reduced();
 for (var t = 12; t <= 60; t += 2) decision = Sample(repeated, t, Gamer(t, 3));
-Near(decision.DownloadLimitMbps, 51, "fresh heartbeats repeating the same published measurement cannot retrigger reduction");
+Near(decision.DownloadLimitMbps, 60, "repeated measurements cannot retrigger reduction and their stale hold eventually releases");
 var restarted = new LimitPlanner(settings);
 var firstBoot = Guid.NewGuid();
 var secondBoot = Guid.NewGuid();
@@ -48,7 +49,7 @@ for (var i = 0; i < 3; i++) Sample(restarted, i * 5, Gamer(i * 5, 100 + i) with 
 for (var i = 0; i < 3; i++) decision = Sample(restarted, 12 + i * 5, Gamer(12 + i * 5, i + 1) with { SessionId = firstBoot });
 Near(decision.DownloadLimitMbps, 51, "lower sequences in the same authenticated peer session cannot count as new measurements");
 for (var i = 0; i < 3; i++) decision = Sample(restarted, 30 + i * 5, Gamer(30 + i * 5, i + 1) with { SessionId = secondBoot });
-Near(decision.DownloadLimitMbps, 43.35, "new authenticated session accepts restarted sample sequence with unchanged baseline and target");
+Near(decision.DownloadLimitMbps, 57, "a new session cannot validate the prior session reduction; bounded release starts before another experiment");
 var noSequence = new LimitPlanner(settings);
 var fixedPeer = Gamer(0, 1) with { LatencySampleSequence = null };
 for (var t = 0; t <= 8; t += 2) decision = Sample(noSequence, t, fixedPeer);
@@ -116,7 +117,7 @@ for (var i = 0; i < 10; i++)
     var t = 30 + i * 5;
     decision = Sample(multi, t, Gamer(t, i + 4, 21), Gamer(t, i + 4, null, secondId));
 }
-Near(decision.DownloadLimitMbps, 31.16, "healthy gamer plus missing gamer feedback cannot release reserve");
+Near(decision.DownloadLimitMbps, 36.66, "missing gamer feedback cannot retain an unverified reduction indefinitely");
 var partiallyKnown = new LimitPlanner(settings);
 for (var i = 0; i < 3; i++) decision = Sample(partiallyKnown, i * 5, Gamer(i * 5, i + 1), Gamer(i * 5, i + 1, null, secondId));
 Near(decision.DownloadLimitMbps, 31.16, "missing second gamer does not prevent protecting a gamer with proven congestion");
@@ -130,14 +131,14 @@ Check(decision.AdaptiveReduced, "first recovery step remains below static budget
 var staleRecovery = Reduced();
 Sample(staleRecovery, 30, Gamer(30, 4, 21));
 for (var t = 35; t <= 70; t += 5) decision = Sample(staleRecovery, t, Gamer(t, 4, 21));
-Near(decision.DownloadLimitMbps, 51, "repeated recovery measurement cannot provide five new rounds");
+Near(decision.DownloadLimitMbps, 60, "repeated recovery measurement cannot confirm efficacy and the unverified hold releases");
 var bothRecovering = Reduced(true);
 for (var i = 0; i < 5; i++) decision = Sample(bothRecovering, 30 + i * 5,
     Gamer(30 + i * 5, i + 4, 21), Gamer(30 + i * 5, 4, 21, secondId));
-Near(decision.DownloadLimitMbps, 31.16, "fresh recovery samples from one gamer cannot replace repeated sample of another gamer");
+Near(decision.DownloadLimitMbps, 36.66, "partial fresh recovery cannot confirm efficacy and the unverified hold releases");
 for (var i = 0; i < 5; i++) decision = Sample(bothRecovering, 55 + i * 5,
     Gamer(55 + i * 5, i + 9, 21), Gamer(55 + i * 5, i + 5, 21, secondId));
-Near(decision.DownloadLimitMbps, 33, "all gamers supplying five genuinely new recovered rounds permit a shared step up");
+Near(decision.DownloadLimitMbps, 36.66, "healthy gamers after bounded stale release cannot exceed the assigned share");
 var changedTarget = new LimitPlanner(settings);
 Sample(changedTarget, 0, Gamer(0, 1)); Sample(changedTarget, 5, Gamer(5, 2));
 decision = Sample(changedTarget, 10, Gamer(10, 3) with { LatencyTargetId = "external-B|route-B" });
@@ -145,7 +146,7 @@ Near(decision.DownloadLimitMbps, 60, "peer target change discards accumulated ev
 
 var expiry = Reduced();
 decision = Sample(expiry, 31 * 60, Gamer(31 * 60, 4, 21));
-Near(decision.DownloadLimitMbps, 51, "expired gamer baseline cannot be mistaken for recovery");
+Near(decision.DownloadLimitMbps, 57, "expired gamer baseline starts bounded safety release rather than retaining its old reduction forever");
 Check(expiry.Plan(false, [], now: origin.AddMinutes(32)).DownloadLimitMbps is null, "ending gaming immediately frees automatic limit");
 Check(!expiry.Plan(false, [], now: origin.AddMinutes(32)).AdaptiveReduced, "ending gaming clears adaptive state");
 Near(Reduced().Plan(true, [Gamer(12, 4)], Local(12), origin.AddSeconds(12)).DownloadLimitMbps, 46.75,
@@ -153,7 +154,7 @@ Near(Reduced().Plan(true, [Gamer(12, 4)], Local(12), origin.AddSeconds(12)).Down
 
 var floor = new LimitPlanner(settings);
 for (var i = 0; i < 20 * 3; i++) decision = Sample(floor, i * 5, Gamer(i * 5, i + 1));
-Near(decision.DownloadLimitMbps, 6, "persistent gamer congestion can reach ten-percent floor while downloads continue");
+Near(decision.DownloadLimitMbps, 60, "persistent unchanged gamer latency restores the ineffective experiment instead of ratcheting to ten percent");
 
 var fallback = new LimitPlanner(settings);
 for (var i = 0; i < 5; i++) fallback.Plan(false, [], Local(-10 + i * 2, 2), origin.AddSeconds(-10 + i * 2));
@@ -210,7 +211,7 @@ for (var i = 0; i < 5; i++)
     var t = 30 + i * 5;
     decision = localWins.Plan(true, [Gamer(t, i + 5, 21)], Local(t, 0, 90), origin.AddSeconds(t));
 }
-Near(decision.DownloadLimitMbps, 46.75, "five healthy remote rounds cannot release reserve while the local gamer remains slow");
+Near(decision.DownloadLimitMbps, 55, "unloaded high local latency cannot retain an ineffective experiment indefinitely");
 
 var bothHealthy = LocallyReducedWithHealthyPeer();
 for (var i = 0; i < 5; i++)
@@ -218,14 +219,14 @@ for (var i = 0; i < 5; i++)
     var t = 30 + i * 5;
     decision = bothHealthy.Plan(true, [Gamer(t, i + 4, 21)], Local(t, 0, 21), origin.AddSeconds(t));
 }
-Near(decision.DownloadLimitMbps, 49.5, "both local and remote gamers recovering over five fresh rounds permit one conservative release");
+Near(decision.DownloadLimitMbps, 55, "healthy unloaded gamers finish bounded release without exceeding the assigned share");
 var repeatedLocal = LocallyReducedWithHealthyPeer();
 for (var i = 0; i < 5; i++)
 {
     var t = 30 + i * 5;
     decision = repeatedLocal.Plan(true, [Gamer(t, i + 4, 21)], Local(30, 0, 21), origin.AddSeconds(t));
 }
-Near(decision.DownloadLimitMbps, 46.75, "repeated or stale local gamer probes cannot validate fresh remote recovery rounds");
+Near(decision.DownloadLimitMbps, 55, "stale local gamer evidence releases its old experiment despite fresh remote rounds");
 
 var localHealthyRemoteSlow = LocalIdleBaseline();
 for (var i = 0; i < 3; i++)
@@ -307,7 +308,7 @@ for (var i = 0; i < 5; i++)
     var t = 30 + i * 5;
     decision = manualPeer.Plan(false, [Gamer(t, i + 4, 21)], Local(t, 2), origin.AddSeconds(t));
 }
-Near(decision.DownloadLimitMbps, 22.5, "complete peer recovery rounds gradually restore the manual maximum");
+Near(decision.DownloadLimitMbps, 25, "healthy low-load rounds finish bounded release without exceeding the manual maximum");
 for (var i = 0; i < 15; i++)
 {
     var t = 55 + i * 5;
@@ -370,4 +371,7 @@ for (var sample = 0; sample < 3; sample++)
 }
 Check(!decision.AdaptiveReduced && decision.DownloadLimitMbps == 120,
     "known zero classified bulk overrides high interface/game traffic as adaptation load evidence");
+ReductionEfficacyChecks.Run(Check);
 Console.WriteLine($"{checks} adaptive checks passed; pure policy, no sockets, router or shaper changes.");
+
+if (failures.Count != 0) { Console.Error.WriteLine($"{failures.Count} checks failed."); Environment.ExitCode = 1; }

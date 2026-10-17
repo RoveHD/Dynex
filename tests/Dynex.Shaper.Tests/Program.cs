@@ -325,8 +325,10 @@ foreach (var releaseError in new string?[] { null, "injected release failure" })
     var output = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
     var releasing = controller.ApplyAsync(null, timeout.Token);
     using var idle = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
-    await releasing;
     var id = idle.RootElement.GetProperty("commandId").GetInt64();
+    await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, qosActive = false,
+        mbps = (double?)null, commandId = id, captureReleased = false, releaseError = (string?)null }));
+    await releasing;
     async Task Reply(long commandId, bool captureReleased, string message, string? error = null)
     {
         await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, qosActive = false,
@@ -348,6 +350,9 @@ foreach (var releaseError in new string?[] { null, "injected release failure" })
         var applying = controller.ApplyAsync(8, timeout.Token, qosEnabled: true, protectionStillNeeded: () =>
         { recheckedAfterStart = controller.StartAttempted; return false; });
         using var skipped = JsonDocument.Parse((await input.ReadLineAsync(timeout.Token))!);
+        await output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, qosActive = false,
+            mbps = (double?)null, commandId = skipped.RootElement.GetProperty("commandId").GetInt64(),
+            captureReleased = true, releaseError = (string?)null }));
         await applying;
         Check(recheckedAfterStart && skipped.RootElement.GetProperty("mbps").ValueKind == JsonValueKind.Null &&
             !skipped.RootElement.GetProperty("qosEnabled").GetBoolean() && controller.CaptureReleased,
@@ -432,6 +437,7 @@ ethernet[12] = 8; ethernet[13] = 6;
 Check(NdisPacketDevice.GetIpOffset(ethernet) == -1, "ARP bypasses");
 await QosChecks.Run(Check);
 await GameTrafficChecks.Run(Check);
+await HelperRecoveryChecks.Run(Check);
 Console.WriteLine($"{passed} checks passed; no kernel filter opened.");
 
 static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)

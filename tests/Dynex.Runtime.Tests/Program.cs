@@ -30,6 +30,16 @@ async Task Scenario(string name, Func<Task> run)
 }
 var timeout = TimeSpan.FromSeconds(8);
 
+if (args.Length == 0 || args.Contains("--speedtest-peers-only"))
+    await Scenario("speedtest rejects competing peer transfers", () => SpeedTestPeerChecks.RunAsync(Check));
+if (args.Contains("--speedtest-peers-only"))
+{
+    Console.WriteLine($"Speedtest peer checks: {checks} passed, {failures.Count} failed; simulated speedtest and loopback peers only.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
 if (args.Contains("--download-activity-only"))
 {
     await Scenario("classified download demand and active shared allocations", () => DownloadActivityChecks.RunAsync(Check));
@@ -720,7 +730,7 @@ await Scenario("peer game postpones and cancels speedtest without losing LAN dis
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
     Check(service.Calls == 0 && runtime.SpeedTestMessage.Contains("nicht gestartet"),
         "manual speedtest is rejected while a connected peer is gaming");
-    remote.Publish(false);
+    remote.Publish(false, downloadMbps: 0, uploadMbps: 0);
     var request = await service.NextAsync().WaitAsync(timeout);
     remote.Publish(true, game: "Remote game");
     await Until(() => request.Token.IsCancellationRequested && SpeedTestFinished(runtime));

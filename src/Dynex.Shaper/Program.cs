@@ -104,6 +104,9 @@ internal static class Program
         var applicationRulesEnabled = false;
         string? error = null;
         string? releaseError = null;
+        string? stopReason = null;
+        string? terminationMessage = null;
+        var failed = false;
         long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
         var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
@@ -130,6 +133,8 @@ internal static class Program
         async Task ReleaseAsync(PacketPump current)
         {
             await current.DisposeAsync();
+            if (current.Failure is { } failure)
+                Interlocked.CompareExchange(ref error, "Paketverarbeitung beendet: " + failure.Message, null);
             if (current.CleanupError is { } cleanupError)
                 Interlocked.CompareExchange(ref releaseError, "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanupError, null);
         }
@@ -172,12 +177,13 @@ internal static class Program
                     topPrograms = current?.Active == true ? top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,
-                    error = cleanupError ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
+                    error = cleanupError ?? (terminating ? Volatile.Read(ref terminationMessage) : null) ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
                         ? "Programmzuordnung nicht verfügbar; Downloads werden freigegeben. " + ownership.LastError : null),
                     releaseError = cleanupError,
                     commandId = Interlocked.Read(ref acknowledgedCommandId),
                     captureReleased = current is null && cleanupError is null,
                     stopped = terminating,
+                    stopReason = terminating ? Volatile.Read(ref stopReason) : null,
                     receivedBytes = current?.ReceivedBytes ?? 0,
                     sentBytes = current?.SentBytes ?? 0,
                     bypassedBytes = current?.BypassedBytes ?? 0,
@@ -196,11 +202,22 @@ internal static class Program
                 while (!stop.IsCancellationRequested)
                 {
                     await Task.Delay(250, stop.Token);
-                    if (parent.HasExited || Stopwatch.GetElapsedTime(Interlocked.Read(ref lastHeartbeat)) > ControlProtocol.HeartbeatTimeout)
+                    if (parent.HasExited)
+                    {
+                        Interlocked.CompareExchange(ref stopReason, "parent-exited", null);
+                        Interlocked.CompareExchange(ref terminationMessage, "DYNEX wurde beendet; Paketverarbeitung sicher freigegeben.", null);
                         break;
+                    }
+                    if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastHeartbeat)) > ControlProtocol.HeartbeatTimeout)
+                    {
+                        Interlocked.CompareExchange(ref stopReason, "heartbeat-timeout", null);
+                        Interlocked.CompareExchange(ref terminationMessage, "Download-Helfer sicher beendet: Seit 7 Sekunden kein Steuerbefehl von DYNEX empfangen.", null);
+                        break;
+                    }
                     if (Volatile.Read(ref networkChanged) != 0)
                     {
-                        error = "Netzwerk geändert. Schutz erneut einschalten, um LAN-Ausnahmen zu aktualisieren.";
+                        Interlocked.CompareExchange(ref stopReason, "network-change", null);
+                        Interlocked.CompareExchange(ref terminationMessage, "Netzwerk geändert; Paketverarbeitung für die Aktualisierung der LAN-Ausnahmen beendet.", null);
                         break;
                     }
                 }
@@ -220,7 +237,12 @@ internal static class Program
             while (!stop.IsCancellationRequested)
             {
                 var line = await ControlProtocol.ReadLineAsync(reader, stop.Token);
-                if (line is null) break;
+                if (line is null)
+                {
+                    Interlocked.CompareExchange(ref stopReason, "ipc-eof", null);
+                    Interlocked.CompareExchange(ref terminationMessage, "Steuerverbindung von DYNEX geschlossen; Paketverarbeitung beendet.", null);
+                    break;
+                }
                 var command = ControlProtocol.ParseCommand(line);
                 var requested = command.Mbps;
                 var requestedQos = command.QosEnabled;
@@ -234,6 +256,10 @@ internal static class Program
                 var requestedRules = command.ApplicationRules ?? [];
                 if (shutdown && (requested is not null || requestedQos || requestedUpload is not null || requestedObservation || requestedRules.Length != 0))
                     throw new FormatException("Abschaltung erfordert ausgeschaltete Limits, QoS und Paketbeobachtung.");
+                // Only a complete, validated command renews the lease. Policy
+                // updates and native capture transitions must not hide when the
+                // last authenticated desktop command was actually received.
+                Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
                 // Upload pacing and QoS marking both need outbound capture; download-only does not.
                 var wantsOutbound = requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Any(r => r.UploadMbps.HasValue);
                 var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Length != 0;
@@ -242,7 +268,6 @@ internal static class Program
                 gameTraffic.Configure(command.ProtectedProcesses, requestedObservation);
                 applicationPolicy.Configure(requestedRules);
                 observeGameTraffic = requestedObservation;
-                Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
                 var current = Volatile.Read(ref session);
                 if (current?.Active == true && requestedQos == qosEnabled && wantsOutbound == captureOutbound && wantsActive)
                 {
@@ -302,10 +327,21 @@ internal static class Program
                 // A failed session remains disabled until {mbps:null}, then re-arm.
                 Interlocked.Exchange(ref acknowledgedCommandId, commandId);
                 await StatusAsync();
-                if (shutdown) break;
+                if (shutdown)
+                {
+                    Interlocked.CompareExchange(ref stopReason, "requested", null);
+                    break;
+                }
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (Exception e)
+        {
+            failed = true;
+            Interlocked.CompareExchange(ref stopReason, "helper-error", null);
+            Interlocked.CompareExchange(ref terminationMessage,
+                $"Download-Helfer abgebrochen ({e.GetType().Name}, 0x{e.HResult:X8}): {e.Message[..Math.Min(300, e.Message.Length)]}", null);
+        }
         finally
         {
             NetworkChange.NetworkAddressChanged -= onNetworkChange;
@@ -319,6 +355,6 @@ internal static class Program
             try { await StatusAsync(terminating: true); }
             catch (Exception reportError) when (reportError is IOException or OperationCanceledException or ObjectDisposedException) { }
         }
-        return Volatile.Read(ref releaseError) is null ? 0 : 1;
+        return Volatile.Read(ref releaseError) is null && !failed ? 0 : 1;
     }
 }

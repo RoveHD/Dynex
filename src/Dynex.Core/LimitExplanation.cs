@@ -7,9 +7,17 @@ public static class LimitExplanation
         IReadOnlyList<PeerAdvertisement> remote, bool capacityMeasured, bool speedTestRunning,
         bool driverEnabled, bool driverActive, double? manualLimitMbps, double? appliedLimitMbps, DateTimeOffset? pausedUntil = null)
     {
-        if (speedTestRunning) return "Speedtest läuft · Begrenzung pausiert";
-        if (pausedUntil is { } until) return $"Von dir pausiert bis {until.ToLocalTime():HH:mm} Uhr · Downloads frei";
-        if (!decision.GamingActive) return "Kein Spiel im Fokus · kein Limit";
+        string? release = driverActive && appliedLimitMbps is { } active
+            ? $"Freigabe läuft · aktuell noch {active:0.#} Mbit/s aktiv"
+            : null;
+
+        if (speedTestRunning) return release is null ? "Speedtest läuft · Begrenzung pausiert" : $"Speedtest läuft · {release}";
+        if (pausedUntil is { } until) return release is null
+            ? $"Von dir pausiert bis {until.ToLocalTime():HH:mm} Uhr · Downloads frei"
+            : $"Von dir pausiert bis {until.ToLocalTime():HH:mm} Uhr · {release}";
+        if (!decision.GamingActive) return release is null
+            ? "Kein Spiel im Fokus · kein Limit"
+            : $"Kein Spiel im Fokus · {release}";
         var gamers = new List<string>();
         if (localGaming) gamers.Add(string.IsNullOrWhiteSpace(localGame) ? "diesem PC" : $"diesem PC ({localGame})");
         gamers.AddRange(remote.Where(p => p.IsGaming).OrderBy(p => p.DeviceName, StringComparer.OrdinalIgnoreCase)
@@ -20,8 +28,12 @@ public static class LimitExplanation
             1 => $"Gaming auf {gamers[0]} erkannt",
             _ => $"Gaming auf {string.Join(", ", gamers[..^1])} und {gamers[^1]} erkannt"
         };
-        if (!capacityMeasured) return who + " · kein Limit, bis ein Speedtest gespeichert ist";
-        if (!driverEnabled) return who + " · Begrenzung in den Einstellungen ausgeschaltet";
+        if (!capacityMeasured) return release is null
+            ? who + " · kein Limit, bis ein Speedtest gespeichert ist"
+            : $"{who} · kein neues Limit, bis ein Speedtest gespeichert ist · {release}";
+        if (!driverEnabled) return release is null
+            ? who + " · Begrenzung in den Einstellungen ausgeschaltet"
+            : $"{who} · Begrenzung in den Einstellungen ausgeschaltet · {release}";
         if (decision.DownloadLimitMbps is null) return who;
         var details = new List<string> { who };
         if (manualLimitMbps is { } manual && Math.Abs(decision.DownloadLimitMbps.Value - manual) < 0.005)

@@ -19,6 +19,12 @@ public sealed class LimitPlanner
     private DateTimeOffset _highSince, _lowSince;
     private DateTimeOffset _lastLocalRecoveryRound;
     private static readonly TimeSpan BaselineLifetime = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan EffectWindow = TimeSpan.FromSeconds(30);
+    private ReductionProbe? _reductionProbe;
+    private double? _restoreFactor;
+    private DateTimeOffset _lastTrustedEvidence, _lastSafetyRecovery;
+    private readonly Dictionary<string, FailedEpisode> _failedEpisodes = new();
+    private readonly Dictionary<bool, string> _observedSources = new();
 
     public LimitPlanner(DynexSettings settings)
     {
@@ -91,6 +97,7 @@ public sealed class LimitPlanner
             _factor = 1; _high = _low = 0; _peerAdjusted = false;
             _peerHigh = _peerLow = 0; _feedback.Clear(); _gamingPeers.Clear();
             _lastLocalRecoveryRound = default;
+            _reductionProbe = null; _restoreFactor = null; _failedEpisodes.Clear(); _observedSources.Clear();
         }
         if (_settings.AdaptiveEnabled)
         {
@@ -102,6 +109,7 @@ public sealed class LimitPlanner
             if (adaptiveBudget is { } cap) ObserveGamingPeers(gamingPeers, probe, at, cap, hasPeerBaseline,
                 localGaming, !localGaming || LocalGameRecovered(probe, at));
         }
+        MaintainReduction(at);
         // Round shared budgets down so independent PCs cannot round their sum above the reserve.
         var limit = adaptiveBudget is { } budget
             ? Math.Floor(Math.Max(0.1, budget * _factor) * 100) / 100
@@ -155,12 +163,15 @@ public sealed class LimitPlanner
         }
         if (!adjust || budget is not { } cap || _baseline is not { } baseline)
         { _high = _low = 0; return; }
+        var source = FormattableString.Invariant($"local|{_target}|{baseline:R}|{_baselineAt:O}");
         var elevated = latency > baseline + Math.Max(8, baseline * 0.35) && load >= cap * _factor * 0.75;
         var recovered = latency < baseline + Math.Max(4, baseline * 0.15);
+        ObserveReduction(source, latency - baseline, now, load >= cap * _factor * .75,
+            load <= cap * _factor * .25, recovered);
         _high = elevated ? _high + 1 : 0;
         _low = recovered ? _low + 1 : 0;
         if (now - _lastAdjustment < TimeSpan.FromSeconds(10)) return;
-        if (_high >= 3) { _factor = Math.Max(0.1, _factor * 0.85); _lastAdjustment = now; _high = 0; }
+        if (_high >= 3 && TryReduce(source, latency - baseline, now)) { _high = 0; }
         // Once genuine gaming feedback caused a reduction, losing it cannot turn
         // an unrelated local ICMP proxy into evidence of gamer recovery.
         else if (_low >= 3 && _factor < 1 && !_peerAdjusted && allowRecovery)
@@ -215,9 +226,23 @@ public sealed class LimitPlanner
         static bool Recovered((PeerFeedback State, double Baseline, double Latency, bool IsNew) value) =>
             value.Latency - value.Baseline < Math.Max(4, value.Baseline * .15);
 
-        var localLoadValid = local is not null && local.TimestampUtc <= now.AddSeconds(1) &&
+        var source = "peers|" + string.Join(";", gamers.OrderBy(p => p.DeviceId).Select(p =>
+            FormattableString.Invariant($"{p.DeviceId}|{p.SessionId}|{p.LatencyTargetId}|{p.IdleBaselineMs:R}|{p.IdleBaselineAtUtc:O}")));
+        var excess = valid.Count == 0 ? 0 : valid.Max(v => v.Latency - v.Baseline);
+        // Each gamer must contribute a new sample to an efficacy round. Repeated
+        // heartbeats and a healthy subset cannot stand in for a missing gamer.
+        var localLoadKnown = local is not null && local.TimestampUtc <= now.AddSeconds(1) &&
             now - local.TimestampUtc <= TimeSpan.FromSeconds(10) &&
-            (local.LimitedDownloadMbps ?? local.DownloadMbps) is { } load && double.IsFinite(load) && load >= budget * _factor * .75;
+            (local.LimitedDownloadMbps ?? local.DownloadMbps) is { } load && double.IsFinite(load) && load >= 0;
+        var localLoad = local?.LimitedDownloadMbps ?? local?.DownloadMbps;
+        var localLoadValid = localLoadKnown && localLoad >= budget * _factor * .75;
+        if (allValid && valid.Count == gamers.Length && valid.All(v => v.State.Revision > v.State.EffectRevision))
+        {
+            foreach (var item in valid) item.State.EffectRevision = item.State.Revision;
+            ObserveReduction(source, excess, now, localLoadValid,
+                localLoadKnown && localLoad <= budget * _factor * .25, valid.All(Recovered));
+        }
+
         var newElevated = valid.Any(v => v.IsNew && High(v)) && localLoadValid;
         if (newElevated)
         {
@@ -243,11 +268,9 @@ public sealed class LimitPlanner
         }
 
         if (newElevated && _peerHigh >= 3 && now - _highSince >= TimeSpan.FromSeconds(10) &&
-            now - _lastAdjustment >= TimeSpan.FromSeconds(10))
+            now - _lastAdjustment >= TimeSpan.FromSeconds(10) && TryReduce(source, excess, now))
         {
-            _factor = Math.Max(.1, _factor * .85);
             _peerAdjusted = true;
-            _lastAdjustment = now;
             ResetPeerWindow();
         }
         else if (newRecoveryRound && _peerLow >= 5 && now - _lowSince >= TimeSpan.FromSeconds(20) && _factor < 1 &&
@@ -257,6 +280,95 @@ public sealed class LimitPlanner
             _lastAdjustment = now;
             ResetPeerWindow();
         }
+    }
+
+    private bool TryReduce(string source, double excess, DateTimeOffset now)
+    {
+        if (_failedEpisodes.ContainsKey(source) || _restoreFactor is not null ||
+            _reductionProbe is { Effective: false }) return false;
+        var reduced = Math.Max(.1, _factor * .85);
+        if (reduced >= _factor) return false;
+        _reductionProbe = new(source, excess, now, _factor);
+        _observedSources.Clear(); _observedSources[source.StartsWith("local|", StringComparison.Ordinal)] = source;
+        _factor = reduced;
+        _lastAdjustment = _lastTrustedEvidence = now;
+        return true;
+    }
+
+    private void ObserveReduction(string source, double excess, DateTimeOffset now, bool loaded, bool idle, bool recovered)
+    {
+        _observedSources[source.StartsWith("local|", StringComparison.Ordinal)] = source;
+        // A failed experiment is not retried merely because time passes. A new
+        // measured low-load or recovered-ping phase must first end that episode.
+        if (_failedEpisodes.TryGetValue(source, out var failed))
+        {
+            var resetKind = recovered ? 1 : idle ? 2 : 0;
+            if (resetKind == 0 || failed.ResetKind != resetKind)
+            { failed.Count = 0; failed.Since = now; failed.ResetKind = resetKind; }
+            if (resetKind != 0 && ++failed.Count >= 3 && now - failed.Since >= TimeSpan.FromSeconds(10))
+                _failedEpisodes.Remove(source);
+        }
+        if (_reductionProbe is not { } probe || probe.Source != source) return;
+        _lastTrustedEvidence = now;
+        if (probe.Effective || now <= probe.Started) return;
+        var improved = loaded && excess <= probe.Excess - Math.Max(2, probe.Excess * .15);
+        if (!improved) { probe.ImprovedCount = 0; probe.ImprovedSince = default; return; }
+        if (probe.ImprovedCount++ == 0) probe.ImprovedSince = now;
+        if (probe.ImprovedCount >= 3 && now - probe.ImprovedSince >= TimeSpan.FromSeconds(10))
+            probe.Effective = true;
+    }
+
+    private void MaintainReduction(DateTimeOffset now)
+    {
+        if (_factor >= 1) { _reductionProbe = null; _restoreFactor = null; return; }
+        // No fresh comparison to the source that caused a reduction is not proof
+        // of ongoing congestion. Bound that hold, even if another source is alive.
+        double? restore = now - _lastTrustedEvidence >= EffectWindow ? 1
+            : _reductionProbe is { Effective: false } probe && now - probe.Started >= EffectWindow ? probe.BeforeFactor : null;
+        if (restore is { } target && (_restoreFactor is null || target > _restoreFactor))
+        {
+            _restoreFactor = target;
+            _lastSafetyRecovery = now - TimeSpan.FromSeconds(10);
+            // Local and remote observations of the same failed experiment must
+            // not take turns restarting it after rollback.
+            foreach (var source in _observedSources.Values) _failedEpisodes.TryAdd(source, new(now));
+            // Keep current episode locks regardless of age. Only obsolete source
+            // signatures may be evicted; time alone never restarts a failed trial.
+            foreach (var key in _failedEpisodes.Where(pair => !_observedSources.ContainsValue(pair.Key))
+                         .OrderBy(pair => pair.Value.RecordedAt).Take(Math.Max(0, _failedEpisodes.Count - 64))
+                         .Select(pair => pair.Key).ToArray())
+                _failedEpisodes.Remove(key);
+        }
+        if (_restoreFactor is not { } ceiling) return;
+        if (now - _lastSafetyRecovery >= TimeSpan.FromSeconds(10))
+        {
+            _factor = Math.Max(_factor, Math.Min(ceiling, _factor + .1));
+            _lastSafetyRecovery = _lastAdjustment = now;
+        }
+        if (_factor >= ceiling)
+        {
+            _restoreFactor = null;
+            if (_reductionProbe is { } prior) prior.Effective = true;
+            if (_factor >= 1) { _reductionProbe = null; _peerAdjusted = false; }
+        }
+    }
+
+    private sealed class FailedEpisode(DateTimeOffset recordedAt)
+    {
+        internal DateTimeOffset RecordedAt { get; } = recordedAt;
+        internal int ResetKind, Count;
+        internal DateTimeOffset Since;
+    }
+
+    private sealed class ReductionProbe(string source, double excess, DateTimeOffset started, double beforeFactor)
+    {
+        internal string Source { get; } = source;
+        internal double Excess { get; } = excess;
+        internal DateTimeOffset Started { get; } = started;
+        internal double BeforeFactor { get; } = beforeFactor;
+        internal bool Effective { get; set; }
+        internal int ImprovedCount { get; set; }
+        internal DateTimeOffset ImprovedSince { get; set; }
     }
 
     private void ResetPeerWindow()
@@ -288,5 +400,6 @@ public sealed class LimitPlanner
         internal long? LastSequence { get; set; }
         internal long Revision { get; set; }
         internal long RecoveryRevision { get; set; }
+        internal long EffectRevision { get; set; }
     }
 }

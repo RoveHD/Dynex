@@ -1,7 +1,7 @@
 namespace Dynex.Desktop;
 
 public enum GamingMode { Auto, On, Off }
-public enum SpeedTestWaitReason { None, Monitoring, Network, Discovery, OpenGame }
+public enum SpeedTestWaitReason { None, Monitoring, Network, Discovery, OpenGame, PeerTraffic }
 
 public sealed record UserSettings
 {

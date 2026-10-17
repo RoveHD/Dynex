@@ -122,6 +122,20 @@ internal static class LimitExplanationTests
             "planned but unconfirmed limit is not presented as active");
         check(LimitExplanation.Describe(shared, true, null, [], true, true, true, false, null, null).Contains("pausiert"),
             "speed test pause takes precedence");
+        var activeRate = LimitExplanation.Describe(none, false, null, [], true, false, true, true, null, 12);
+        check(activeRate.Contains("Kein Spiel im Fokus") && activeRate.Contains("Freigabe läuft") && activeRate.Contains("12 Mbit/s aktiv"),
+            "no-gaming transition does not claim freedom while a confirmed filter rate remains active");
+        check(LimitExplanation.Describe(shared, true, null, [], true, true, true, true, null, 12).Contains("Freigabe läuft"),
+            "speed test explains release while the prior rate remains active");
+        check(LimitExplanation.Describe(shared, true, null, [], true, false, true, true, null, 12,
+            pausedUntil: DateTimeOffset.UtcNow.AddMinutes(5)).Contains("Freigabe läuft"),
+            "pause does not claim downloads are free while the prior rate remains active");
+        check(LimitExplanation.Describe(shared, true, null, [], false, false, true, true, null, 12).Contains("Freigabe läuft"),
+            "missing capacity does not hide a filter rate still being released");
+        check(LimitExplanation.Describe(shared, true, null, [], true, false, false, true, null, 12).Contains("Freigabe läuft"),
+            "disabled shaping explains a still-active filter rate as releasing");
+        check(!LimitExplanation.Describe(none, false, null, [], true, false, true, false, null, null).Contains("Freigabe läuft"),
+            "no confirmed active rate is described as fully released");
     }
 }
 

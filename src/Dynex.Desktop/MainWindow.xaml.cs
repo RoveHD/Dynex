@@ -556,6 +556,7 @@ public partial class MainWindow : Window
         {
             SpeedTestWaitReason.Network => "Netzwerk prüfen",
             SpeedTestWaitReason.OpenGame => "Spiel noch geöffnet",
+            SpeedTestWaitReason.PeerTraffic => "Wartet auf freie Leitung",
             _ => "Prüfung läuft …"
         } : settings.CapacityMeasuredAtUtc.HasValue ? "Erneut messen" : "Speedtest starten";
         SpeedTestProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
