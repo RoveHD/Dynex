@@ -30,6 +30,24 @@ async Task Scenario(string name, Func<Task> run)
 }
 var timeout = TimeSpan.FromSeconds(8);
 
+await Scenario("priority-only migration, controller IPC and lifecycle", () => PriorityOnlyChecks.RunAsync(Check));
+if (args.Contains("--priority-only"))
+{
+    Console.WriteLine($"Priority-only checks: {checks} passed, {failures.Count} failed; isolated profiles, fake packet device and real local IPC.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
+if (args.Contains("--game-traffic-only"))
+{
+    await Scenario("actual game packet activity controls prioritization", () => GameTrafficChecks.Run(Check));
+    Console.WriteLine($"Game traffic checks: {checks} passed, {failures.Count} failed; fake device, real owner lookup and local IPC.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
+
 if (args.Length == 0 || args.Contains("--speedtest-peers-only"))
     await Scenario("speedtest rejects competing peer transfers", () => SpeedTestPeerChecks.RunAsync(Check));
 if (args.Contains("--speedtest-peers-only"))
@@ -346,18 +364,20 @@ await Scenario("bounded private-address invitations and legacy compatibility", a
         "combined direct-route limit is checked before changing the saved group identity");
 });
 
-await Scenario("automatic initial measurement and persistence", async () =>
+await Scenario("explicit diagnostic measurement and persistence", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
     await using (var runtime = new DynexRuntime(profile.Path, service, _ => []))
     {
         await runtime.StartAsync().WaitAsync(timeout);
+        Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting && !runtime.IsSpeedTestRunning,
+            "startup never starts automatic speedtests in priority-only mode");
+        var completed = runtime.MeasureCapacityAsync();
         var request = await service.NextAsync().WaitAsync(timeout);
         Check(runtime.IsSpeedTestRunning && !request.Completion.Task.IsCompleted,
-            "first start returns while automatic measurement is pending");
+            "explicit diagnostics run while the monitoring worker remains available");
         Check(HasWorker(runtime) && HasPeers(runtime), "monitor and peer service remain active to protect gaming during initial measurement");
-        var completed = runtime.MeasureCapacityAsync();
         request.Complete(86.54321);
         await completed.WaitAsync(timeout);
         var persisted = new SettingsStore(profile.Path).Load();
@@ -366,20 +386,20 @@ await Scenario("automatic initial measurement and persistence", async () =>
         Check(runtime.Settings.CapacityMeasuredAtUtc is not null &&
             persisted.CapacityMeasuredAtUtc == runtime.Settings.CapacityMeasuredAtUtc,
             "successful measurement timestamp is persisted");
-        Check(Math.Abs(persisted.ReservePerGamerMbps - 4.327) < 0.000001,
-            "gaming reserve is normalized from the new capacity");
+        Check(persisted.ReservePerGamerMbps == 0,
+            "diagnostic capacity cannot introduce a gaming reserve");
         Check(HasWorker(runtime), "monitor worker resumes after successful measurement");
         await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On }).WaitAsync(timeout);
         await runtime.StopAsync().WaitAsync(timeout);
         await runtime.StartAsync().WaitAsync(timeout);
         Check(service.Calls == 1 && !runtime.IsSpeedTestRunning,
-            "save and stop/start do not repeat completed automatic measurement");
+            "save and stop/start do not repeat completed explicit diagnostics");
     }
     var restartedService = new ControlledSpeedTest();
     await using var restarted = new DynexRuntime(profile.Path, restartedService, _ => []);
     await restarted.StartAsync().WaitAsync(timeout);
     Check(restartedService.Calls == 0 && HasWorker(restarted),
-        "a new runtime loads the timestamp and skips automatic measurement");
+        "a new runtime loads diagnostic measurements without automatic speedtest load");
 });
 
 await Scenario("legacy settings without measurement timestamp", async () =>
@@ -398,12 +418,12 @@ await Scenario("legacy settings without measurement timestamp", async () =>
     Check(runtime.Settings.AutoStart && runtime.Settings.DriverEnabled,
         "legacy settings inherit the enabled startup and protection defaults");
     await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
     var completed = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     request.Complete(123.45);
     await completed.WaitAsync(timeout);
     Check(service.Calls == 1 && runtime.Settings.CapacityMbps == 123.45,
-        "legacy profile receives its initial automatic measurement");
+        "legacy profile retains an explicitly requested diagnostic measurement");
 });
 
 await Scenario("auto-update preference persists without restarting networking", async () =>
@@ -492,28 +512,28 @@ foreach (var rate in new[] { double.NaN, double.PositiveInfinity, -1d, 0d, 0.5d,
     });
 }
 
-await Scenario("failed automatic measurement is not repeated by settings/restart", async () =>
+await Scenario("failed explicit measurement is not retried by settings/restart", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
     await using (var runtime = new DynexRuntime(profile.Path, service, _ => []))
     {
         await runtime.StartAsync().WaitAsync(timeout);
-        var request = await service.NextAsync().WaitAsync(timeout);
         var measurement = runtime.MeasureCapacityAsync();
+        var request = await service.NextAsync().WaitAsync(timeout);
         request.Completion.TrySetException(new InvalidOperationException("simulated offline"));
         await measurement.WaitAsync(timeout);
-        Check(runtime.Settings.CapacityMeasuredAtUtc is null && runtime.Settings.AutomaticSpeedTestAttempted &&
-            new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
-            "failed startup test keeps its prior rate and persists the one-time attempt");
+        Check(runtime.Settings.CapacityMeasuredAtUtc is null && !runtime.Settings.AutomaticSpeedTestAttempted &&
+            !new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "failed explicit diagnostics keep the prior rate and do not create a startup attempt");
         await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off }).WaitAsync(timeout);
         await runtime.SaveSettingsAsync(runtime.Settings with { AutomaticSpeedTestAttempted = false }).WaitAsync(timeout);
-        Check(runtime.Settings.AutomaticSpeedTestAttempted && new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
-            "stale settings cannot erase the once-only startup attempt");
+        Check(!runtime.Settings.AutomaticSpeedTestAttempted && !new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "settings saves do not schedule an automatic test");
         await runtime.StopAsync().WaitAsync(timeout);
         await runtime.StartAsync().WaitAsync(timeout);
         Check(service.Calls == 1 && runtime.Settings.CapacityMeasuredAtUtc is null,
-            "same runtime does not retry the failed automatic measurement");
+            "same runtime does not retry failed explicit diagnostics");
     }
 
     var restartedService = new ControlledSpeedTest();
@@ -526,21 +546,23 @@ await Scenario("failed automatic measurement is not repeated by settings/restart
     manualRequest.Complete(91.25);
     await manual.WaitAsync(timeout);
     Check(restartedService.Calls == 1 && restarted.Settings.CapacityMbps == 91.25,
-        "manual measurement remains available after the failed automatic attempt");
+        "manual measurement remains available after a failed explicit diagnostic");
 });
 
-await Scenario("cancelled automatic measurement is not repeated after restart", async () =>
+await Scenario("cancelled explicit measurement is not repeated after restart", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
     await using (var runtime = new DynexRuntime(profile.Path, service, _ => []))
     {
         await runtime.StartAsync().WaitAsync(timeout);
+        var measurement = runtime.MeasureCapacityAsync();
         var request = await service.NextAsync().WaitAsync(timeout);
         await runtime.StopAsync().WaitAsync(timeout);
-        Check(request.Token.IsCancellationRequested && runtime.Settings.AutomaticSpeedTestAttempted &&
-            new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
-            "cancellation retains the persisted startup-attempt marker");
+        await measurement.WaitAsync(timeout);
+        Check(request.Token.IsCancellationRequested && !runtime.Settings.AutomaticSpeedTestAttempted &&
+            !new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
+            "canceling explicit diagnostics does not create an automatic startup marker");
         Check(runtime.SpeedTestMessage.Contains("abgebrochen") && !runtime.IsSpeedTestRunning,
             "cancellation status remains visible and the attempt finishes");
     }
@@ -554,7 +576,7 @@ await Scenario("cancelled automatic measurement is not repeated after restart", 
     manualRequest.Complete(88.75);
     await manual.WaitAsync(timeout);
     Check(restartedService.Calls == 1 && restarted.Settings.CapacityMbps == 88.75,
-        "manual measurement remains available after the cancelled automatic attempt");
+        "manual measurement remains available after canceled explicit diagnostics");
 });
 
 await Scenario("stale settings queued during measurement", async () =>
@@ -574,8 +596,8 @@ await Scenario("stale settings queued during measurement", async () =>
     Check(runtime.Settings.CapacityMbps == 75.25 && saved.CapacityMbps == 75.25 &&
         runtime.Settings.CapacityMeasuredAtUtc != stale.CapacityMeasuredAtUtc,
         "queued stale save preserves newly measured capacity and timestamp");
-    Check(saved.ManualLimitMbps == 30 && Math.Abs(saved.ReservePerGamerMbps - 3.7625) < 0.000001,
-        "queued stale save applies manual limit and recalculates reserve from current capacity");
+    Check(saved.ManualLimitMbps is null && saved.ReservePerGamerMbps == 0,
+        "queued stale save strips legacy manual limits and reserves while retaining the fresh measurement");
 });
 
 await Scenario("stop cancels measurement and prevents worker restart", () => OnSerialContext(async () =>
@@ -584,8 +606,8 @@ await Scenario("stop cancels measurement and prevents worker restart", () => OnS
     var service = new ControlledSpeedTest();
     await using var runtime = new DynexRuntime(profile.Path, service, _ => []);
     await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
     var measurement = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     var save = runtime.SaveSettingsAsync(runtime.Settings with { BackgroundPercent = 70 });
     // This continuation runs inline when Save completes. Stop's semaphore continuation is
     // posted to the serial context and cannot race ahead of this observation.
@@ -611,7 +633,7 @@ await Scenario("stop cancels measurement and prevents worker restart", () => OnS
 }));
 
 
-await Scenario("local game postpones automatic and rejects manual measurement even with protection off", async () =>
+await Scenario("open games block explicit diagnostic load without scheduling automatic tests", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
@@ -621,49 +643,43 @@ await Scenario("local game postpones automatic and rejects manual measurement ev
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off, ManualLimitMbps = 15 });
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
-    Check(runtime.IsSpeedTestWaiting && !runtime.IsSpeedTestRunning && service.Calls == 0,
-        "local open game postpones automatic load even when gaming mode is off");
+    Check(!runtime.IsSpeedTestWaiting && !runtime.IsSpeedTestRunning && service.Calls == 0,
+        "an open game neither schedules nor starts automatic capacity load");
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
-    Check(service.Calls == 0 && !runtime.Settings.AutomaticSpeedTestAttempted &&
-        !new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
-        "blocked automatic and manual requests do not consume the automatic attempt");
-    Check(runtime.Snapshot is { SharedCapacityMbps: null, SharedDownloadBudgetMbps: null, SharedBudgetComplete: false, LimitMbps: null } &&
-        !CoreConfiguration(runtime).CapacityMeasured,
-        "unmeasured profile with a manual cap exposes neither a limit nor a shared capacity");
+    Check(service.Calls == 0 && runtime.SpeedTestMessage.Contains("nicht gestartet"),
+        "explicit diagnostic speedtest still rejects an open game even when protection is disabled");
+    Check(runtime.Settings.ManualLimitMbps is null && !CoreConfiguration(runtime).CapacityMeasured,
+        "legacy manual caps and capacity advertisements cannot be restored");
     Volatile.Write(ref playing, false);
-    var request = await service.NextAsync().WaitAsync(timeout);
-    Check(runtime.Settings.AutomaticSpeedTestAttempted && service.Calls == 1,
-        "automatic test starts once after the local game closes");
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting, "closing a game starts no automatic test");
     var completion = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     request.Complete(150);
     await completion.WaitAsync(timeout);
-    await Until(() => runtime.Snapshot?.SharedCapacityMbps == 150);
-    Check(CoreConfiguration(runtime).CapacityMeasured && runtime.Settings.CapacityMeasuredAtUtc is not null,
-        "persisted successful measurement unlocks local capacity and shared-budget publication");
+    Check(runtime.Settings.CapacityMbps == 150 && !CoreConfiguration(runtime).CapacityMeasured &&
+        runtime.PlannedDownloadLimitMbps is null, "explicit diagnostics save measurements without enabling budget publication or caps");
 });
 
-await Scenario("stop while automatic test waits leaves marker untouched", async () =>
+await Scenario("stop and restart never create a waiting automatic test", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
-    var playing = true;
-    await using var runtime = new DynexRuntime(profile.Path, service,
-        _ => Volatile.Read(ref playing) ? [new("Waiting game", "testgame", 1, null, true, "test")] : []);
-    await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On });
+    await using var runtime = new DynexRuntime(profile.Path, service, _ => []);
     await runtime.StartAsync().WaitAsync(timeout);
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
     await runtime.StopAsync().WaitAsync(timeout);
-    Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting && !HasWorker(runtime) && !HasPeers(runtime) &&
-        !new SettingsStore(profile.Path).Load().AutomaticSpeedTestAttempted,
-        "stop while waiting cleans up peers and worker without marking an unused attempt");
-    Volatile.Write(ref playing, false);
-    await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
+    Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting && !HasWorker(runtime) && !HasPeers(runtime),
+        "stop cleans monitoring without a pending automatic test");
     await runtime.StartAsync().WaitAsync(timeout);
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting, "restart also stays free of automatic speedtest load");
+    var measurement = runtime.MeasureCapacityAsync();
     var request = await service.NextAsync().WaitAsync(timeout);
-    Check(service.Calls == 1 && runtime.Settings.AutomaticSpeedTestAttempted,
-        "waiting automatic test remains available after stop and settings change");
     await runtime.StopAsync().WaitAsync(timeout);
+    await measurement.WaitAsync(timeout);
     Check(request.Token.IsCancellationRequested && !CoreConfiguration(runtime).CapacityMeasured,
-        "cancelled first measurement never unlocks download limits");
+        "stop still cancels an explicitly started diagnostic without creating a budget");
 });
 
 await Scenario("new local game cancels active measurement", async () =>
@@ -674,18 +690,19 @@ await Scenario("new local game cancels active measurement", async () =>
     await using var runtime = new DynexRuntime(profile.Path, service,
         _ => Volatile.Read(ref playing) ? [new("Test game", "testgame", 1, null, true, "test")] : []);
     await runtime.StartAsync().WaitAsync(timeout);
+    var measurement = runtime.MeasureCapacityAsync();
     var request = await service.NextAsync().WaitAsync(timeout);
     Volatile.Write(ref playing, true);
     await Until(() => request.Token.IsCancellationRequested && SpeedTestFinished(runtime));
     Check(service.Active == 0 && runtime.Settings.CapacityMeasuredAtUtc is null && HasWorker(runtime),
         "local game detection aborts active test while monitoring remains available");
-    Check(runtime.Settings.AutomaticSpeedTestAttempted && !CoreConfiguration(runtime).CapacityMeasured,
-        "gaming abort consumes only the begun attempt and leaves limits locked");
+    Check(!runtime.Settings.AutomaticSpeedTestAttempted && !CoreConfiguration(runtime).CapacityMeasured,
+        "gaming abort neither schedules another diagnostic nor enables budget publication");
     Volatile.Write(ref playing, false);
     await runtime.SaveSettingsAsync(runtime.Settings with { BackgroundPercent = 70 });
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
     Check(service.Calls == 1 && !runtime.IsSpeedTestWaiting,
-        "closing the game and saving settings do not retry an aborted automatic test");
+        "closing the game and saving settings do not retry aborted explicit diagnostics");
 });
 
 await Scenario("newly recognized configured game cancels active measurement immediately", async () =>
@@ -705,7 +722,7 @@ await Scenario("newly recognized configured game cancels active measurement imme
         "recognizing an open game through settings while measuring cancels load and preserves the last successful capacity");
 });
 
-await Scenario("peer game postpones and cancels speedtest without losing LAN discovery", async () =>
+await Scenario("peer gaming blocks and cancels explicit diagnostics without losing LAN discovery", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
@@ -714,30 +731,27 @@ await Scenario("peer game postpones and cancels speedtest without losing LAN dis
     {
         DeviceId = Guid.NewGuid(), DeviceName = "Remote test PC", Port = FreePort(),
         HeartbeatInterval = TimeSpan.FromMilliseconds(100),
-        DirectPeers = [new(IPAddress.Loopback, runtime.PeerPort)], CapacityMeasured = false
+        DirectPeers = [new(IPAddress.Loopback, runtime.PeerPort)]
     };
     await using var remote = new PeerService(remoteSettings);
     remote.Publish(true, game: "Remote game");
     await remote.StartAsync();
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => LocalPeers(runtime).Snapshot().Any(p => p.IsGaming));
-    // Observe a full discovery heartbeat while the peer is gaming.
-    await Until(() => runtime.SpeedTestMessage.Contains("kein Spiel"));
-    Check(service.Calls == 0 && runtime.IsSpeedTestWaiting && !runtime.Settings.AutomaticSpeedTestAttempted,
-        "connected gaming peer postpones automatic measurement without consuming its marker");
-    Check(LocalPeers(runtime).Snapshot().Single().BudgetProposal is null,
-        "unmeasured PSK peer never advertises its numerical default capacity");
+    Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting,
+        "connected gaming peer does not cause automatic speedtest scheduling");
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
     Check(service.Calls == 0 && runtime.SpeedTestMessage.Contains("nicht gestartet"),
         "manual speedtest is rejected while a connected peer is gaming");
     remote.Publish(false, downloadMbps: 0, uploadMbps: 0);
+    await Until(() => LocalPeers(runtime).Snapshot().SingleOrDefault() is { IsGaming: false, Game: null });
+    var measuring = runtime.MeasureCapacityAsync();
     var request = await service.NextAsync().WaitAsync(timeout);
     remote.Publish(true, game: "Remote game");
-    await Until(() => request.Token.IsCancellationRequested && SpeedTestFinished(runtime));
-    Check(service.Calls == 1 && service.Active == 0 && runtime.Settings.CapacityMeasuredAtUtc is null && HasPeers(runtime),
-        "new peer gaming status cancels measurement without dropping LAN monitoring");
-    Check(!CoreConfiguration(runtime).CapacityMeasured && runtime.Settings.AutomaticSpeedTestAttempted,
-        "peer gaming abort leaves local limits locked and the begun attempt recorded");
+    await measuring.WaitAsync(timeout);
+    Check(request.Token.IsCancellationRequested && service.Active == 0 &&
+        runtime.Settings.CapacityMeasuredAtUtc is null && HasPeers(runtime),
+        "new peer gaming cancels explicit load while retaining authenticated monitoring");
 });
 
 await Scenario("failed first measurement keeps manual limits locked", async () =>
@@ -747,8 +761,8 @@ await Scenario("failed first measurement keeps manual limits locked", async () =
     await using var runtime = new DynexRuntime(profile.Path, service, _ => []);
     await runtime.SaveSettingsAsync(runtime.Settings with { ManualLimitMbps = 25 });
     await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
     var completion = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     request.Completion.TrySetException(new IOException("offline"));
     await completion.WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
@@ -779,16 +793,17 @@ await Scenario("game begins during pre-test helper release", async () =>
     };
     await runtime.StartAsync().WaitAsync(timeout);
     var originalWorker = Field(runtime, "worker");
+    var measurement = runtime.MeasureCapacityAsync();
     await Until(() => intercepted && runtime.IsSpeedTestWaiting && !runtime.IsSpeedTestRunning &&
         HasWorker(runtime) && HasPeers(runtime) && !ReferenceEquals(originalWorker, Field(runtime, "worker")));
     Check(service.Calls == 0 && !runtime.Settings.AutomaticSpeedTestAttempted && HasWorker(runtime) && HasPeers(runtime),
-        "game appearing before actual load restores monitoring and retains an unused automatic attempt");
+        "game appearing before requested load restores monitoring without an automatic attempt marker");
     Volatile.Write(ref playing, false);
     var request = await service.NextAsync().WaitAsync(timeout);
-    Check(service.Calls == 1 && runtime.Settings.AutomaticSpeedTestAttempted,
-        "pre-test gaming race resumes the same automatic request when the game closes");
+    Check(service.Calls == 1 && !runtime.Settings.AutomaticSpeedTestAttempted,
+        "pre-test gaming race resumes only the existing explicit request when the game closes");
     await runtime.StopAsync().WaitAsync(timeout);
-    Check(request.Token.IsCancellationRequested, "resumed automatic request is cancellable during shutdown");
+    Check(request.Token.IsCancellationRequested, "resumed explicit request is cancellable during shutdown");
 });
 
 await Scenario("peer start failure leaves speedtests waiting", async () =>
@@ -800,16 +815,17 @@ await Scenario("peer start failure leaves speedtests waiting", async () =>
     blockedPort.ExclusiveAddressUse = true;
     blockedPort.Bind(new IPEndPoint(IPAddress.Loopback, runtime.PeerPort));
     await runtime.StartAsync().WaitAsync(timeout);
-    await Until(() => runtime.Snapshot?.Devices.Count == 1 && runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
+    await Until(() => runtime.Snapshot?.Devices.Count == 1);
+    var manual = runtime.MeasureCapacityAsync();
+    await Until(() => runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
     Check(runtime.SpeedTestMessage.StartsWith("Speedtest noch nicht möglich:") && runtime.Snapshot!.NetworkProblem is not null,
         "failed discovery reports a network problem instead of pretending a game is open");
-    var manual = runtime.MeasureCapacityAsync();
     Check(service.Calls == 0 && runtime.IsSpeedTestWaiting && !runtime.Settings.AutomaticSpeedTestAttempted && !manual.IsCompleted,
         "failed LAN start never treats an unknown peer state as a safe idle network");
     await runtime.StopAsync().WaitAsync(timeout);
     await manual.WaitAsync(timeout);
     Check(service.Calls == 0 && !runtime.IsSpeedTestWaiting,
-        "stop cancels manual and automatic requests waiting on unavailable discovery");
+        "stop cancels explicit diagnostics waiting on unavailable discovery");
 });
 
 await Scenario("measurement persistence failure keeps capacity locked", async () =>
@@ -818,8 +834,8 @@ await Scenario("measurement persistence failure keeps capacity locked", async ()
     var service = new ControlledSpeedTest();
     await using var runtime = new DynexRuntime(profile.Path, service, _ => []);
     await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
     var measurement = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     using (var lockedSettings = new FileStream(System.IO.Path.Combine(profile.Path, "settings.json"), FileMode.Open,
         FileAccess.Read, FileShare.Read))
     {
@@ -833,7 +849,7 @@ await Scenario("measurement persistence failure keeps capacity locked", async ()
         "capacity persistence failure visibly restores monitoring and peers");
 });
 
-await Scenario("attempt-marker persistence failure restores protection", async () =>
+await Scenario("startup without diagnostic writes survives locked settings", async () =>
 {
     using var profile = new TestProfile();
     var service = new ControlledSpeedTest();
@@ -842,18 +858,16 @@ await Scenario("attempt-marker persistence failure restores protection", async (
         FileAccess.Read, FileShare.Read))
     {
         await runtime.StartAsync().WaitAsync(timeout);
-        var originalWorker = Field(runtime, "worker");
-        await Until(() => SpeedTestFinished(runtime) && runtime.SpeedTestMessage.Contains("fehlgeschlagen"));
-        Check(service.Calls == 0 && !runtime.Settings.AutomaticSpeedTestAttempted &&
-            HasWorker(runtime) && !ReferenceEquals(originalWorker, Field(runtime, "worker")) && HasPeers(runtime),
-            "failed attempt-marker save starts no download and restores the paused protection lifecycle");
+        await runtime.RefreshStatusAsync().WaitAsync(timeout);
+        Check(service.Calls == 0 && !runtime.IsSpeedTestRunning && !runtime.IsSpeedTestWaiting &&
+            HasWorker(runtime) && HasPeers(runtime),
+            "startup needs no attempt-marker write or automatic diagnostic load, even when settings are locked");
     }
 });
 
+await Scenario("actual game packet activity controls prioritization", () => GameTrafficChecks.Run(Check));
 
-await Scenario("actual game packet activity controls limits", () => GameTrafficChecks.Run(Check));
-
-await Scenario("foreground focus gates manual and legacy always-on limits", async () =>
+await Scenario("foreground focus controls gaming status without manual or always-on limits", async () =>
 {
     using var profile = new TestProfile(measured: true);
     var service = new ControlledSpeedTest();
@@ -874,10 +888,10 @@ await Scenario("foreground focus gates manual and legacy always-on limits", asyn
         "legacy Mode.On and a manual maximum cannot limit downloads while games are only in the background");
     var change = Stopwatch.StartNew();
     Volatile.Write(ref foreground, new(202, "secondgame", started.AddMinutes(1)));
-    await Until(() => runtime.Snapshot is { IsGaming: true, Game: "Second game" } && runtime.PlannedDownloadLimitMbps == 25);
+    await Until(() => runtime.Snapshot is { IsGaming: true, Game: "Second game" } && runtime.PlannedDownloadLimitMbps is null);
     Console.WriteLine($"Foreground acquisition observed after {change.Elapsed.TotalMilliseconds:F0} ms (existing 2-second monitor).");
     Check(runtime.Snapshot!.Devices[0] is { Gaming: true, Game: "Second game" } && PublishedGaming(runtime),
-        "actual runtime plans a capped gaming budget and publishes the correctly focused second game");
+        "actual runtime publishes the correctly focused second game without any planned cap");
     change.Restart();
     Volatile.Write(ref foreground, new(999, "Discord", started));
     await Until(() => runtime.Snapshot?.IsGaming == false && runtime.PlannedDownloadLimitMbps is null);
@@ -888,8 +902,8 @@ await Scenario("foreground focus gates manual and legacy always-on limits", asyn
     Check(service.Calls == 0 && runtime.SpeedTestMessage.Contains("nicht gestartet"),
         "a game left open in the background still blocks manual speedtest load");
     Volatile.Write(ref foreground, new(101, "firstgame", started));
-    await Until(() => runtime.Snapshot is { IsGaming: true, Game: "First game" } && runtime.PlannedDownloadLimitMbps == 25);
-    Check(PublishedGaming(runtime), "returning focus to another running game restores the capped local gaming budget");
+    await Until(() => runtime.Snapshot is { IsGaming: true, Game: "First game" } && runtime.PlannedDownloadLimitMbps is null);
+    Check(PublishedGaming(runtime), "returning focus to another running game restores gaming status without a download budget");
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
     await Until(() => runtime.Snapshot?.IsGaming == false && runtime.PlannedDownloadLimitMbps is null);
     Check(!PublishedGaming(runtime), "Mode.Off removes the local focus contribution even while the foreground game remains open");
@@ -900,7 +914,7 @@ await Scenario("foreground focus gates manual and legacy always-on limits", asyn
         "legacy Mode.On cannot invent a focused game after all games close");
 });
 
-await Scenario("remote focus survives local Alt-Tab and inactive peers release manual caps", async () =>
+await Scenario("remote focus survives local Alt-Tab without creating any caps", async () =>
 {
     using var profile = new TestProfile(measured: true);
     var service = new ControlledSpeedTest();
@@ -919,27 +933,27 @@ await Scenario("remote focus survives local Alt-Tab and inactive peers release m
     remote.Publish(true, game: "Remote focused game");
     await remote.StartAsync();
     await runtime.StartAsync().WaitAsync(timeout);
-    await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 2 } && runtime.PlannedDownloadLimitMbps == 20);
+    await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 2 } && runtime.PlannedDownloadLimitMbps is null);
     Volatile.Write(ref foreground, null);
-    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps == 20);
+    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps is null);
     Check(runtime.Snapshot!.Devices.Single(p => p.Name == "Focused remote test PC").Gaming,
-        "local Alt-Tab keeps the real planned download budget while an actual connected UDP peer is focused gaming");
+        "local Alt-Tab keeps the gaming indication while an actual connected UDP peer is focused gaming without capping downloads");
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
-    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps == 20);
-    Check(runtime.PlannedDownloadLimitMbps == 20,
+    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps is null);
+    Check(runtime.PlannedDownloadLimitMbps is null,
         "Mode.Off disables only the local focus contribution and still protects a focused peer");
     remote.Publish(false, game: "Remote background game");
     await Until(() => runtime.Snapshot is { GamingCount: 0 } && runtime.PlannedDownloadLimitMbps is null);
     Check(runtime.Snapshot!.SharedDownloadBudgetMbps is null && !PublishedGaming(runtime),
-        "remote Alt-Tab releases both automatic and manual limits when no PC has a focused game");
+        "remote Alt-Tab clears active gaming without introducing any automatic or manual caps");
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
     Check(service.Calls == 0, "background local and remote games retain the separate speedtest safety lock");
     remote.Publish(true, game: "Remote focused game");
-    await Until(() => runtime.Snapshot?.GamingCount == 1 && runtime.PlannedDownloadLimitMbps == 20);
-    Check(!runtime.Snapshot!.IsGaming, "remote focus regain restores limits while the local PC stays unfocused");
+    await Until(() => runtime.Snapshot?.GamingCount == 1 && runtime.PlannedDownloadLimitMbps is null);
+    Check(!runtime.Snapshot!.IsGaming, "remote focus regain restores gaming indication while the local PC stays unfocused");
 });
 
-await Scenario("focused gaming cannot bypass the successful measurement gate", async () =>
+await Scenario("focused unmeasured gaming does not introduce a bandwidth cap", async () =>
 {
     using var profile = new TestProfile();
     var store = new SettingsStore(profile.Path);
@@ -963,14 +977,14 @@ await Scenario("legacy On without open games allows initial measurement", async 
     await using var runtime = new DynexRuntime(profile.Path, service, _ => [], () => null);
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On });
     await runtime.StartAsync().WaitAsync(timeout);
-    var request = await service.NextAsync().WaitAsync(timeout);
     var measurement = runtime.MeasureCapacityAsync();
+    var request = await service.NextAsync().WaitAsync(timeout);
     request.Complete(100);
     await measurement.WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
     Check(service.Calls == 1 && runtime.Settings.CapacityMeasuredAtUtc is not null && !runtime.Snapshot!.IsGaming &&
         runtime.PlannedDownloadLimitMbps is null,
-        "legacy On alone neither blocks a safe initial speedtest nor activates a gaming download limit");
+        "legacy On alone neither blocks explicit diagnostics nor creates a gaming download limit");
 });
 
 await Scenario("real helper capture follows local/remote focused gaming only", async () =>
@@ -994,9 +1008,9 @@ await Scenario("real helper capture follows local/remote focused gaming only", a
     Check(fixture.Created == 0 && runtime.Snapshot!.ProtectionIdle,
         "an open background game does not enable packet capture or QoS");
     Volatile.Write(ref foreground, new(101, "testgame", started));
-    await Until(() => fixture.Created == 1 && runtime.Snapshot is { QosActive: true, DriverActive: true, LimitMbps: 20 });
+    await Until(() => fixture.Created == 1 && runtime.Snapshot is { QosActive: true, DriverActive: false, LimitMbps: null });
     Check(!runtime.Snapshot!.ProtectionIdle && fixture.Controller.StartAttempted && fixture.Disposed == 0,
-        "local foreground gaming enables the real helper capture with QoS and the measured/manual budget");
+        "local foreground gaming enables helper capture and QoS without accepting a legacy manual budget");
     await Until(() => runtime.Snapshot!.History.Count >= 4);
     Check(fixture.Created == 1, "steady focused gaming preserves one capture session across heartbeats");
     Volatile.Write(ref foreground, new(404, "Discord", started));
@@ -1053,7 +1067,7 @@ await Scenario("unmeasured focused gaming uses QoS only and still releases on Al
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => fixture.Created == 1 && runtime.Snapshot?.QosActive == true);
     Check(runtime.Snapshot is { DriverActive: false, LimitMbps: null } && runtime.PlannedDownloadLimitMbps is null,
-        "real helper QoS during focused gaming cannot bypass the successful-speedtest cap gate");
+        "real helper QoS works without a successful speedtest and never requests a cap");
     Volatile.Write(ref foreground, null);
     await Until(() => fixture.Disposed == 1 && runtime.Snapshot?.ProtectionIdle == true);
     Check(!runtime.Snapshot!.QosActive, "QoS-only capture is fully removed after unmeasured gaming loses focus");

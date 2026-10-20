@@ -1,27 +1,27 @@
-# DYNEX · Dynamic Network Experience
+# DYNEX: Architektur der reinen Priorisierung
 
-Entscheidungsstand 15.10.2026, Version 1.0.6: native Windows-WPF-App mit AutoLAN, lokaler Prozess- und Steam-Spielerkennung sowie einem separaten Helper zur Begrenzung großer Downloadverbindungen. Der Helper verwendet den unabhängig installierten Windows Packet Filter (NDISRD) direkt über Windows-IOCTLs. Das Hauptsetup übernimmt fehlende Netzwerkvoraussetzungen nach Windows-UAC-Bestätigung und dokumentiert deren Herkunft für die spätere Deinstallation; der reguläre Desktop läuft ohne Erhöhung. WinDivert wird nicht mehr verwendet. Bestehende Sicherheitsblockaden bleiben unverändert.
+`Dynex.Core` stellt LAN-Kommunikation, Peer-Vertrauen, Verbindungsdiagnosen, Ping-/Sitzungsauswertung und gemeinsame Datenmodelle bereit. `Dynex.Desktop` verbindet WPF-Oberfläche, Spiel-/Prozesserkennung, Netzwerküberwachung, Geräteverwaltung und persistente Daten. `Dynex.Shaper` ist der getrennte erhöhte Priorisierungs-Helfer; sein historischer Projektname bleibt aus Kompatibilitätsgründen bestehen.
 
-## LAN-Vertrauen und Kommunikation
+## Datenfluss
 
-AutoLAN ist standardmäßig für Windows-Privatnetzwerke aktiv. DYNEX entdeckt andere laufende DYNEX-PCs automatisch; ein Gruppencode ist zum Start nicht erforderlich. Die erste neue Peer-Identität im privaten LAN wird automatisch vertraut. Das ist eine bewusste Vertrauensannahme für dieses LAN: Geräte, denen das private Netzwerk zugänglich ist, können beim ersten Kontakt in die DYNEX-Kommunikation aufgenommen werden. Wer eine bewusst abgegrenzte gemeinsame Gruppe möchte, kann optional weiterhin eine private Gruppe verwenden.
+1. Der Desktop erkennt Spielprozesse mit Prozess-ID und Startzeit und bestimmt die für Beobachtung geeigneten Spiele.
+2. Der Helfer ordnet tatsächliche Netzwerkpakete anhand frischer Socket-/Prozesstabellen zu.
+3. Bestätigter Spielverkehr aktiviert die passende Priorisierung; unbekannte Zuordnung bleibt unverändert.
+4. Geeignete ausgehende Pakete erhalten CS4 für Spiele oder EF für Sprache. Alle Pakete werden sofort weitergeleitet.
+5. Bestätigungen und Zähler gelangen über die prozessgebundene lokale Pipe zur Oberfläche; Durchsatz- und Gamingmeldungen werden authentifiziert im privaten LAN geteilt.
 
-Die Peer-Kommunikation verwendet ECDSA zur Identitäts-/Signaturprüfung, ECDH zur Ableitung eines Schlüssels pro Peer und AES-GCM für authentifizierte Verschlüsselung. Sie basiert nicht auf einem globalen, für alle Peers gemeinsam verwendeten Gruppenschlüssel. Konkrete Paketfelder und Replay-Schutz sind in [protocol.md](protocol.md) beschrieben. Kommunikation und Discovery ändern keine Systemregeln. Das Setup richtet nach Windows-Bestätigung eine eigene anwendungsspezifische Firewallfreigabe für UDP 39274 im privaten lokalen Subnetz ein; Routerkonfiguration und Netzwerkprofil bleiben erhalten.
+Es gibt keine ausgeführte Budgetplanung, keine adaptive Bandbreitenabsenkung und keine individuellen Programm- oder Gerätelimits. Historische Modellfelder und reine Berechnungsklassen dienen der Lese-/Quellkompatibilität; Runtime, IPC und Paketpfad können daraus keine Limits aktivieren.
 
-## Budget und Spielstatus
+## LAN und Sicherheit
 
-Das Standard-Hintergrundbudget beträgt 65 % der gemessenen Anschlusskapazität. Für jeden erkannten Gaming-PC wird automatisch eine Reserve von `min(10 Mbit/s, 5 % der Kapazität)` berücksichtigt. Ab 0.3.1 übertragen die PCs ihre Kapazitäts- und Reservevorschläge mit ihren authentifizierten Statusmeldungen. Der kleinste vollständige Vorschlag bestimmt den gemeinsamen Topf; dieser wird unter allen teilnehmenden PCs aufgeteilt, einschließlich Gaming-PCs. Dadurch werden Steam-Downloads auf dem eigenen Gaming-PC ebenfalls berücksichtigt. Unterschiedliche Messwerte bleiben zulässig. Die Mindestbildung wird immer aus den ursprünglichen lokalen Vorschlägen berechnet, damit ein abgelaufener langsamer Peer keinen dauerhaft zirkulierenden Mindestwert hinterlässt.
+AutoLAN verwendet pro Gerät ECDSA-Identität, ECDH-Schlüsselaustausch und AES-GCM. Replay-/Frische- und Netzwerkbereichsprüfungen bleiben bestehen. Eine neue Identität im Windows-Privatnetz wird beim ersten Kontakt automatisch vertraut; optional gibt es private gemeinsame Gruppen. Die gezielte Firewallfreigabe betrifft UDP 39274 im privaten lokalen Subnetz.
 
-Die adaptive Pingreserve ist immer eingeschaltet und wird nicht als UI-Schalter angeboten. Sie kann eine gültige Idle-Baseline des Gaming-Peers verwenden, um das Downloadbudget am anderen PC anzupassen. Eine Anpassung ersetzt keine Messung des Spielserverpfads und ist keine Zusage für 30 ms oder eine bestimmte Verbesserung.
+Der Helfer verwendet den separat installierten Windows Packet Filter (NDISRD), keinen eigenen Kerneltreiber. Benutzersitzung und Prozessidentitäten begrenzen die Pipe. Watchdog, Shutdown-ACK, Freigabefehler und begrenzte Wiederherstellung bleiben auch ohne Limits notwendig.
 
-Die Spielersuche umfasst Prozessnamen bekannter Spiele, benutzerdefinierte Namen und lokal installierte Steam-Spiele aus den gefundenen Steam-Bibliotheken. Steam-Pfadtreffer benötigen zusätzlich die positive Typangabe `Game` aus dem lokalen Steam-Appcache. Software, Tools und unbekannte Typen werden nicht automatisch gewertet. Wallpaper Engine wird zusätzlich gezielt ausgeschlossen, auch wenn die Steam-Metadaten fehlen. Details und Fehlergrenzen stehen in [Spielerkennung](game-detection.md).
+## Plattformen
 
-Eine Übereinstimmung bedeutet nur, dass ein Spielprozess läuft. Der Prozess kann sich im Menü befinden; DYNEX bestätigt weder Multiplayer noch Match, Serververbindung oder aktive Runde. Ein Spielstart darf als Fallback verwendet werden.
+Android verbindet sich im WLAN weiter mit PCs, steuert aber keine Bandbreite und startet dafür keinen VPN-Tunnel. Ein schon in AdGuard konfigurierter lokaler SOCKS-Proxy bleibt unbegrenzt erreichbar. Ohne passenden Messpfad meldet Android unbekannten Verbrauch.
 
-## Shaping und Systemgrenze
+## Systemgrenze
 
-`Dynex.Core` verwaltet Peerstatus und Budgetplanung; `Dynex.Desktop` stellt Oberfläche, Discovery, Messungen, Einstellungen und Prozesserkennung bereit. `Dynex.Shaper` liest Ethernetframes, ordnet TCP/UDP-Verbindungen über frische Windows-Sockettabellen Prozessen zu und lässt Spiele, Kommunikationsprogramme und kleine Verbindungen direkt passieren. Erst anhaltend große Transfers erhalten ein gemeinsames Bytebudget. Prozess-ID und Startzeit der erkannten Spiele werden über eine beidseitig gegen Prozessidentitäten geprüfte lokale Pipe übertragen. Ohne aktive Filterverbindung und frische Prozesszuordnung wird kein aktives Limit gemeldet. Die reale NDIS-/WAN-Abnahme ist separat zu prüfen; automatisierte Tests alleine bestätigen keine Pingverbesserung.
-
-Auch mit einem funktionierenden Paketfilter kommen eingehende Pakete bereits über den Internetanschluss. Verzögerung kann TCP und congestion-controlled QUIC beeinflussen, garantiert aber weder weniger WAN-Verbrauch bei beliebigem UDP noch eine konstante Pingverbesserung. Andere PCs ohne DYNEX, WLAN-Störungen, Upload-Sättigung, Providerprobleme, VPNs und Filtertreiber bleiben außerhalb der Kontrolle. Es gibt keine Prozessspeicher-Manipulation oder Anti-Cheat-Umgehung.
-
-Die zugrunde liegende Machbarkeit und Windows-QoS-Abgrenzung stehen in [Shaping](shaping.md); Details zum Peer-Protokoll stehen in [protocol.md](protocol.md).
+DYNEX programmiert keine Routerwarteschlangen und garantiert keinen niedrigen Ping. Routerseitiges SQM/QoS und passende Gesamtbandbreite regeln die gemeinsame Leitung. DSCP-Markierungen helfen dort nur bei entsprechender Konfiguration. Weitere Details: [Priorisierung](qos.md), [Android](android.md), [Installation](installation.md).

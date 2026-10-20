@@ -154,7 +154,7 @@ internal static class DesktopLifecycle
             if (args.Contains("--features-only"))
             {
                 await FeatureUiSmokeChecks.RunAsync(window, runtime, directory);
-                await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), "PASS: isolated Feature-UI-Smoke; rendered device manager, connection test, application rules, network profiles and usage history. No driver or production data.\n");
+                await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), "PASS: isolated Feature-UI-Smoke; rendered device manager, connection test, network profiles and usage history. No limiter UI, driver or production data.\n");
                 return;
             }
             if (args.Contains("--network-only"))
@@ -268,11 +268,10 @@ internal static class DesktopLifecycle
         var sizes = new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) };
         var sections = new Dictionary<string, string[]>
         {
-            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "ManualLimitBox", "AutomaticBudgetText"],
-            ["games"] = ["ModeCombo", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList"],
+            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "CapacityMeasurementText"],
+            ["games"] = ["ModeCombo", "EarlyGamesBox", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList"],
             ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton"],
             ["updates"] = ["InstalledVersionText", "AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"],
-            ["schedule"] = ["NightFreeCheck", "NightFromBox", "NightToBox", "WeekendProfileCombo"],
             ["appearance"] = ["UiSoundsCheck", "UiAnimationsCheck"]
         };
         foreach (var (width, height) in sizes)
@@ -280,7 +279,13 @@ internal static class DesktopLifecycle
             window.Width = width; window.Height = height;
             window.ShowOverview(); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            AssertPageFits(window, "OverviewPage", ["DownText", "UpText", "LimitText", "DriverText", "HistoryPlot", "RouterPing", "ExternalPing", "OverviewDeviceGrid", "OverviewDeviceCount"]);
+            foreach (var removedControl in new[] { "ManualLimitBox", "ManualUploadBox", "UploadLimitCheck", "ProfileCombo", "PriorityCombo", "ApplicationRulesButton", "ScheduleSettingsSection" })
+                if (window.FindName(removedControl) is not null)
+                    throw new Exception($"Entfernte Begrenzungsoberfläche ist noch erreichbar: {removedControl}.");
+            if (((System.Windows.Controls.DataGrid)window.FindName("DeviceGrid")).Columns.Any(c => string.Equals(c.Header?.ToString(), "LIMIT", StringComparison.OrdinalIgnoreCase)) ||
+                ((System.Windows.Controls.DataGrid)window.FindName("OverviewDeviceGrid")).Columns.Any(c => string.Equals(c.Header?.ToString(), "LIMIT", StringComparison.OrdinalIgnoreCase)))
+                throw new Exception("Geräteübersicht enthält noch eine Limitspalte.");
+            AssertPageFits(window, "OverviewPage", ["DownText", "UpText", "PriorityOverviewText", "DriverText", "HistoryPlot", "RouterPing", "ExternalPing", "OverviewDeviceGrid", "OverviewDeviceCount"]);
             // The compact dashboard intentionally replaces this extra summary with
             // the always-visible device table; check the summary when it is shown.
             if (((FrameworkElement)window.FindName("DashboardHomePanel")).IsVisible)
@@ -310,7 +315,7 @@ internal static class DesktopLifecycle
             Capture(window, Path.Combine(directory, $"overview-{width}x{height}.png"));
             window.ShowDevices(); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            AssertPageFits(window, "DevicesPage", ["DeviceGrid", "DeviceCount", "NextDevicesButton", "SharedBudgetText"]);
+            AssertPageFits(window, "DevicesPage", ["DeviceGrid", "DeviceCount", "NextDevicesButton", "DevicePriorityText"]);
             var devicesPage = (FrameworkElement)window.FindName("DevicesPage");
             var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
             var devicesCard = (FrameworkElement)window.FindName("DevicesPageCard");
@@ -318,7 +323,7 @@ internal static class DesktopLifecycle
             var cardSlot = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesCard);
             if (headerSlot.Bottom > cardSlot.Top + 1)
                 throw new Exception($"Die Kopfzeile der Geräteansicht überlappt bei {width}x{height} den Inhalt.");
-            if (((System.Windows.Controls.TextBlock)window.FindName("SharedBudgetText")).TextWrapping != System.Windows.TextWrapping.Wrap ||
+            if (((System.Windows.Controls.TextBlock)window.FindName("DevicePriorityText")).TextWrapping != System.Windows.TextWrapping.Wrap ||
                 ((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).TextWrapping != System.Windows.TextWrapping.Wrap)
                 throw new Exception("Die Gerätehinweise müssen bei schmalen Fenstern umbrechen können.");
             if (((FrameworkElement)window.FindName("OverviewPage")).IsVisible || ((FrameworkElement)window.FindName("SettingsPage")).IsVisible)
@@ -342,14 +347,14 @@ internal static class DesktopLifecycle
         await VerifyToolTipsAsync(window, directory);
         window.ShowOverview(); window.UpdateLayout();
         await File.WriteAllTextAsync(Path.Combine(directory, "pages-result.txt"),
-            "PASS: overview, dedicated PC view and all six settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; no page scrolling; controls reachable; navigation preserves unsaved fields and settings.\n");
+            "PASS: overview, dedicated PC view and all five settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; no page scrolling; controls reachable; limiting controls and schedule page are absent; navigation preserves unsaved fields and settings.\n");
     }
     private static async Task VerifyToolTipsAsync(MainWindow window, string directory)
     {
         window.ShowSettings("general");
         window.UpdateLayout();
         double shortHeight = 0;
-        foreach (var name in new[] { "NotificationsCheck", "AutomaticBudgetText" })
+        foreach (var name in new[] { "NotificationsCheck", "SpeedTestHint" })
         {
             var owner = (FrameworkElement)window.FindName(name);
             var tip = new System.Windows.Controls.ToolTip { Content = owner.ToolTip, PlacementTarget = owner };
@@ -528,6 +533,10 @@ internal static class DesktopLifecycle
             render.Invoke(window, [idle with { ProtectionIdle = false, DriverState = "Freigabe nicht bestätigt: Testfehler" }]);
             if (Text("QosStatusText") == "Netzwerkfilter inaktiv" || Text("ProtectionStatusText") == "NETZWERKSCHUTZ · INAKTIV")
                 throw new Exception("Unbestätigte Freigabe wird fälschlich als Filter-Leerlauf angezeigt.");
+            render.Invoke(window, [idle with { DriverActive = false, QosActive = true, ProtectionIdle = false, GamePriorityPackets = 12, VoicePriorityPackets = 4 }]);
+            if (Text("PriorityOverviewText") != "PRIORITÄT AKTIV" || Text("QosStatusText") != "Priorisierung aktiv" ||
+                !Text("QosDetailText").Contains("12") || !Text("QosDetailText").Contains("4"))
+                throw new Exception("Prioritätsstatus wird nicht anhand der bestätigten QoS-Markierungen und Paket-Zähler angezeigt.");
         }
         finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
     }
@@ -629,11 +638,9 @@ internal static class DesktopLifecycle
                 $"Fenstergröße (WPF-Einheiten, Export mit 96 DPI): {(int)Math.Ceiling(window.ActualWidth)} × {(int)Math.Ceiling(window.ActualHeight)}\n" +
                 $"Status: {snapshot.State}\nDetails: {snapshot.Detail}\n" +
                 $"Gaming: {snapshot.IsGaming} ({snapshot.Game})\n" +
-                $"Treiber aktiv/verfügbar: {snapshot.DriverActive}/{snapshot.DriverAvailable}\nTreiberstatus: {snapshot.DriverState}\n" +
+                $"Netzwerkkomponente verfügbar: {snapshot.DriverAvailable}\nKomponentenstatus: {snapshot.DriverState}\n" +
                 $"Priorisierung aktiv: {snapshot.QosActive}; Spiel-/Sprachpakete: {snapshot.GamePriorityPackets}/{snapshot.VoicePriorityPackets}\n" +
                 $"Netzwerkfilter ohne Gaming bestätigt inaktiv: {snapshot.ProtectionIdle}\n" +
-                $"Downloadlimit: {snapshot.LimitMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s\n" +
-                $"Gemeinsames Downloadbudget: {snapshot.SharedDownloadBudgetMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s für {snapshot.ParticipantCount} PCs; vollständig abgestimmt: {snapshot.SharedBudgetComplete}; Anteile bestätigt: {snapshot.ConfirmedParticipantCount}/{snapshot.ParticipantCount}\n" +
                 $"Download/Upload: {snapshot.DownloadMbps?.ToString("0.##") ?? "unbekannt"}/{snapshot.UploadMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s\n" +
                 $"Router-Ping: {snapshot.Router.Current?.ToString("0.##") ?? "unbekannt"} ms; Internet-Ping: {snapshot.External.Current?.ToString("0.##") ?? "unbekannt"} ms\n" +
                 $"Geräte: {snapshot.Devices.Count}; Verlaufspunkte: {snapshot.History.Count}\n" +
@@ -667,9 +674,13 @@ internal static class DesktopLifecycle
         if (new SettingsStore(ProfilePath).LoadIdentity().GroupKey != code[7..]) throw new Exception("DPAPI-Roundtrip fehlgeschlagen.");
         var signedId = Dynex.Core.AutoLanIdentity.GetDeviceId(new SettingsStore(ProfilePath).LoadIdentity().SigningPrivateKeyBase64!);
         if (signedId == Guid.Empty) throw new Exception("AutoLAN-Geräteidentität fehlt.");
-        await runtime.SaveSettingsAsync(runtime.Settings with { DeviceName = "changed", BackgroundPercent = 95, ReservePerGamerMbps = 0, Adaptive = false, AutoConnectLan = true });
-        if (runtime.Settings.DeviceName != Environment.MachineName || runtime.Settings.BackgroundPercent != 95 || !runtime.Settings.Adaptive || runtime.Settings.ReservePerGamerMbps <= 0)
-            throw new Exception("Windows-PC-Name, gespeicherter Downloadanteil oder automatische Reserve-/Adaptivrichtlinie wurden überschrieben.");
+        await runtime.SaveSettingsAsync(runtime.Settings with { DeviceName = "changed", BackgroundPercent = 95,
+            ReservePerGamerMbps = 9, Adaptive = true, ManualLimitMbps = 1, ManualUploadLimitMbps = 2,
+            UploadLimitEnabled = true, NightFree = true, AutoConnectLan = true });
+        if (runtime.Settings.DeviceName != Environment.MachineName || runtime.Settings.Adaptive ||
+            runtime.Settings.ReservePerGamerMbps != 0 || runtime.Settings.ManualLimitMbps is not null ||
+            runtime.Settings.ManualUploadLimitMbps is not null || runtime.Settings.UploadLimitEnabled || runtime.Settings.NightFree)
+            throw new Exception("Windows-PC-Name ging verloren oder alte Limitwerte wurden nicht neutralisiert.");
         if (Dynex.Core.AutoLanIdentity.GetDeviceId(new SettingsStore(ProfilePath).LoadIdentity().SigningPrivateKeyBase64!) != signedId)
             throw new Exception("AutoLAN-Schlüssel blieb nicht erhalten.");
         var migrationStore = new SettingsStore(Path.Combine(ProfilePath!, "legacy-identity"));
@@ -715,10 +726,7 @@ internal static class DesktopLifecycle
     {
         window.ShowDevices(); window.UpdateLayout();
         // Real encrypted transport and bindings, synthetic rates. Only the isolated smoke profile changes.
-        // The preceding normalization smoke intentionally changed the saved share
-        // to 95%. Set this fixture's policy explicitly so its expected 90 Mbps
-        // shared budget remains independent of test order.
-        await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = false, Mode = GamingMode.Off, BackgroundPercent = 65 });
+        await runtime.SaveSettingsAsync(runtime.Settings with { AutoConnectLan = false, Mode = GamingMode.Off });
         int port;
         using (var reservation = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0)))
             port = ((System.Net.IPEndPoint)reservation.Client.LocalEndPoint!).Port;
@@ -729,7 +737,7 @@ internal static class DesktopLifecycle
             LoopbackOnly = true, Port = port,
             DirectPeers = [new(System.Net.IPAddress.Loopback, runtime.PeerPort)]
         });
-        peer.Publish(true, 120.5, game: "Testspiel im Fokus", appliedLimitMbps: 42, shaperActive: true, uploadMbps: 12.25);
+        peer.Publish(true, 120.5, game: "Testspiel im Fokus", uploadMbps: 12.25);
         await peer.StartAsync();
         async Task WaitFor(Func<bool> ready, int seconds = 8)
         {
@@ -743,15 +751,16 @@ internal static class DesktopLifecycle
             window.UpdateLayout();
         }
         DeviceView? Remote() => runtime.Snapshot?.Devices.FirstOrDefault(d => d.Name == peerName);
-        await WaitFor(() => Remote() is { DownloadMbps: 120.5, UploadMbps: 12.25, LimitMbps: 42 });
-        await WaitFor(() => runtime.Snapshot is { SharedDownloadBudgetMbps: 90, ParticipantCount: 2, GamingCount: 1,
-            SharedCapacityMbps: 150, SharedBudgetComplete: true, ConfirmedParticipantCount: 1 });
-        var budgetLabel = (System.Windows.Controls.TextBlock)window.FindName("SharedBudgetText");
-        var automaticBudget = (System.Windows.Controls.TextBlock)window.FindName("AutomaticBudgetText");
+        await WaitFor(() => Remote() is { DownloadMbps: 120.5, UploadMbps: 12.25 });
+        var budgetLabel = (System.Windows.Controls.TextBlock)window.FindName("DevicePriorityText");
+        var measuredCapacity = (System.Windows.Controls.TextBlock)window.FindName("CapacityMeasurementText");
         var coordinationLabel = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
-        if (!budgetLabel.Text.Contains($"{90:0.0} Mbit/s insgesamt") || automaticBudget.Text != $"{90:0.##} Mbit/s · automatisch" ||
-            !coordinationLabel.Text.Contains("1/2 Geräten bestätigt"))
-            throw new Exception("Gemeinsames Budget oder bestätigte Filteranzahl fehlen in der Oberfläche.");
+        if (!(runtime.Snapshot!.QosActive
+                ? budgetLabel.Text.Contains("bestätigt QoS-Markierungen", StringComparison.OrdinalIgnoreCase)
+                : budgetLabel.Text.Contains("für QoS", StringComparison.OrdinalIgnoreCase) && !budgetLabel.Text.Contains("bestätigt", StringComparison.OrdinalIgnoreCase)) ||
+            !coordinationLabel.Text.Contains("Router-QoS oder SQM", StringComparison.OrdinalIgnoreCase) ||
+            measuredCapacity.Text.Contains("Budget", StringComparison.OrdinalIgnoreCase))
+            throw new Exception("Priorisierungsstatus oder Routerhinweis fehlen in der Oberfläche.");
         var grid = (System.Windows.Controls.DataGrid)window.FindName("DeviceGrid");
         string Cell(string property)
         {
@@ -769,14 +778,14 @@ internal static class DesktopLifecycle
             window.UpdateLayout();
             if (grid.Columns.Sum(c => c.ActualWidth) > grid.ActualWidth + 1)
                 throw new Exception("Gerätetabelle ist breiter als das Fenster.");
-            if (Cell(nameof(DeviceView.DownloadMbps)) != $"{120.5:0.0} Mbps" || Cell(nameof(DeviceView.UploadMbps)) != $"{12.25:0.0} Mbps" || Cell(nameof(DeviceView.LimitMbps)) != $"{42:0.0} Mbps")
-                throw new Exception("Download, Upload und Limit sind nicht korrekt gebunden.");
+            if (Cell(nameof(DeviceView.DownloadMbps)) != $"{120.5:0.0} Mbps" || Cell(nameof(DeviceView.UploadMbps)) != $"{12.25:0.0} Mbps")
+                throw new Exception("Download und Upload sind nicht korrekt gebunden.");
             Capture(window, Path.Combine(directory, $"peer-traffic-fixture-{width}.png"));
         }
         window.Width = 900; window.Height = 650; window.ShowDevices(); window.UpdateLayout();
         var wrappedCoordination = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
         if (wrappedCoordination.ActualHeight <= wrappedCoordination.FontSize * 1.5)
-            throw new Exception("Der längere Hinweis zum Gerätebudget wird im Mindestfenster nicht umgebrochen.");
+            throw new Exception("Der Hinweis zur netzwerkweiten Routerpriorisierung wird im Mindestfenster nicht umgebrochen.");
         var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
         var devicesCard = (FrameworkElement)window.FindName("DevicesPageCard");
         if (System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesHeader).Bottom >
@@ -791,13 +800,9 @@ internal static class DesktopLifecycle
             if (remote.GetProperty("DownloadMbps").GetDouble() != 120.5 || remote.GetProperty("UploadMbps").GetDouble() != 12.25)
                 throw new Exception("Diagnoseexport verliert Peer-Durchsatz.");
         }
-        peer.Publish(true, 120.5, game: "Testspiel im Fokus", appliedLimitMbps: 99, shaperActive: true, uploadMbps: 12.25);
-        await WaitFor(() => Remote() is { LimitMbps: 99 } && runtime.Snapshot is { ConfirmedParticipantCount: 0 });
-        if (!coordinationLabel.Text.Contains("0/2 Geräten bestätigt"))
-            throw new Exception("Ein altes zu hohes Limit wird als neues gemeinsames Budget bestätigt.");
         peer.Publish(false, 0, uploadMbps: 0);
-        await WaitFor(() => Remote() is { DownloadMbps: 0, UploadMbps: 0, LimitMbps: null });
-        if (Cell(nameof(DeviceView.DownloadMbps)) != $"{0:0.0} Mbps" || Cell(nameof(DeviceView.UploadMbps)) != $"{0:0.0} Mbps" || Cell(nameof(DeviceView.LimitMbps)) != "—") throw new Exception("Gemessener Stillstand erscheint nicht als Null.");
+        await WaitFor(() => Remote() is { DownloadMbps: 0, UploadMbps: 0 });
+        if (Cell(nameof(DeviceView.DownloadMbps)) != $"{0:0.0} Mbps" || Cell(nameof(DeviceView.UploadMbps)) != $"{0:0.0} Mbps") throw new Exception("Gemessener Stillstand erscheint nicht als Null.");
         peer.Publish(false);
         await WaitFor(() => Remote() is { DownloadMbps: null, UploadMbps: null });
         if (Cell(nameof(DeviceView.DownloadMbps)) != "—" || Cell(nameof(DeviceView.UploadMbps)) != "—") throw new Exception("Fehlende Messwerte erscheinen nicht als unbekannt.");

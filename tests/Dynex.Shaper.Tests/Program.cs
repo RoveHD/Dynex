@@ -97,11 +97,11 @@ using (var socket = new TcpClient(AddressFamily.InterNetwork))
     var source = new FakeDevice(packet => output.Write(packet.Buffer, 0, packet.Length));
     for (var i = 0; i < 32; i++) source.Enqueue(1500);
     var watch = Stopwatch.StartNew();
-    await using var pump = new PacketPump(source, 2);
+    await using var pump = new PacketPump(source, .1);
     await input.ReadExactlyAsync(new byte[48000], timeout.Token);
     watch.Stop();
-    Check(watch.Elapsed.TotalSeconds >= .15 && watch.Elapsed.TotalSeconds < 2,
-        $"2 Mbit/s pacing through TCP loopback ({watch.Elapsed.TotalMilliseconds:F0} ms / 48000 bytes)");
+    Check(watch.Elapsed.TotalSeconds < 2,
+        $"legacy 0.1 Mbit/s cap is inert through TCP loopback ({watch.Elapsed.TotalMilliseconds:F0} ms / 48000 bytes)");
     await WaitUntil(() => pump.SentBytes == 48000, TimeSpan.FromSeconds(1));
     Check(pump.SentBytes == 48000 && pump.DroppedPackets == 0, "pacing preserves packets within bounded backlog");
     await Task.WhenAll(pump.DisposeAsync().AsTask(), pump.DisposeAsync().AsTask());
@@ -199,7 +199,7 @@ foreach (var cleanupError in new string?[] { null, "injected native flush failur
 }
 
 {
-    using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"mbps\":8}\n"));
+    using var input = new MemoryStream(Encoding.UTF8.GetBytes("{\"mbps\":8,\"qosEnabled\":true}\n"));
     using var output = new MemoryStream();
     using var commands = new StreamReader(input);
     using var replies = new StreamWriter(output, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
@@ -269,11 +269,11 @@ foreach (var outcome in new[] { "success", "cleanup-error", "stale-eof", "closed
     var rejected = false;
     try { await controller.StopAsync(requireExit: true).WaitAsync(timeout.Token); }
     catch (InvalidOperationException) { rejected = true; }
-    Check(outcome == "success" ? !rejected && controller.Status.Message == "Downloadbegrenzung ausgeschaltet" :
+    Check(outcome == "success" ? !rejected && controller.Status.Message == "Paketpriorisierung ausgeschaltet" :
         rejected && controller.Status.Message.Contains(outcome == "cleanup-error" ? "injected native reset failure" : "nicht bestätigt"),
         "desktop requires final release confirmation and preserves errors: " + outcome);
     await controller.StopAsync();
-    Check(outcome == "success" || controller.Status.Message != "Downloadbegrenzung ausgeschaltet",
+    Check(outcome == "success" || controller.Status.Message != "Paketpriorisierung ausgeschaltet",
         "repeated stop cannot erase unconfirmed release: " + outcome);
     timeout.Cancel();
     try { await peer; } catch (OperationCanceledException) { }
@@ -281,7 +281,7 @@ foreach (var outcome in new[] { "success", "cleanup-error", "stale-eof", "closed
 {
     var controller = new ShaperController();
     await controller.StopAsync(requireExit: true);
-    Check(controller.Status.Message == "Downloadbegrenzung ausgeschaltet", "stop before writer/connection creation is safe");
+    Check(controller.Status.Message == "Paketpriorisierung ausgeschaltet", "stop before writer/connection creation is safe");
 }
 {
     var controller = new ShaperController();
@@ -381,8 +381,8 @@ foreach (var releaseError in new string?[] { null, "injected release failure" })
     var source = new FakeDevice(_ => { });
     for (var i = 0; i < 2000; i++) source.Enqueue(1500);
     await using var pump = new PacketPump(source, .1);
-    await WaitUntil(() => pump.ReceivedBytes >= 3_000_000, TimeSpan.FromSeconds(2));
-    Check(pump.DroppedPackets > 1900, "saturated source drops overflow instead of unbounded queue growth");
+    await WaitUntil(() => pump.SentBytes == 3_000_000, TimeSpan.FromSeconds(2));
+    Check(pump.DroppedPackets == 0 && !pump.HasDownloadLimit, "bulk traffic passes completely without shaping drops despite a legacy low cap");
     var watch = Stopwatch.StartNew();
     await pump.DisposeAsync();
     Check(watch.Elapsed < TimeSpan.FromSeconds(1), "stop interrupts pacing and backlog immediately");
@@ -395,7 +395,7 @@ foreach (var releaseError in new string?[] { null, "injected release failure" })
     await WaitUntil(() => pump.ReceivedBytes >= 150000, TimeSpan.FromSeconds(2));
     source.Enqueue(64);
     await prioritySent.Task.WaitAsync(TimeSpan.FromSeconds(1));
-    Check(pump.SentBytes < 150000 && pump.BypassedBytes == 64, "voice/game bypass overtakes saturated download queue");
+    Check(pump.SentBytes == 150064 && pump.BypassedBytes == 150064, "bulk and interactive packets are both forwarded immediately without a download queue");
 }
 NdisPacketDevice.ValidateAbi();
 NdisLifecycleChecks.Run(Check);

@@ -49,28 +49,23 @@ internal static class NetworkProfileRaceChecks
             new SettingsStore(profile.Path).Save(Configured([a, b], measured: false));
             var speed = new ControlledSpeedTest();
             NetworkIdentity current = a;
-            var gameOpen = true;
-            var game = new GameDetectionResult("Synthetic", "Synthetic", 4321, DateTimeOffset.UtcNow.AddMinutes(-1), true, "Configured");
-            await using var runtime = new DynexRuntime(profile.Path, speed,
-                _ => Volatile.Read(ref gameOpen) ? [game] : [], networkIdentityReader: () => current);
+            await using var runtime = new DynexRuntime(profile.Path, speed, _ => [], networkIdentityReader: () => current);
             await runtime.StartAsync().WaitAsync(Timeout);
             SuppressPeriodicCheck(runtime);
-            var previous = Field<Task>(runtime, "speedTestTask");
+            check(Field<Task?>(runtime, "speedTestTask") is null && !runtime.IsSpeedTestWaiting,
+                $"{reconnect}: unmeasured startup does not schedule automatic calibration");
             current = b;
             await Refresh(runtime, reconnect).WaitAsync(Timeout);
-            var replacement = Field<Task>(runtime, "speedTestTask");
-            check(previous.IsCompleted && !ReferenceEquals(previous, replacement) && !replacement.IsCompleted && runtime.IsSpeedTestWaiting,
-                $"{reconnect}: network switch awaits canceled waiting test before creating the replacement");
-            check(runtime.Settings.ActiveNetworkProfileId == b.Id && Field<CancellationTokenSource>(runtime, "speedTestCancellation") is { IsCancellationRequested: false },
-                $"{reconnect}: previous cleanup cannot erase or cancel new network's CTS");
-            Volatile.Write(ref gameOpen, false);
-            await runtime.RefreshStatusAsync().WaitAsync(Timeout);
+            check(runtime.Settings.ActiveNetworkProfileId == b.Id && speed.Calls == 0 &&
+                Field<Task?>(runtime, "speedTestTask") is null && !runtime.IsSpeedTestWaiting,
+                $"{reconnect}: network switch changes policy without creating replacement test load");
+            var measurement = runtime.MeasureCapacityAsync();
             var request = await speed.NextAsync().WaitAsync(Timeout);
             request.Complete(45);
-            await replacement.WaitAsync(Timeout);
+            await measurement.WaitAsync(Timeout);
             check(runtime.Settings.CapacityMbps == 45 && runtime.Settings.ActiveNetworkProfileId == b.Id &&
                 runtime.Settings.NetworkProfiles.Single(p => p.Id == a.Id).Policy.CapacityMeasuredAtUtc is null,
-                $"{reconnect}: replacement automatic test saves exclusively to the new network");
+                $"{reconnect}: explicit diagnostic result is stored only in the positively identified current network");
         }
 
         // A loaded test holds lifecycle. Refresh must cancel/join it outside the gate.
@@ -81,13 +76,15 @@ internal static class NetworkProfileRaceChecks
             await using var runtime = new DynexRuntime(profile.Path, speed, _ => [], networkIdentityReader: () => current);
             await runtime.StartAsync().WaitAsync(Timeout);
             SuppressPeriodicCheck(runtime);
+            var measurement = runtime.MeasureCapacityAsync();
             var oldRequest = await speed.NextAsync().WaitAsync(Timeout);
             var previous = Field<Task>(runtime, "speedTestTask");
             current = b;
             await runtime.ReconnectNetworkAsync().WaitAsync(Timeout);
             check(oldRequest.Token.IsCancellationRequested && previous.IsCompleted && runtime.Settings.ActiveNetworkProfileId == b.Id,
                 "loaded test is canceled and joined before reconnect obtains lifecycle; no deadlock");
-            var replacement = Field<Task>(runtime, "speedTestTask");
+            check(speed.Calls == 1 && !runtime.IsSpeedTestWaiting, "network reconnect does not retry canceled diagnostics automatically");
+            var replacement = runtime.MeasureCapacityAsync();
             var request = await speed.NextAsync().WaitAsync(Timeout); request.Complete(46);
             await replacement.WaitAsync(Timeout);
             check(runtime.Settings.CapacityMbps == 46 && runtime.Settings.NetworkProfiles.Single(p => p.Id == a.Id).Policy.CapacityMeasuredAtUtc is null,
@@ -120,8 +117,8 @@ internal static class NetworkProfileRaceChecks
                 "unknown startup network preserves saved profiles without assigning/consuming an automatic measurement");
             current = a;
             await Refresh(runtime, reconnect: false).WaitAsync(Timeout);
-            check(Field<Task>(runtime, "speedTestTask") is { IsCompleted: false } && runtime.IsSpeedTestWaiting,
-                "positive identity after unknown startup starts deferred automatic test for the saved profile");
+            check(Field<Task?>(runtime, "speedTestTask") is null && !runtime.IsSpeedTestWaiting,
+                "positive identity after unknown startup restores monitoring without scheduling an automatic test");
         }
         {
             using var profile = new TestProfile();
@@ -132,12 +129,12 @@ internal static class NetworkProfileRaceChecks
                 networkIdentityReader: () => Interlocked.CompareExchange(ref step, 2, 1) == 1 ? b : a);
             await runtime.StartAsync().WaitAsync(Timeout);
             SuppressPeriodicCheck(runtime);
-            var previous = Field<Task>(runtime, "speedTestTask");
+            var previous = Field<Task?>(runtime, "speedTestTask");
             Volatile.Write(ref step, 1);
             await Refresh(runtime, reconnect: false).WaitAsync(Timeout);
-            check(previous.IsCompleted && runtime.Settings.ActiveNetworkProfileId == a.Id &&
-                !ReferenceEquals(previous, Field<Task>(runtime, "speedTestTask")) && runtime.IsSpeedTestWaiting,
-                "A-to-B-to-A during cancellation replaces A's waiting test without applying stale B or losing automatic start");
+            check(previous is null && runtime.Settings.ActiveNetworkProfileId == a.Id &&
+                Field<Task?>(runtime, "speedTestTask") is null && !runtime.IsSpeedTestWaiting,
+                "A-to-B-to-A identity race preserves A without stale policy or automatic diagnostic load");
         }
     }
     private static UserSettings Configured(NetworkIdentity[] networks, bool measured)

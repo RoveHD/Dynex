@@ -34,14 +34,15 @@ public static class ControlProtocol
 
     public static Command ParseCommand(string line)
     {
-        var rate = ParseRate(line);
+        // Validate the bounded legacy envelope, but never activate its caps.
+        _ = ParseRate(line);
         using var json = JsonDocument.Parse(line);
         var qos = json.RootElement.TryGetProperty("qosEnabled", out var qosValue) && qosValue.GetBoolean();
-        var upload = ParseUploadRate(json.RootElement);
+        _ = ParseUploadRate(json.RootElement);
         var observe = json.RootElement.TryGetProperty("observeGameTraffic", out var observeValue) && observeValue.GetBoolean();
-        var rules = ParseApplicationRules(json.RootElement);
+        _ = ParseApplicationRules(json.RootElement);
         if (!json.RootElement.TryGetProperty("protectedProcesses", out var processes))
-            return new(rate, [], qos, upload, observe, rules);
+            return new(null, [], qos, null, observe, []);
         if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() > 128)
             throw new FormatException("Ungültige Liste geschützter Programme.");
         var result = new List<ProtectedProcess>();
@@ -52,7 +53,7 @@ public static class ControlProtocol
             if (pid <= 0 || ticks is <= 0 || ticks > DateTime.MaxValue.Ticks) throw new FormatException("Ungültige Prozessidentität.");
             result.Add(new(pid, ticks));
         }
-        return new(rate, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, upload, observe, rules);
+        return new(null, result.Distinct().OrderBy(p => p.ProcessId).ToArray(), qos, null, observe, []);
     }
 
     private static ApplicationLimit[] ParseApplicationRules(JsonElement root)

@@ -291,7 +291,7 @@ Section "DYNEX Anwendung" SEC_MAIN
   ; The desktop's dedicated CLI does not start normal application workers or
   ; read settings. Only missing system prerequisites request one UAC elevation.
   ; The official MSI is fetched directly from its publisher, never redistributed.
-  DetailPrint "Downloadbegrenzung und private Heimnetzverbindung einrichten ..."
+  DetailPrint "Paketpriorisierung und private Heimnetzverbindung einrichten ..."
   Delete "$INSTDIR\setup-result.txt"
   ClearErrors
   ExecWait '"$INSTDIR\DYNEX.exe" --setup-prerequisites --setup-result "$INSTDIR\setup-result.txt"$UpgradeLegacy' $PrerequisiteExit

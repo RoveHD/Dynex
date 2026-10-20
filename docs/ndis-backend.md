@@ -1,5 +1,7 @@
 # Windows Packet Filter als unabhängiger Backend
 
+> **Aktueller Betrieb: reine Priorisierung.** Budget-, Limit- und automatische Speedtest-Beschreibungen in diesem historischen Dokument gelten nur für ältere Versionen. Es werden keine Download-/Uploadlimits mehr ausgeführt; alte Einstellungen werden neutralisiert. Der manuelle Speedtest bleibt Diagnose. Aktuelle Abläufe: [README](../README.md), [Paketpriorisierung](qos.md), [Architektur](architecture.md).
+
 Der NDIS-Backend verwendet **Windows Packet Filter / WinpkFilter (`ndisrd.sys`) von NT KERNEL**, einen anderen Treiber als WinDivert. Die Herstellerseite bietet [Version 3.6.2.1 für Windows x64](https://www.ntkernel.com/windows-packet-filter/download/) als Microsoft-attestierten NDIS-6-Lightweight-Filter für unter anderem Windows 10/11 an. Das ist eine Herstellerangabe; die tatsächliche Dateisignatur und Lauffähigkeit müssen am konkreten Paket/Zielsystem geprüft werden. Bestehende Sicherheitsblockaden werden weder umgangen noch durch Umverpacken eines blockierten Treibers behandelt.
 
 ## Bezug und Rechte

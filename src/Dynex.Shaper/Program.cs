@@ -34,10 +34,10 @@ internal static class Program
             !int.TryParse(args[3], out var parentId) || !long.TryParse(args[5], out var parentTicks))
             throw new ArgumentException("Aufruf: Dynex.Shaper --pipe NAME --parent PID --parent-start UTC_TICKS");
         if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess || RuntimeInformation.OSArchitecture != Architecture.X64)
-            throw new PlatformNotSupportedException("Der Download-Helfer benötigt Windows x64.");
+            throw new PlatformNotSupportedException("Der Priorisierungs-Helfer benötigt Windows x64.");
         using var identity = WindowsIdentity.GetCurrent();
         if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
-            throw new UnauthorizedAccessException("Der Download-Helfer benötigt Administratorrechte.");
+            throw new UnauthorizedAccessException("Der Priorisierungs-Helfer benötigt Administratorrechte.");
         using var parent = Process.GetProcessById(parentId);
         if (parent.StartTime.ToUniversalTime().Ticks != parentTicks || parent.HasExited)
             throw new InvalidOperationException("Elternprozess stimmt nicht überein.");
@@ -81,7 +81,7 @@ internal static class Program
                     qosActive = false,
                     gamePriorityPackets = 0L, voicePriorityPackets = 0L,
                     mbps = (double?)null,
-                    error = $"Download-Helfer konnte nicht initialisiert oder fortgesetzt werden ({e.GetType().Name}, 0x{e.HResult:X8}).",
+                    error = $"Priorisierungs-Helfer konnte nicht initialisiert oder fortgesetzt werden ({e.GetType().Name}, 0x{e.HResult:X8}).",
                     phase = "helper-error",
                     receivedBytes = 0L, sentBytes = 0L, bypassedBytes = 0L, droppedPackets = 0L
                 }).AsMemory(), timeout.Token);
@@ -96,12 +96,9 @@ internal static class Program
     {
         using var writeLock = new SemaphoreSlim(1);
         PacketPump? session = null;
-        double? rate = null;
-        double? uploadRate = null;
         var qosEnabled = false;
         var observeGameTraffic = false;
         var captureOutbound = false;
-        var applicationRulesEnabled = false;
         string? error = null;
         string? releaseError = null;
         string? stopReason = null;
@@ -109,13 +106,9 @@ internal static class Program
         var failed = false;
         long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
-        var bulkPolicy = new BulkDownloadPolicy(() => ownership.Snapshot);
         var accounting = new TrafficAccounting();
         var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
         var gameTraffic = new GameTrafficMonitor(() => ownership.Snapshot);
-        var applicationPolicy = new ApplicationRulePolicy(() => ownership.Snapshot);
-        var downloadActivity = new DownloadActivityMeter();
-        PacketPump? measuredSession = null;
         var ownershipWorker = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -136,7 +129,7 @@ internal static class Program
             if (current.Failure is { } failure)
                 Interlocked.CompareExchange(ref error, "Paketverarbeitung beendet: " + failure.Message, null);
             if (current.CleanupError is { } cleanupError)
-                Interlocked.CompareExchange(ref releaseError, "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanupError, null);
+                Interlocked.CompareExchange(ref releaseError, "Freigabe der Paketpriorisierung nicht bestätigt: " + cleanupError, null);
         }
 
         async Task StatusAsync(bool terminating = false)
@@ -150,35 +143,28 @@ internal static class Program
             {
                 var current = Volatile.Read(ref session);
                 var ownershipReady = ownership.Snapshot.IsFresh;
-                if (!ReferenceEquals(current, measuredSession))
-                {
-                    downloadActivity.Sample(null);
-                    measuredSession = current;
-                }
-                var limitedDownloadMbps = downloadActivity.Sample(current?.Active == true && ownershipReady
-                    ? current.LimitedDownloadBytes : null);
                 var top = accounting.Snapshot();
                 var cleanupError = Volatile.Read(ref releaseError) ?? (current?.CleanupError is { } cleanup
-                    ? "Freigabe der Downloadbegrenzung nicht bestätigt: " + cleanup : null);
+                    ? "Freigabe der Paketpriorisierung nicht bestätigt: " + cleanup : null);
                 var status = new
                 {
-                    active = current?.Active == true && current.HasDownloadLimit && ownershipReady,
-                    mbps = current?.Active == true && current.HasDownloadLimit && ownershipReady ? rate : null,
+                    active = false,
+                    mbps = (double?)null,
                     qosActive = current?.Active == true && current.QosEnabled && ownershipReady,
-                    applicationRulesActive = current?.Active == true && current.HasApplicationRules && ownershipReady,
+                    applicationRulesActive = false,
                     observingGameTraffic = current?.Active == true && observeGameTraffic && ownershipReady,
                     activeGameProcesses = current?.Active == true && observeGameTraffic && ownershipReady
                         ? gameTraffic.Snapshot().Select(game => new { processId = game.ProcessId,
                             startedAtUtcTicks = game.StartedAtUtcTicks, ageSeconds = game.AgeSeconds }).ToArray() : [],
-                    uploadActive = current?.Active == true && current.HasUploadLimit && ownershipReady,
-                    uploadMbps = current?.Active == true && current.HasUploadLimit && ownershipReady ? uploadRate : null,
+                    uploadActive = false,
+                    uploadMbps = (double?)null,
                     uploadSentBytes = current?.UploadSentBytes ?? 0,
-                    limitedDownloadMbps,
+                    limitedDownloadMbps = (double?)null,
                     topPrograms = current?.Active == true ? top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,
                     error = cleanupError ?? (terminating ? Volatile.Read(ref terminationMessage) : null) ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
-                        ? "Programmzuordnung nicht verfügbar; Downloads werden freigegeben. " + ownership.LastError : null),
+                        ? "Programmzuordnung nicht verfügbar; Pakete werden unverändert weitergeleitet. " + ownership.LastError : null),
                     releaseError = cleanupError,
                     commandId = Interlocked.Read(ref acknowledgedCommandId),
                     captureReleased = current is null && cleanupError is null,
@@ -211,7 +197,7 @@ internal static class Program
                     if (Stopwatch.GetElapsedTime(Interlocked.Read(ref lastHeartbeat)) > ControlProtocol.HeartbeatTimeout)
                     {
                         Interlocked.CompareExchange(ref stopReason, "heartbeat-timeout", null);
-                        Interlocked.CompareExchange(ref terminationMessage, "Download-Helfer sicher beendet: Seit 7 Sekunden kein Steuerbefehl von DYNEX empfangen.", null);
+                        Interlocked.CompareExchange(ref terminationMessage, "Priorisierungs-Helfer sicher beendet: Seit 7 Sekunden kein Steuerbefehl von DYNEX empfangen.", null);
                         break;
                     }
                     if (Volatile.Read(ref networkChanged) != 0)
@@ -244,53 +230,37 @@ internal static class Program
                     break;
                 }
                 var command = ControlProtocol.ParseCommand(line);
-                var requested = command.Mbps;
                 var requestedQos = command.QosEnabled;
                 using var commandJson = JsonDocument.Parse(line);
                 var commandId = commandJson.RootElement.TryGetProperty("commandId", out var commandValue)
                     ? commandValue.GetInt64() : 0;
                 if (commandId < 0) throw new FormatException("Ungültige Befehlsbestätigung.");
                 var shutdown = commandJson.RootElement.TryGetProperty("shutdown", out var shutdownValue) && shutdownValue.GetBoolean();
-                var requestedUpload = command.UploadMbps;
                 var requestedObservation = command.ObserveGameTraffic;
-                var requestedRules = command.ApplicationRules ?? [];
-                if (shutdown && (requested is not null || requestedQos || requestedUpload is not null || requestedObservation || requestedRules.Length != 0))
-                    throw new FormatException("Abschaltung erfordert ausgeschaltete Limits, QoS und Paketbeobachtung.");
+                if (shutdown && (requestedQos || requestedObservation))
+                    throw new FormatException("Abschaltung erfordert ausgeschaltete QoS und Paketbeobachtung.");
                 // Only a complete, validated command renews the lease. Policy
                 // updates and native capture transitions must not hide when the
                 // last authenticated desktop command was actually received.
                 Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
-                // Upload pacing and QoS marking both need outbound capture; download-only does not.
-                var wantsOutbound = requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Any(r => r.UploadMbps.HasValue);
-                var wantsActive = requested.HasValue || requestedQos || requestedUpload.HasValue || requestedObservation || requestedRules.Length != 0;
-                bulkPolicy.Protect(command.ProtectedProcesses);
+                // Capture is used only to observe games and mark outbound packets.
+                var wantsOutbound = requestedQos || requestedObservation;
+                var wantsActive = wantsOutbound;
                 qosPolicy.Protect(command.ProtectedProcesses);
                 gameTraffic.Configure(command.ProtectedProcesses, requestedObservation);
-                applicationPolicy.Configure(requestedRules);
                 observeGameTraffic = requestedObservation;
                 var current = Volatile.Read(ref session);
                 if (current?.Active == true && requestedQos == qosEnabled && wantsOutbound == captureOutbound && wantsActive)
                 {
-                    // Keep native mode/events/queues intact across adaptive rate
-                    // changes and cap <-> QoS-only transitions.
-                    if (requested != rate) current.UpdateLimit(requested);
-                    if (requestedUpload != uploadRate) current.UpdateUploadLimit(requestedUpload);
-                    current.UpdateApplicationRules(requestedRules);
-                    applicationRulesEnabled = requestedRules.Length != 0;
-                    rate = requested;
-                    uploadRate = requestedUpload;
+                    // Heartbeats and obsolete cap fields never restart capture.
                 }
-                else if (requested != rate || requestedUpload != uploadRate || requestedQos != qosEnabled || wantsOutbound != captureOutbound ||
-                    (requestedRules.Length != 0) != applicationRulesEnabled || !wantsActive)
+                else if (requestedQos != qosEnabled || wantsOutbound != captureOutbound || !wantsActive)
                 {
                     var old = Interlocked.Exchange(ref session, null);
                     if (old is not null) await ReleaseAsync(old);
                     stop.Token.ThrowIfCancellationRequested();
-                    rate = requested;
-                    uploadRate = requestedUpload;
                     qosEnabled = requestedQos;
                     captureOutbound = wantsOutbound;
-                    applicationRulesEnabled = requestedRules.Length != 0;
                     error = null;
                     if (wantsActive && Volatile.Read(ref releaseError) is null)
                     {
@@ -300,8 +270,8 @@ internal static class Program
                             try
                             {
                                 stop.Token.ThrowIfCancellationRequested();
-                                var created = new PacketPump(device, requested, bulkPolicy.ShouldLimit, requestedQos ? qosPolicy.Classify : null,
-                                    requestedUpload, bulkPolicy.ShouldLimitUpload, gameTraffic.Observe, applicationPolicy.Classify, requestedRules);
+                                var created = new PacketPump(device, null, priority: requestedQos ? qosPolicy.Classify : null,
+                                    observer: gameTraffic.Observe);
                                 Volatile.Write(ref session, created);
                                 if (stop.IsCancellationRequested)
                                 {
@@ -324,7 +294,7 @@ internal static class Program
                         }
                     }
                 }
-                // A failed session remains disabled until {mbps:null}, then re-arm.
+                // A failed session remains disabled until an idle command, then re-arm.
                 Interlocked.Exchange(ref acknowledgedCommandId, commandId);
                 await StatusAsync();
                 if (shutdown)
@@ -340,7 +310,7 @@ internal static class Program
             failed = true;
             Interlocked.CompareExchange(ref stopReason, "helper-error", null);
             Interlocked.CompareExchange(ref terminationMessage,
-                $"Download-Helfer abgebrochen ({e.GetType().Name}, 0x{e.HResult:X8}): {e.Message[..Math.Min(300, e.Message.Length)]}", null);
+                $"Priorisierungs-Helfer abgebrochen ({e.GetType().Name}, 0x{e.HResult:X8}): {e.Message[..Math.Min(300, e.Message.Length)]}", null);
         }
         finally
         {
@@ -350,8 +320,6 @@ internal static class Program
             if (current is not null) await ReleaseAsync(current);
             await watchdog;
             await ownershipWorker;
-            rate = null;
-            uploadRate = null;
             try { await StatusAsync(terminating: true); }
             catch (Exception reportError) when (reportError is IOException or OperationCanceledException or ObjectDisposedException) { }
         }

@@ -1,5 +1,7 @@
 # Adaptive Downloadreserve anhand der Gaming-PCs
 
+> **Aktueller Betrieb: reine Priorisierung.** Budget-, Limit- und automatische Speedtest-Beschreibungen in diesem historischen Dokument gelten nur für ältere Versionen. Es werden keine Download-/Uploadlimits mehr ausgeführt; alte Einstellungen werden neutralisiert. Der manuelle Speedtest bleibt Diagnose. Aktuelle Abläufe: [README](../README.md), [Paketpriorisierung](qos.md), [Architektur](architecture.md).
+
 `LimitPlanner` verwendet aktuelle Ping-Abweichungen der Gaming-PCs gegenüber deren jeweiligen Idle-Baselines, um das gemeinsame Hintergrundbudget auf jedem teilnehmenden PC anzupassen. Ein Beispiel: Ein Gaming-PC meldet unbelastet 20 ms und unter Last 90 ms; der Download-PC misst weiterhin 20 ms. Wenn dessen lokale Downloadlast mindestens 75 % seines aktuellen Anteils erreicht und die erhöhten Gaming-Messungen anhalten, sinkt sein Budgetanteil. Ein lokal gamingfähiger Rechner kann zusätzlich seine eigene schlechte Latenz als Congestion-Evidenz verwenden, auch wenn entfernte Gaming-PCs gesunde Werte melden.
 
 Das ist eine adaptive Reserve, keine Zusage von 30 ms oder eines bestimmten Spielpings. Ein externes ICMP-Messziel ist ein Näherungswert für die gemeinsame Verbindung. Serverauslastung, WLAN, Routing, Uploads und die bei diesem PC bereits eingetroffenen UDP-Daten können weiterhin Latenz verursachen. Die Policy diagnostiziert damit auch nicht sicher Bufferbloat.

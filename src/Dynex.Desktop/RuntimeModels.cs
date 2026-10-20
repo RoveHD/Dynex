@@ -12,9 +12,9 @@ public sealed record UserSettings
     public double? LoadedLatencyMs { get; init; }
     public bool AutomaticSpeedTestAttempted { get; init; }
     public double BackgroundPercent { get; init; } = 65;
-    public double ReservePerGamerMbps { get; init; } = 10;
+    public double ReservePerGamerMbps { get; init; }
     public double? ManualLimitMbps { get; init; }
-    public bool Adaptive { get; init; } = true;
+    public bool Adaptive { get; init; }
     public bool DriverEnabled { get; init; } = true;
     public bool AutoStart { get; init; } = true;
     public bool AutoUpdate { get; init; }
@@ -25,7 +25,7 @@ public sealed record UserSettings
     public string Profile { get; init; } = "Standard";
     public bool SetupGuideDone { get; init; }
     public double? UploadCapacityMbps { get; init; }
-    public bool UploadLimitEnabled { get; init; } = true;
+    public bool UploadLimitEnabled { get; init; }
     public double? ManualUploadLimitMbps { get; init; }
     /// <summary>Process names to observe from launch; protection starts only after the game produces confirmed network traffic.</summary>
     public string EarlyLimitGames { get; init; } = "";

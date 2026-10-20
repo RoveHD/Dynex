@@ -95,7 +95,7 @@ internal sealed class SettingsStore
         if (value.GameProcesses.Length > 4096) throw new ArgumentException("Zu viele Prozessnamen.");
         foreach (var process in Split(value.GameProcesses))
             if (!Regex.IsMatch(process, @"^[a-zA-Z0-9][a-zA-Z0-9_. -]{0,79}$")) throw new ArgumentException("Nur Prozessnamen ohne Pfad (maximal 80 Zeichen) angeben.");
-        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Spiele mit früher Begrenzung") })
+        foreach (var (list, label) in new[] { (value.EarlyLimitGames, "Ab Spielstart priorisierte Spiele") })
         {
             if (list.Length > 2048 || Split(list).Length > 32) throw new ArgumentException($"{label}: höchstens 32 Namen.");
             foreach (var process in Split(list))
@@ -121,9 +121,18 @@ internal sealed class SettingsStore
     internal static UserSettings Normalize(UserSettings value) => NetworkProfiles.Capture(value with
     {
         DeviceName = Environment.MachineName,
-        ApplicationRules = ApplicationRules.Normalize(value.ApplicationRules),
-        ReservePerGamerMbps = Math.Min(10, value.CapacityMbps * 0.05),
-        Adaptive = true
+        // Legacy fields remain readable so an upgrade/import never loses unrelated settings.
+        // None may restore bandwidth shaping in the prioritization-only product.
+        ApplicationRules = [],
+        ManualLimitMbps = null,
+        ManualUploadLimitMbps = null,
+        UploadLimitEnabled = false,
+        ReservePerGamerMbps = 0,
+        Adaptive = false,
+        NightFree = false,
+        WeekendProfile = "",
+        NetworkProfiles = value.NetworkProfiles is null ? null! : value.NetworkProfiles.Select(profile =>
+            profile is null || profile.Policy is null ? profile! : profile with { Policy = profile.Policy.WithoutLimits() }).ToArray()
     });
     internal sealed record Identity(Guid DeviceId, string GroupKey, string? SigningPrivateKeyBase64 = null);
 

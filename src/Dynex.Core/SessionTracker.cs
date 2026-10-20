@@ -6,8 +6,7 @@ public sealed record SessionSummary(DateTimeOffset StartedAtUtc, TimeSpan Durati
     public string Text =>
         $"{(string.IsNullOrEmpty(Game) ? "Spielsitzung" : Game)}: {Duration.TotalMinutes:0} min · " +
         (AveragePingMs is { } avg ? $"Ø Ping {avg:0} ms (max {MaxPingMs:0} ms)" : "kein Ping gemessen") +
-        (PingLossPercent is > 0 ? $" · {PingLossPercent:0} % ohne Antwort" : "") +
-        $" · Downloads {LimitedFor.TotalMinutes:0} min begrenzt";
+        (PingLossPercent is > 0 ? $" · {PingLossPercent:0} % ohne Antwort" : "");
 }
 
 /// <summary>Collects one summary per local gaming session from the regular 2-second samples.</summary>

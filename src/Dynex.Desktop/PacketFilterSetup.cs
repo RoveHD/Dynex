@@ -35,7 +35,7 @@ internal static class PacketFilterSetup
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DYNEX", "setup");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "Windows.Packet.Filter.3.6.2.1.x64.msi");
-        progress("Die Downloadbegrenzung wird vorbereitet …");
+        progress("Die Paketpriorisierung wird vorbereitet …");
         if (!await HasExpectedHashAsync(path, token))
         {
             var temporary = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".download");
@@ -88,7 +88,7 @@ internal static class PacketFilterSetup
         VerifySignatureCore(path, verifiedPackage.SafeFileHandle.DangerousGetHandle());
         // Another setup may have completed while this package was downloaded.
         if (IsInstalled) return new(0, false);
-        progress("Windows richtet die Downloadbegrenzung ein. Bitte die Windows-Rückfrage bestätigen …");
+        progress("Windows richtet die Paketpriorisierung ein. Bitte die Windows-Rückfrage bestätigen …");
         var elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
         using var process = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "msiexec.exe"))
         {

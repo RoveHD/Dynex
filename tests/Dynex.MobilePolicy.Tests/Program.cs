@@ -7,7 +7,6 @@ void Check(bool condition, string reason)
     if (!condition) throw new InvalidOperationException("FAIL: " + reason);
     checks++; Console.WriteLine("PASS: " + reason);
 }
-void Near(double? value, double expected, string reason) => Check(value is { } actual && Math.Abs(actual - expected) < .000001, reason);
 void Reject(Action action, string reason)
 {
     try { action(); } catch (ArgumentException) { Check(true, reason); return; }
@@ -18,255 +17,61 @@ var now = DateTimeOffset.UtcNow;
 PeerAdvertisement Peer(bool gaming = true, double line = 200, double headroom = 15, double reserve = 12, double? weight = 1) =>
     new(Guid.NewGuid(), "Synthetic PC", gaming, null, null, now, BudgetProposal: new(line, headroom, reserve), ShareWeight: weight);
 MobileLimitDecision Plan(params PeerAdvertisement[] peers) => MobileLimitPolicy.Plan(handset, peers, now: now);
+void NoLimit(MobileLimitDecision decision, string label) => Check(decision.DownloadLimitMbps is null &&
+    decision.SharedDownloadBudgetMbps is null && decision.SharedCapacityMbps is null &&
+    decision.SharedUploadCapacityMbps is null && !decision.SharedBudgetComplete, label);
 
 var pc = Peer();
-var uploadPc = pc with { BudgetProposal = new(200, 15, 12, 40) };
-Check(Plan(uploadPc).SharedUploadCapacityMbps == 40 && Plan(pc).SharedUploadCapacityMbps is null,
-    "handset displays authenticated PC upload capacity while legacy unknown upload remains null");
-Check(Plan(uploadPc, Peer(false) with { BudgetProposal = new(500, 20, 10, 20) }).SharedUploadCapacityMbps == 20 &&
-    Plan(uploadPc with { LastSeenUtc = now.AddSeconds(-11) }).SharedUploadCapacityMbps is null,
-    "handset derives conservative upload metadata only from fresh remote original proposals");
-var one = Plan(pc);
-Near(one.DownloadLimitMbps, 79, "one gaming PC shares 158 Mbps remaining pool with the additional handset");
-Check(one is { GamingActive: true, ParticipantCount: 2, GamingCount: 1, SharedBudgetComplete: true, SharedCapacityMbps: 200, SharedDownloadBudgetMbps: 158 },
-    "consumer plan contains remote capacity and membership without inventing a local proposal");
-var two = Plan(pc, Peer());
-Near(two.DownloadLimitMbps, 48.66, "two gaming PCs reserve for both games and share with a third participant");
-Check(two.ParticipantCount == 3 && two.GamingCount == 2, "handset never adds to gaming count");
-Near(Plan(pc, Peer(false)).DownloadLimitMbps, 52.66, "non-gaming PCs still participate in the shared download budget");
-var slower = Peer(false, 100, 10, 5);
-Near(Plan(pc, slower).DownloadLimitMbps, 28.33, "minimum complete reserve-adjusted PC proposal selects shared pool");
-Near(Plan(Peer(line: 300, headroom: 0, reserve: 100), Peer(false, 250, 0, 0)).DownloadLimitMbps, 66.66,
-    "reserve-adjusted proposals are minimized before division rather than just raw link capacity");
-var weighted = MobileLimitPolicy.Plan(handset, [pc, Peer(false, weight: 2)], shareWeight: .5, now: now);
-Near(weighted.DownloadLimitMbps, 22.57, "handset receives its explicitly weighted share");
-Check(weighted.ShareWeightTotal == 3.5 && weighted.LocalShareWeight == .5, "valid remote and local weights are preserved");
-foreach (var weight in new double?[] { null, 0, 5, double.NaN, double.PositiveInfinity })
-{
-    var legacy = MobileLimitPolicy.Plan(handset, [pc, Peer(false, weight: weight)], shareWeight: 2, now: now);
-    Near(legacy.DownloadLimitMbps, 52.66, "legacy/invalid remote weights switch all participants to equal shares: " + weight);
-    Check(legacy.ShareWeightTotal == 3 && legacy.LocalShareWeight == 1, "legacy fallback does not retain the handset's preferred weight");
-}
-var unknown = Peer(false) with { BudgetProposal = null };
-var partial = Plan(pc, unknown);
-Near(partial.DownloadLimitMbps, 52.66, "unknown PC proposals do not invent capacity but their PC still counts as a participant");
-Check(!partial.SharedBudgetComplete && partial.SharedCapacityMbps == 200, "partial budget is explicitly incomplete");
-foreach (var proposal in new DownloadBudgetProposal?[] { null, new(double.NaN, 15, 12), new(0, 15, 12), new(200, 100, 12) })
-{
-    var missing = MobileLimitPolicy.Plan(handset, [pc with { BudgetProposal = proposal }], gamingDownloadLimitMbps: 20, now: now);
-    Check(missing is { DownloadLimitMbps: null, GamingActive: true, SharedCapacityMbps: null, SharedDownloadBudgetMbps: null },
-        "missing/invalid PC proposals never turn a manual maximum into an invented capacity");
-}
-Near(Plan(pc with { LastSeenUtc = now.AddSeconds(-9.999) }).DownloadLimitMbps, 79, "peer is usable just before TTL expiry");
-foreach (var stale in new[] { now.AddSeconds(-10), now.AddSeconds(-11), now.AddSeconds(5.001) })
-    Check(Plan(pc with { LastSeenUtc = stale }) is { DownloadLimitMbps: null, GamingActive: false, ParticipantCount: 1 },
-        "expired or excessively future peer cannot activate a limit");
-Check(MobileLimitPolicy.Plan(handset, [pc with { LastSeenUtc = now.AddSeconds(-1) }], peerTtl: TimeSpan.FromSeconds(1), now: now).DownloadLimitMbps is null,
-    "configured peer TTL is respected");
-Near(Plan(pc with { LastSeenUtc = now.AddSeconds(5) }).DownloadLimitMbps, 79, "Core's bounded five-second future tolerance is preserved");
-Near(Plan(pc, pc).DownloadLimitMbps, 79, "duplicate peer identities do not alter the budget");
-Check(Plan(pc, pc with { LastSeenUtc = now.AddMilliseconds(1), IsGaming = false }).DownloadLimitMbps is null,
-    "newest peer status wins when a game ends");
-Check(Plan(pc with { DeviceId = handset }, pc with { DeviceId = Guid.Empty }) is { DownloadLimitMbps: null, ParticipantCount: 1 },
-    "own identity and empty identities never become remote gamers");
-Check(MobileLimitPolicy.Plan(handset, [pc], autoConnect: false, now: now) is { DownloadLimitMbps: null, GamingActive: false },
-    "disabled AutoConnect cannot activate protection from cached peers");
-Check(MobileLimitPolicy.Plan(handset, [pc], paused: true, now: now) is { DownloadLimitMbps: null, GamingActive: true },
-    "pause releases limit without claiming the remote game ended");
-Near(MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: 20, now: now).DownloadLimitMbps, 20,
-    "manual gaming maximum can reduce the confirmed budget share");
-Near(MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: 100, now: now).DownloadLimitMbps, 79,
-    "manual maximum cannot increase the confirmed budget share");
-Near(MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: .126, now: now).DownloadLimitMbps, .12,
-    "fractional manual maximum rounds down without exceeding the user ceiling");
-Check(MobileLimitPolicy.Plan(handset, [pc with { IsGaming = false }], gamingDownloadLimitMbps: 20, now: now).DownloadLimitMbps is null,
-    "game end removes manual and automatic limits");
-var exhausted = Plan(Peer(line: 10, reserve: 100));
-Near(exhausted.DownloadLimitMbps, .1, "exhausted pool uses the same technical minimum as Core");
-Check(!exhausted.SharedBudgetComplete && exhausted.SharedDownloadBudgetMbps == 0, "unrepresentable shared budget remains incomplete");
-foreach (var value in new[] { double.NaN, double.PositiveInfinity, 0, .09, 100001 })
-    Reject(() => MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: value), "invalid manual cap is rejected: " + value);
-foreach (var value in new[] { double.NaN, 0, .24, 4.01 })
-    Reject(() => MobileLimitPolicy.Plan(handset, [pc], shareWeight: value), "invalid handset priority is rejected: " + value);
+NoLimit(Plan(pc), "gaming PC never installs a handset limit or borrowed bandwidth proposal");
+Check(Plan(pc) is { GamingActive: true, GamingCount: 1, ParticipantCount: 2 }, "gaming and device membership remain visible");
+NoLimit(Plan(pc, Peer(), Peer(false)), "two gaming PCs and an idle PC cannot allocate mobile bandwidth");
+Check(Plan(pc, Peer(), Peer(false)) is { GamingCount: 2, ParticipantCount: 4 }, "all connected devices remain represented");
+NoLimit(Plan(pc with { BudgetProposal = new(200, 15, 12, 40) }), "legacy upload proposal cannot become an active handset budget");
+foreach (var proposal in new DownloadBudgetProposal?[] { null, new(1, 99, 100), new(100000, 0, 0) })
+    NoLimit(Plan(pc with { BudgetProposal = proposal }), "missing, exhausted and large legacy proposals stay observational");
+foreach (var maximum in new double?[] { null, .1, .126, 20, 25, 100000 })
+    NoLimit(MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: maximum, now: now),
+        "legacy manual maximum is ignored: " + maximum);
+foreach (var weight in new[] { .25, 1, 4 })
+    NoLimit(MobileLimitPolicy.Plan(handset, [pc, Peer(false, weight: 2)], shareWeight: weight, now: now),
+        "legacy participant weighting cannot restore limits: " + weight);
+Check(Plan(pc with { LastSeenUtc = now.AddSeconds(-9.999) }).GamingActive, "fresh peer is usable before TTL expiry");
+foreach (var stale in new[] { now.AddSeconds(-10), now.AddSeconds(-60), now.AddSeconds(5.001) })
+    Check(Plan(pc with { LastSeenUtc = stale }) is { GamingActive: false, ParticipantCount: 1 },
+        "expired or implausibly future peers never report gaming: " + stale);
+Check(Plan(pc with { LastSeenUtc = now.AddSeconds(5) }).GamingActive, "bounded five-second future tolerance is preserved");
+Check(Plan(pc, pc).ParticipantCount == 2, "duplicate identities are counted once");
+Check(!Plan(pc, pc with { LastSeenUtc = now.AddMilliseconds(1), IsGaming = false }).GamingActive,
+    "newest authenticated status wins for duplicate identities");
+Check(Plan(pc with { DeviceId = handset }, pc with { DeviceId = Guid.Empty }) is { GamingActive: false, ParticipantCount: 1 },
+    "own or missing peer identities never establish remote gaming");
+Check(!MobileLimitPolicy.Plan(handset, [pc], autoConnect: false, now: now).GamingActive,
+    "disabled connection never consumes remote gaming state");
+NoLimit(MobileLimitPolicy.Plan(handset, [pc], paused: true, now: now), "obsolete pause input cannot restore a cap");
+Check(MobileLimitPolicy.Plan(handset, [pc], paused: true, now: now).GamingActive,
+    "obsolete pause input does not hide actual gaming");
+foreach (var value in new[] { double.NaN, double.PositiveInfinity, -.1, 0, .099, 100001 })
+    Reject(() => MobileLimitPolicy.Plan(handset, [pc], gamingDownloadLimitMbps: value), "invalid legacy cap is rejected: " + value);
+foreach (var value in new[] { double.NaN, double.NegativeInfinity, 0, .24, 4.01 })
+    Reject(() => MobileLimitPolicy.Plan(handset, [pc], shareWeight: value), "invalid legacy weight is rejected: " + value);
 Reject(() => MobileLimitPolicy.Plan(Guid.Empty, [pc]), "missing handset identity is rejected");
-Reject(() => MobileLimitPolicy.Plan(handset, [pc], peerTtl: TimeSpan.Zero), "invalid peer TTL is rejected");
-var gamer = pc with { SessionId = Guid.NewGuid(), IdleBaselineMs = 20, LatencyMs = 90,
-    LatencyTargetId = "valorant:udp:203.0.113.8:7000", IdleBaselineAtUtc = now.AddMinutes(-1), LatencySampleSequence = 1 };
-PeerAdvertisement Feedback(int seconds, long? sequence = null, double latency = 90) => gamer with
-{ LastSeenUtc = now.AddSeconds(seconds), LatencySampleSequence = sequence ?? seconds + 1, LatencyMs = latency };
-ProbeStats Load(int seconds, double? rate = 24) => new(now.AddSeconds(seconds), null, rate, false, "");
-MobileLimitDecision Adaptive(MobileLimitPlanner planner, int seconds, double? rate = 24, PeerAdvertisement? feedback = null) =>
-    planner.Plan(handset, [feedback ?? Feedback(seconds)], Load(seconds, rate), gamingDownloadLimitMbps: 25, now: now.AddSeconds(seconds));
-MobileLimitPlanner Reduced()
-{
-    var planner = new MobileLimitPlanner();
-    Near(Adaptive(planner, 0).DownloadLimitMbps, 25, "first elevated PC sample keeps the configured mobile maximum");
-    Near(Adaptive(planner, 5).DownloadLimitMbps, 25, "two elevated PC samples do not reduce prematurely");
-    var reduced = Adaptive(planner, 10);
-    Near(reduced.DownloadLimitMbps, 21.25, "three fresh PC latency samples spanning ten seconds reduce actual 25 Mbps mobile budget");
-    Check(reduced.Reason.Contains("Latenzreserve erhöht"), "mobile status explains the extra latency reserve");
-    return planner;
-}
-var adaptivePlanner = Reduced();
-var mobileMetadata = Adaptive(adaptivePlanner, 11);
-var fixedMetadata = MobileLimitPolicy.Plan(handset, [Feedback(11)], gamingDownloadLimitMbps: 25, now: now.AddSeconds(11));
-Check(mobileMetadata with { DownloadLimitMbps = fixedMetadata.DownloadLimitMbps, Reason = fixedMetadata.Reason } == fixedMetadata,
-    "adaptation preserves consumer-only PC capacity, pool, gamer count, upload metadata and budget completeness");
-foreach (var seconds in new[] { 15, 20, 25, 30 })
-    Near(Adaptive(adaptivePlanner, seconds, 20, Feedback(seconds, latency: 20)).DownloadLimitMbps, 21.25,
-        "recovery waits for five complete fresh healthy rounds over twenty seconds: " + seconds);
-Near(Adaptive(adaptivePlanner, 35, 20, Feedback(35, latency: 20)).DownloadLimitMbps, 22.5,
-    "healthy PC feedback restores only five percent of the original budget per recovery window");
+Reject(() => MobileLimitPolicy.Plan(handset, [pc], peerTtl: TimeSpan.Zero), "invalid TTL is rejected");
 
-foreach (var rate in new double?[] { null, 0, 1, 18, double.NaN, double.PositiveInfinity })
+var planner = new MobileLimitPlanner();
+var session = Guid.NewGuid();
+for (var seconds = 0; seconds <= 1200; seconds += 5)
 {
-    var planner = new MobileLimitPlanner();
-    foreach (var seconds in new[] { 0, 5, 10, 15 })
-        Near(Adaptive(planner, seconds, rate).DownloadLimitMbps, 25,
-            "unknown, invalid or subthreshold actual handset load cannot justify reduction: " + rate);
+    var at = now.AddSeconds(seconds);
+    var feedback = pc with { LastSeenUtc = at, SessionId = session, LatencySampleSequence = seconds + 1,
+        LatencyMs = 900, IdleBaselineMs = 15, IdleBaselineAtUtc = at, LatencyTargetId = "1.1.1.1",
+        DownloadMbps = 95, LimitedDownloadMbps = 95 };
+    var load = new ProbeStats(at, null, 95, LimitedDownloadMbps: 95);
+    var result = planner.Plan(handset, [feedback], load, gamingDownloadLimitMbps: 25, now: at);
+    if (seconds % 60 == 0) NoLimit(result, "sustained bad latency and saturated load never lower mobile speed: " + seconds);
+    if (!result.GamingActive) throw new InvalidOperationException("Fresh feedback must remain visible");
 }
-foreach (var mode in new[] { "missing", "stale", "future" })
-{
-    var planner = new MobileLimitPlanner();
-    foreach (var seconds in new[] { 0, 5, 10, 15 })
-    {
-        var at = now.AddSeconds(seconds);
-        var load = mode == "missing" ? null : Load(seconds) with
-            { TimestampUtc = mode == "stale" ? at.AddSeconds(-10.001) : at.AddSeconds(1.001) };
-        Near(planner.Plan(handset, [Feedback(seconds)], load, gamingDownloadLimitMbps: 25, now: at).DownloadLimitMbps, 25,
-            "missing/old/future measured throughput remains unknown: " + mode);
-    }
-}
-foreach (var mode in new[] { "duplicate", "old", "missing sequence", "zero sequence", "missing session", "empty session", "missing baseline", "old baseline", "missing target" })
-{
-    var planner = new MobileLimitPlanner();
-    foreach (var seconds in new[] { 0, 5, 10, 15 })
-    {
-        var feedback = Feedback(seconds) with
-        {
-            LatencySampleSequence = mode == "duplicate" ? 1 : mode == "old" ? 100 - seconds : mode == "missing sequence" ? null : mode == "zero sequence" ? 0 : seconds + 1,
-            SessionId = mode == "missing session" ? null : mode == "empty session" ? Guid.Empty : gamer.SessionId,
-            IdleBaselineMs = mode == "missing baseline" ? null : 20,
-            IdleBaselineAtUtc = mode == "old baseline" ? now.AddMinutes(-31) : gamer.IdleBaselineAtUtc,
-            LatencyTargetId = mode == "missing target" ? null : gamer.LatencyTargetId
-        };
-        Near(Adaptive(planner, seconds, feedback: feedback).DownloadLimitMbps, 25,
-            "repeated/older PC feedback or missing gamer baseline cannot justify reduction: " + mode);
-    }
-}
-Check(Adaptive(new MobileLimitPlanner(), 0, feedback: Feedback(0) with { IdleBaselineMs = null }).Reason
-    .Contains("PC-Latenzvergleich fehlt · festes Downloadbudget"), "missing PC comparison is visible instead of suggesting an adaptive guarantee");
-var cachedLoadPlanner = new MobileLimitPlanner();
-foreach (var seconds in new[] { 0, 5, 10 })
-    Near(cachedLoadPlanner.Plan(handset, [Feedback(seconds)], Load(0), gamingDownloadLimitMbps: 25, now: now.AddSeconds(seconds)).DownloadLimitMbps,
-        seconds == 10 ? 21.25 : 25, "a real timestamped latest throughput measurement remains usable for at most ten seconds: " + seconds);
-var nonLatencyPlanner = new MobileLimitPlanner();
-foreach (var seconds in new[] { 0, 5, 10, 15, 20, 25 })
-    Near(nonLatencyPlanner.Plan(handset, [Feedback(seconds) with { IdleBaselineMs = null }],
-        new(now.AddSeconds(seconds), seconds < 10 ? 20 : 90, 24, true, "fake-handset-latency"),
-        gamingDownloadLimitMbps: 25, now: now.AddSeconds(seconds)).DownloadLimitMbps, 25,
-        "handset latency fields cannot become an invented local gamer baseline");
-
-foreach (var mode in new[] { "no gaming", "capacity lost", "wifi lost", "pause", "autoconnect off" })
-{
-    var planner = Reduced();
-    var feedback = Feedback(15) with { IsGaming = mode != "no gaming", BudgetProposal = mode == "capacity lost" ? null : gamer.BudgetProposal };
-    Check(planner.Plan(handset, [feedback], Load(15), autoConnect: mode != "autoconnect off", paused: mode == "pause",
-        gamingDownloadLimitMbps: 25, wifiConnected: mode != "wifi lost", now: now.AddSeconds(15)).DownloadLimitMbps is null,
-        "mobile limit is released immediately: " + mode);
-    Near(Adaptive(planner, 20).DownloadLimitMbps, 25, "released consumer protection discards old adaptive reduction: " + mode);
-}
-var changedPlanner = Reduced();
-Near(changedPlanner.Plan(handset, [Feedback(15)], Load(15), gamingDownloadLimitMbps: 20, now: now.AddSeconds(15)).DownloadLimitMbps, 20,
-    "changing the manual maximum starts a fresh adaptive state");
-var sessionPlanner = Reduced();
-Near(Adaptive(sessionPlanner, 15, feedback: Feedback(15) with { SessionId = Guid.NewGuid() }).DownloadLimitMbps, 25,
-    "a reauthenticated PC session cannot inherit previous lifetime reduction");
-var gapPlanner = Reduced();
-Near(Adaptive(gapPlanner, 25).DownloadLimitMbps, 25, "a peer lifetime gap starts fresh even when identity and session are unchanged");
-var resetPlanner = Reduced();
-resetPlanner.Reset();
-Near(Adaptive(resetPlanner, 15).DownloadLimitMbps, 25, "explicit network/peer-service reset discards old reduction");
-var orderedPlanner = new MobileLimitPlanner();
-var companion = Peer(false) with { SessionId = Guid.NewGuid() };
-foreach (var seconds in new[] { 0, 5, 10 })
-{
-    var ordered = seconds == 5 ? new[] { companion with { LastSeenUtc = now.AddSeconds(seconds) }, Feedback(seconds) }
-        : new[] { Feedback(seconds), companion with { LastSeenUtc = now.AddSeconds(seconds) } };
-    var result = orderedPlanner.Plan(handset, ordered, Load(seconds), gamingDownloadLimitMbps: 25, now: now.AddSeconds(seconds));
-    Near(result.DownloadLimitMbps, seconds == 10 ? 21.25 : 25, "peer order and ordinary heartbeats preserve the adaptive window: " + seconds);
-}
-var sharedGamer = pc with { BudgetProposal = new(80, 35, 4, 40), LimitedDownloadMbps = 0 };
-ProbeStats Bulk(double? value, int ageSeconds = 0) => new(now.AddSeconds(-ageSeconds), null, 99, false, "", value);
-MobileLimitDecision Shared(ProbeStats? load, params PeerAdvertisement[] devices) =>
-    MobileLimitPolicy.Plan(handset, devices, now: now, localDownload: load);
-var onlyHandset = Shared(Bulk(24), sharedGamer);
-Near(onlyHandset.DownloadLimitMbps, 48, "one actual handset downloader receives the complete automatic 48 Mbps gaming budget");
-Check(onlyHandset is { ParticipantCount: 2, DownloadParticipantCount: 1, DownloadActivityComplete: true,
-    SharedDownloadBudgetMbps: 48, SharedCapacityMbps: 80, ShareWeightTotal: 2, DownloadShareWeightTotal: 1,
-    SharedUploadCapacityMbps: 40, SharedBudgetComplete: true }, "idle gamer is excluded only from download allocation; upload membership and measured capacities are preserved");
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = 12 }).DownloadLimitMbps, 24,
-    "two actual downloaders split the common 48 Mbps into 24 each");
-var otherDownloader = Peer(false) with { LimitedDownloadMbps = 8, BudgetProposal = new(80, 35, 4, 40) };
-var secondHandset = otherDownloader with { BudgetProposal = null, LimitedDownloadMbps = 12 };
-var twoHandsets = Shared(Bulk(12), sharedGamer, secondHandset);
-Near(twoHandsets.DownloadLimitMbps, 24, "two downloading handsets share the measured PC's automatic budget without inventing handset capacity");
-Check(twoHandsets is { SharedBudgetComplete: true, DownloadActivityComplete: true, ParticipantCount: 3, DownloadParticipantCount: 2 },
-    "measured PC and two activity-reporting consumer handsets confirm a complete automatic budget");
-var legacyHandset = Shared(Bulk(12), sharedGamer, secondHandset with { LimitedDownloadMbps = null });
-Near(legacyHandset.DownloadLimitMbps, 16, "unknown legacy handset activity retains a conservative three-participant share");
-Check(!legacyHandset.SharedBudgetComplete && !legacyHandset.DownloadActivityComplete,
-    "legacy handset with unknown activity cannot confirm complete enforcement of the automatic budget");
-Near(Shared(Bulk(8), sharedGamer with { LimitedDownloadMbps = 8 }, otherDownloader).DownloadLimitMbps, 16,
-    "three active downloaders share the same automatic budget with conservative rounding");
-Near(Shared(Bulk(24), sharedGamer, otherDownloader with { LimitedDownloadMbps = 0 }).DownloadLimitMbps, 48,
-    "two idle peers leave the full automatic budget to the only active handset");
-var idleHandset = Shared(Bulk(0), sharedGamer with { LimitedDownloadMbps = 48 });
-Near(idleHandset.DownloadLimitMbps, 24, "idle handset receives a prospective starting share beside one active PC");
-Check(idleHandset.DownloadParticipantCount == 2 && idleHandset.DownloadActivityComplete,
-    "prospective idle share exposes its actual download denominator");
-Near(Shared(Bulk(0), sharedGamer).DownloadLimitMbps, 48, "all measured idle participants retain bounded prospective starts");
-foreach (var missingBulk in new double?[] { null, double.NaN, -1, double.PositiveInfinity })
-{
-    var fallback = Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = missingBulk });
-    Near(fallback.DownloadLimitMbps, 24, "legacy or invalid peer bulk telemetry falls back to all participants: " + missingBulk);
-    Check(!fallback.DownloadActivityComplete && fallback.DownloadShareWeightTotal == 2,
-        "unknown peer activity is explicitly incomplete rather than treated as idle");
-}
-foreach (var load in new ProbeStats?[] { null, Bulk(null), Bulk(0, 10), Bulk(0, 11) })
-{
-    var fallback = Shared(load, sharedGamer);
-    Near(fallback.DownloadLimitMbps, 24, "unknown or expired local bulk probe conservatively includes every participant");
-    Check(!fallback.DownloadActivityComplete, "expired or missing local activity cannot claim a complete active set");
-}
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .05 }).DownloadLimitMbps, 48,
-    "bulk activity must exceed 0.05 Mbps to count as an active downloader");
-Near(Shared(Bulk(24), sharedGamer with { LimitedDownloadMbps = .051 }).DownloadLimitMbps, 24,
-    "bulk activity above the explicit threshold joins the automatic budget");
-Near(MobileLimitPolicy.Plan(handset, [sharedGamer], gamingDownloadLimitMbps: 20, now: now, localDownload: Bulk(24)).DownloadLimitMbps, 20,
-    "handset manual maximum remains local and cannot increase its shared allocation");
-Near(MobileLimitPolicy.Plan(handset, [sharedGamer with { LimitedDownloadMbps = 12 }], gamingDownloadLimitMbps: 30,
-    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 24, "handset local maximum does not replace the common pool");
-Near(MobileLimitPolicy.Plan(handset, [sharedGamer with { LimitedDownloadMbps = 12, ShareWeight = 2 }], shareWeight: 1,
-    now: now, localDownload: Bulk(24)).DownloadLimitMbps, 16, "active download priority uses the Core weighted allocation");
-Near(Shared(Bulk(24), sharedGamer, otherDownloader with { BudgetProposal = new(20, 50, 0, 40), LimitedDownloadMbps = 0 }).DownloadLimitMbps,
-    10, "lowest original authenticated capacity/profile pool wins independently of an idle proposer's activity");
-Check(Shared(Bulk(24), sharedGamer with { IsGaming = false }).DownloadLimitMbps is null,
-    "automatic budget remains gaming-only and does not create a permanent mobile limit");
-foreach (var mode in new[] { "paused", "disabled", "no wifi", "capacity missing" })
-{
-    var gated = new MobileLimitPlanner().Plan(handset,
-        [mode == "capacity missing" ? sharedGamer with { BudgetProposal = null } : sharedGamer], Bulk(24),
-        paused: mode == "paused", autoConnect: mode != "disabled", wifiConnected: mode != "no wifi", now: now);
-    Check(gated.DownloadLimitMbps is null, "automatic budget preserves mobile protection release gate: " + mode);
-}
-var sharedAdaptive = new MobileLimitPlanner();
-foreach (var seconds in new[] { 0, 5, 10 })
-{
-    var result = sharedAdaptive.Plan(handset, [Feedback(seconds) with { BudgetProposal = sharedGamer.BudgetProposal, LimitedDownloadMbps = 0 }],
-        Bulk(48) with { TimestampUtc = now.AddSeconds(seconds) }, now: now.AddSeconds(seconds));
-    Near(result.DownloadLimitMbps, seconds == 10 ? 40.79 : 48, "mobile adaptation conservatively rounds its automatic bulk-active share: " + seconds);
-    Check(result.DownloadParticipantCount == 1 && result.DownloadActivityComplete,
-        "stateful mobile wrapper preserves Core download activity metadata");
-}
-Console.WriteLine($"{checks} mobile consumer policy checks passed; no network, sockets or shaper started.");
+planner.Reset();
+NoLimit(planner.Plan(handset, [pc], gamingDownloadLimitMbps: .1, now: now), "reset cannot re-enable legacy rate planning");
+Check(!planner.Plan(handset, [pc], wifiConnected: false, now: now).GamingActive, "leaving WLAN discards active mobile peer use");
+NoLimit(planner.Plan(handset, [pc], wifiConnected: false, gamingDownloadLimitMbps: .1, now: now), "cellular remains unpaced with legacy cap");
+Console.WriteLine($"PASS: {checks} mobile companion checks");

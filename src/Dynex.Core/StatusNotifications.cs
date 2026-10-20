@@ -11,12 +11,12 @@ public sealed class StatusNotifications
     private readonly TimeSpan _cooldown;
     private readonly Dictionary<string, DateTimeOffset> _lastByKind = new();
     private HashSet<string>? _peers;
-    private bool _limitActive;
+    private bool _priorityActive;
     private ConnectionProblemKind _problem;
 
     public StatusNotifications(TimeSpan? cooldown = null) => _cooldown = cooldown ?? TimeSpan.FromSeconds(60);
 
-    public IReadOnlyList<StatusNotification> Observe(IReadOnlyCollection<string> peerNames, bool limitActive, string limitReason,
+    public IReadOnlyList<StatusNotification> Observe(IReadOnlyCollection<string> peerNames, bool priorityActive, string priorityReason,
         ConnectionAdvice? advice, DateTimeOffset now)
     {
         var result = new List<StatusNotification>();
@@ -27,15 +27,15 @@ public sealed class StatusNotifications
                 Add(result, "peer+" + name, now, new("PC verbunden", $"„{name}“ ist jetzt mit DYNEX verbunden."));
             foreach (var name in previous.Except(peers).OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
                 Add(result, "peer-" + name, now, new("PC nicht mehr verbunden", $"„{name}“ antwortet nicht mehr. DYNEX verbindet automatisch neu, sobald der PC wieder erreichbar ist."));
-            if (limitActive && !_limitActive)
-                Add(result, "limit", now, new("Downloads werden begrenzt", limitReason));
+            if (priorityActive && !_priorityActive)
+                Add(result, "priority", now, new("Paketpriorisierung aktiv", priorityReason));
             var kind = advice?.Kind ?? ConnectionProblemKind.None;
             if (kind != _problem && kind is ConnectionProblemKind.VersionMismatch or ConnectionProblemKind.FirewallMissing
                 or ConnectionProblemKind.NoPrivateNetwork or ConnectionProblemKind.WrongNetwork)
                 Add(result, "problem-" + kind, now, new("Verbindungsproblem", advice!.ToString()));
         }
         _peers = peers;
-        _limitActive = limitActive;
+        _priorityActive = priorityActive;
         _problem = advice?.Kind ?? ConnectionProblemKind.None;
         return result;
     }

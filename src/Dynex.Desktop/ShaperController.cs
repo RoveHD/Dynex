@@ -38,7 +38,7 @@ internal sealed class ShaperController : IAsyncDisposable
     private int recoveryAttempts;
     private long pendingCommandId;
     private TaskCompletionSource<bool>? pendingAcknowledgement;
-    private ShaperStatus status = new(false, null, "Downloadbegrenzung ausgeschaltet");
+    private ShaperStatus status = new(false, null, "Paketpriorisierung ausgeschaltet");
     private long lastStatus;
     private Dictionary<GameTrafficIdentity, long> activeGameExpirations = [];
     public bool IsAvailable => File.Exists(Path.Combine(AppContext.BaseDirectory, "shaper", "Dynex.Shaper.exe"));
@@ -70,15 +70,15 @@ internal sealed class ShaperController : IAsyncDisposable
         if (process is not null)
         {
             if (!process.HasExited)
-            { Set(new(false, null, "Die vorherige Downloadbegrenzung wird noch beendet.")); return; }
+            { Set(new(false, null, "Die vorherige Paketpriorisierung wird noch beendet.")); return; }
             process.Dispose(); process = null;
         }
         var helperPath = Path.Combine(AppContext.BaseDirectory, "shaper", "Dynex.Shaper.exe");
         if (!File.Exists(helperPath)) { Set(new(false, null, "Eine Programmkomponente fehlt. DYNEX bitte neu installieren.")); return; }
         if (!IsAvailable)
-        { Set(new(false, null, "Downloadbegrenzung nicht verfügbar: Die benötigte Komponente fehlt oder wurde von Windows blockiert.")); return; }
+        { Set(new(false, null, "Paketpriorisierung nicht verfügbar: Die benötigte Komponente fehlt oder wurde von Windows blockiert.")); return; }
         if (!PacketFilterSetup.IsInstalled)
-        { Set(new(false, null, "Downloadbegrenzung bitte einmal einrichten.")); return; }
+        { Set(new(false, null, "Paketpriorisierung bitte einmal einrichten.")); return; }
         var pipeName = "DYNEX-" + Guid.NewGuid().ToString("N");
         lock (sync)
         {
@@ -101,13 +101,13 @@ internal sealed class ShaperController : IAsyncDisposable
             if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var clientPid) || clientPid != process.Id)
                 throw new UnauthorizedAccessException("Die Helferverbindung stammt nicht vom gestarteten DYNEX-Modul.");
             writer = new(pipe, new UTF8Encoding(false), 1024, true) { AutoFlush = true };
-            Set(new(false, null, "Bereit. Downloads sind momentan nicht begrenzt."));
+            Set(new(false, null, "Paketpriorisierung bereit."));
             reader = ReadStatusAsync(pipe, cancellation.Token);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             await StopAsync(resetStartAttempt: false);
-            Set(new(false, null, "Windows konnte die Downloadbegrenzung nicht starten: " + ex.Message));
+            Set(new(false, null, "Windows konnte die Paketpriorisierung nicht starten: " + ex.Message));
         }
     }
     public async Task ApplyAsync(double? mbps, CancellationToken token, IReadOnlyList<GameDetectionResult>? games = null, bool qosEnabled = false,
@@ -115,7 +115,11 @@ internal sealed class ShaperController : IAsyncDisposable
         Func<bool>? observationStillNeeded = null, IReadOnlyList<ApplicationRule>? appRules = null,
         Func<bool>? applicationRulesStillNeeded = null)
     {
-        var rules = ApplicationRules.Normalize(appRules).Where(r => r.Enabled).ToArray();
+        // Defense at the IPC boundary: legacy callers, profiles and imports cannot
+        // request bandwidth shaping. Only classification and observation remain.
+        mbps = null;
+        uploadMbps = null;
+        ApplicationRule[] rules = [];
         // A helper can deliberately fail open (watchdog/network change). Dispose
         // that connection first, then allow one fresh authenticated start only
         // after both native release and process exit have been confirmed.
@@ -180,7 +184,7 @@ internal sealed class ShaperController : IAsyncDisposable
                     observeGameTraffic, applicationRules = rules.Select(r => new { processName = r.ProcessName,
                         downloadMbps = r.DownloadMbps, uploadMbps = r.UploadMbps }), commandId }).AsMemory(), timeout.Token);
                 if (!await acknowledgement.Task.WaitAsync(timeout.Token))
-                    throw new IOException("Der Download-Helfer wurde vor der Befehlsbestätigung beendet.");
+                    throw new IOException("Der Priorisierungs-Helfer wurde vor der Befehlsbestätigung beendet.");
             }
             finally
             {
@@ -189,9 +193,9 @@ internal sealed class ShaperController : IAsyncDisposable
             }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        { await StopAsync(resetStartAttempt: false); Set(new(false, null, "Downloadbegrenzung wurde wegen einer Zeitüberschreitung beendet.")); }
+        { await StopAsync(resetStartAttempt: false); Set(new(false, null, "Paketpriorisierung wurde wegen einer Zeitüberschreitung beendet.")); }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or TimeoutException)
-        { await StopAsync(resetStartAttempt: false); Set(new(false, null, "Downloadbegrenzung wurde beendet: " + ex.Message)); }
+        { await StopAsync(resetStartAttempt: false); Set(new(false, null, "Paketpriorisierung wurde beendet: " + ex.Message)); }
     }
     private async Task ReadStatusAsync(Stream stream, CancellationToken token)
     {
@@ -229,14 +233,13 @@ internal sealed class ShaperController : IAsyncDisposable
                     foreach (var item in list.EnumerateArray().Take(5))
                         if (item.TryGetProperty("name", out var programName) && programName.GetString() is { Length: > 0 and <= 64 } name && !name.Any(char.IsControl))
                             programs.Add(new(name, item.GetProperty("downMbps").GetDouble(), item.GetProperty("upMbps").GetDouble()));
-                var next = new ShaperStatus(active, active ? limit : null, error ?? (active
-                    ? qosActive ? "Große Downloads begrenzt · Spiele und Sprachchat priorisiert." : "Große Downloads begrenzt · Spiele und Sprachchat frei."
-                    : qosActive ? "Priorisierung aktiv · Downloads sind momentan nicht begrenzt."
-                    : appActive ? "Programmregeln aktiv · Limits je Programm werden durchgesetzt."
-                    : observing ? "Spielverkehr wird beobachtet · Downloads sind momentan nicht begrenzt."
-                    : "Bereit. Downloads sind momentan nicht begrenzt."),
-                    qosActive, gamePackets, voicePackets, uploadLimit, programs, observing,
-                    observing ? expirations.Keys.ToArray() : null, appActive, limitedDownloadMbps);
+                var next = new ShaperStatus(false, null, error ?? (active || appActive || uploadActive || limit is not null || uploadLimit is not null
+                    ? "Der Helfer meldet veraltete Bandbreitenregeln. DYNEX bitte vollständig neu starten."
+                    : qosActive ? "Priorisierung aktiv · Spiel- und Sprachpakete werden markiert."
+                    : observing ? "Spielverkehr wird beobachtet."
+                    : "Paketpriorisierung bereit."),
+                    qosActive, gamePackets, voicePackets, null, programs, observing,
+                    observing ? expirations.Keys.ToArray() : null, false, limitedDownloadMbps);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
@@ -279,9 +282,9 @@ internal sealed class ShaperController : IAsyncDisposable
                 observationRequested = false;
                 pendingAcknowledgement?.TrySetResult(false);
                 if (captureRequested && !shutdownConfirmed)
-                    releaseFailure ??= "Freigabe der Downloadbegrenzung nicht bestätigt: Helferverbindung wurde ohne Abschaltbestätigung beendet.";
+                    releaseFailure ??= "Freigabe der Paketpriorisierung nicht bestätigt: Helferverbindung wurde ohne Abschaltbestätigung beendet.";
             }
-            Set(new(false, null, "Downloadbegrenzung beendet"));
+            Set(new(false, null, "Paketpriorisierung beendet"));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or ObjectDisposedException)
@@ -386,10 +389,10 @@ internal sealed class ShaperController : IAsyncDisposable
             lock (sync)
             {
                 if (!exited || captureRequested && !shutdownConfirmed)
-                    releaseFailure ??= "Freigabe der Downloadbegrenzung nicht bestätigt: Der Helfer hat keine erfolgreiche Abschaltung bestätigt.";
+                    releaseFailure ??= "Freigabe der Paketpriorisierung nicht bestätigt: Der Helfer hat keine erfolgreiche Abschaltung bestätigt.";
                 if (!resetStartAttempt && exited && shutdownConfirmed && releaseFailure is null)
                     recoveryAvailable = true;
-                Set(new(false, null, "Downloadbegrenzung ausgeschaltet"));
+                Set(new(false, null, "Paketpriorisierung ausgeschaltet"));
                 if (shutdownConfirmed) captureReleased = true;
                 observationRequested = false;
                 if (resetStartAttempt)

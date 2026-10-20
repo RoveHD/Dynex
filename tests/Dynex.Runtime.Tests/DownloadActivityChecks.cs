@@ -3,8 +3,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using Dynex.Core;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using Dynex.Desktop;
 
 internal static class DownloadActivityChecks
@@ -13,87 +11,50 @@ internal static class DownloadActivityChecks
     {
         using var profile = new TestProfile(measured: true);
         var store = new SettingsStore(profile.Path);
-        store.Save(store.Load() with { ManualLimitMbps = null, Adaptive = false });
-        var settingsPath = System.IO.Path.Combine(profile.Path, "settings.json");
-        var legacy = JsonNode.Parse(File.ReadAllText(settingsPath))!;
-        legacy["SharedDownloadMaximumMbps"] = 25;
-        File.WriteAllText(settingsPath, legacy.ToJsonString());
-        var controller = new ShaperController();
-        void Capture(double? demand, double applied = 48)
-        {
-            typeof(ShaperController).GetField("status", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(controller, new ShaperController.ShaperStatus(true, applied, "Isolated capture status", LimitedDownloadMbps: demand));
-            typeof(ShaperController).GetField("lastStatus", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(controller, Stopwatch.GetTimestamp());
-        }
-        Capture(20);
-        await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ => [], shaper: controller);
+        store.Save(store.Load() with { ManualLimitMbps = 25, Adaptive = true, ManualUploadLimitMbps = 3,
+            ApplicationRules = [new("steam", 12, 2)], DriverEnabled = false });
+        await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(), _ => []);
         var local = (DynexSettings)typeof(DynexRuntime).GetMethod("CoreSettings", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(runtime, null)!;
-        check(local.LineMbps == 80 && local.HeadroomPercent == 35 && local.GamingReserveMbps == 4 && local.ManualDownloadLimitMbps is null &&
-            !JsonSerializer.Serialize(runtime.Settings).Contains("SharedDownloadMaximumMbps"),
-            "runtime derives automatic policy from measurement and profile while ignoring persisted legacy maximum 25");
+        check(!local.CapacityMeasured && !local.AdaptiveEnabled && local.GamingReserveMbps == 0 &&
+            local.ManualDownloadLimitMbps is null, "priority-only runtime advertises no capacity pool or adaptive shaping policy");
         using var reservation = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
         var port = ((IPEndPoint)reservation.Client.LocalEndPoint!).Port;
         reservation.Dispose();
         await using var peer = new PeerService(local with
         {
-            DeviceId = Guid.NewGuid(), DeviceName = "Idle gamer", Port = port,
-            HeartbeatInterval = TimeSpan.FromMilliseconds(200), DirectPeers = [new(IPAddress.Loopback, runtime.PeerPort)]
+            DeviceId = Guid.NewGuid(), DeviceName = "Legacy gamer", Port = port,
+            HeartbeatInterval = TimeSpan.FromMilliseconds(100), DirectPeers = [new(IPAddress.Loopback, runtime.PeerPort)],
+            CapacityMeasured = true, LineMbps = 80, HeadroomPercent = 35, GamingReserveMbps = 4
         });
-        peer.Publish(true, shaperActive: true, appliedLimitMbps: 24, limitedDownloadMbps: 0);
+        peer.Publish(true, downloadMbps: 20, uploadMbps: 1, shaperActive: true, appliedLimitMbps: 24, limitedDownloadMbps: 20);
         await peer.StartAsync();
         await runtime.StartAsync();
-        await Until(() => runtime.Snapshot is { DownloadActivityComplete: true, SharedDownloadBudgetMbps: 48, ConfirmedParticipantCount: 2 }
-            && runtime.PlannedDownloadLimitMbps == 48);
-        check(runtime.Snapshot!.ParticipantCount == 2 && runtime.Snapshot.GamingCount == 1,
-            "idle authenticated gamer stays connected without taking half the active downloader's budget");
-        await Until(() => peer.Snapshot().Any(p => p.LimitedDownloadMbps == 20));
-        check(peer.Snapshot().Single().LimitedDownloadMbps == 20,
-            "runtime publishes classified capture ingress over authenticated LAN rather than adapter throughput");
-
-        Capture(0, 24);
-        peer.Publish(true, shaperActive: true, appliedLimitMbps: 48, limitedDownloadMbps: 20);
-        await Until(() => runtime.PlannedDownloadLimitMbps == 24 && runtime.Snapshot is
-            { DownloadActivityComplete: true, ConfirmedParticipantCount: 2 });
-        check(runtime.Snapshot!.SharedDownloadBudgetMbps == 48,
-            "local idle capture confirms a remote downloader's full 48 Mbit/s rather than falsely warning about its share");
-
-        Capture(10, 24);
-        peer.Publish(true, shaperActive: true, appliedLimitMbps: 24, limitedDownloadMbps: 10);
-        await Until(() => runtime.PlannedDownloadLimitMbps == 24 && runtime.Snapshot is
-            { DownloadActivityComplete: true, ConfirmedParticipantCount: 2 });
-        check(runtime.Snapshot!.SharedDownloadBudgetMbps == 48,
-            "two active downloads split the same 48 Mbit/s pool and both applied shares are confirmed");
-
-        Capture(20);
-        peer.Publish(true, shaperActive: true, appliedLimitMbps: 24, limitedDownloadMbps: 0);
-        await Until(() => runtime.PlannedDownloadLimitMbps == 48 && runtime.Snapshot is
-            { DownloadActivityComplete: true, ConfirmedParticipantCount: 2 });
-        check(runtime.Snapshot!.SharedDownloadBudgetMbps == 48,
-            "a downloader becoming idle restores 48 Mbit/s without disconnecting its gaming peer");
-
-        Capture(20, 24);
-        peer.Publish(true, shaperActive: true, appliedLimitMbps: 24);
-        await Until(() => runtime.PlannedDownloadLimitMbps == 24 && runtime.Snapshot is { DownloadActivityComplete: false });
-        check(runtime.Snapshot!.ConfirmedParticipantCount == 2,
-            "legacy unknown demand uses conservative all-device shares without claiming complete activity");
-
-        typeof(ShaperController).GetField("lastStatus", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(controller, Stopwatch.GetTimestamp() - 7 * Stopwatch.Frequency);
-        await runtime.RefreshStatusAsync();
-        await Until(() => peer.Snapshot().Any(p => p.LimitedDownloadMbps is null));
-        check(!runtime.Snapshot!.DownloadActivityComplete,
-            "stale helper ingress is published as unknown instead of retained activity or measured idle");
-        peer.Publish(false, limitedDownloadMbps: 0);
-        await Until(() => runtime.Snapshot is { GamingCount: 0 } && runtime.PlannedDownloadLimitMbps is null);
-        check(runtime.PlannedDownloadLimitMbps is null, "automatic budget preserves the rule that no gaming means no download cap");
+        await Until(() => runtime.Snapshot is { GamingCount: 1, ParticipantCount: 2 });
+        check(runtime.PlannedDownloadLimitMbps is null && runtime.Snapshot is
+            { SharedDownloadBudgetMbps: null, DriverActive: false, LimitMbps: null, UploadLimitMbps: null },
+            "old peer budget and applied cap never activate a local download/upload limit");
+        await Until(() => peer.Snapshot().Count == 1);
+        check(peer.Snapshot().Single() is { BudgetProposal: null, AppliedLimitMbps: null, ShaperActive: false, LimitedDownloadMbps: null },
+            "authenticated publication contains traffic and game status without budget or applied cap");
+        foreach (var demand in new double?[] { 0, 10, 80, null })
+        {
+            peer.Publish(true, downloadMbps: demand, uploadMbps: 1, shaperActive: true, appliedLimitMbps: 1, limitedDownloadMbps: demand);
+            await Until(() => runtime.Snapshot!.Devices.Any(d => d.Name == "Legacy gamer" && d.DownloadMbps == demand));
+            check(runtime.PlannedDownloadLimitMbps is null && runtime.Snapshot!.SharedDownloadBudgetMbps is null &&
+                runtime.Snapshot.Devices.All(d => d.LimitMbps is null),
+                $"peer download demand {demand?.ToString() ?? "unknown"} stays visible without changing a cap");
+        }
+        peer.Publish(false, downloadMbps: 0, uploadMbps: 0);
+        await Until(() => runtime.Snapshot is { GamingCount: 0 });
+        check(runtime.PlannedDownloadLimitMbps is null, "gaming end leaves all transfers unbounded");
         await runtime.StopAsync();
-        check(runtime.Snapshot is { DownloadActivityComplete: false }, "stopping the network session clears complete download activity");
+        check(runtime.Snapshot is { SharedDownloadBudgetMbps: null, DownloadActivityComplete: false },
+            "stopping monitoring retains no stale shaping state");
     }
 
     private static async Task Until(Func<bool> condition)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         while (!condition()) await Task.Delay(20, deadline.Token);
     }
 }

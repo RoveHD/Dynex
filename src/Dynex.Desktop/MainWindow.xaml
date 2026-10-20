@@ -175,13 +175,7 @@
                 <TextBlock Text="Netzwerk" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
               </StackPanel>
             </Button>
-            <Button x:Name="scheduleSectionButton" Tag="schedule" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Zeitplan" AutomationProperties.Name="Zeitplan">
-              <StackPanel Orientation="Horizontal">
-                <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
-                <TextBlock Text="Zeitplan" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
-              </StackPanel>
-            </Button>
-            <Button x:Name="appearanceSectionButton" Tag="appearance" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Darstellung" AutomationProperties.Name="Darstellung">
+<Button x:Name="appearanceSectionButton" Tag="appearance" Style="{StaticResource NavButton}" Click="SettingsSection_Click" ToolTip="Darstellung" AutomationProperties.Name="Darstellung">
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="" FontFamily="Segoe MDL2 Assets" FontSize="17" Width="22" VerticalAlignment="Center" />
                 <TextBlock Text="Darstellung" Margin="10,0,0,0" Visibility="{DynamicResource NavigationLabelVisibility}" FontSize="13" />
@@ -248,9 +242,9 @@
           </Border>
           <Border Style="{StaticResource Card}" Padding="10,7" Margin="0,0,8,0">
             <StackPanel>
-              <TextBlock Text="DOWNLOADBUDGET" Style="{StaticResource Caption}" />
-              <TextBlock x:Name="LimitText" Text="Kein Limit" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
-              <TextBlock x:Name="LimitReasonText" Text="Für große Downloads" Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" AutomationProperties.Name="Grund für das Downloadlimit" />
+              <TextBlock Text="PAKETPRIORISIERUNG" Style="{StaticResource Caption}" />
+              <TextBlock x:Name="PriorityOverviewText" Text="Wird geprüft" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
+              <TextBlock x:Name="PriorityDetailText" Text="DYNEX markiert erkannte Spiel- und Sprachpakete für QoS." Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Padding="10,7">
@@ -369,7 +363,6 @@
                   <DataGridTextColumn Header="STATUS" Binding="{Binding State}" Width="1.2*" MinWidth="82" ElementStyle="{StaticResource OverviewDeviceCell}" />
                   <DataGridTextColumn Header="↓ DOWNLOAD" Binding="{Binding DownloadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.2*" MinWidth="88" ElementStyle="{StaticResource OverviewDeviceRateCell}" />
                   <DataGridTextColumn Header="↑ UPLOAD" Binding="{Binding UploadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.2*" MinWidth="82" ElementStyle="{StaticResource OverviewDeviceRateCell}" />
-                  <DataGridTextColumn Header="LIMIT" Binding="{Binding LimitMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="1.1*" MinWidth="70" ElementStyle="{StaticResource OverviewDeviceCell}" />
                 </DataGrid.Columns>
               </DataGrid>
               <TextBlock x:Name="OverviewDevicesEmpty" Text="Noch keine Gerätedaten verfügbar. DYNEX auf weiteren PCs starten und verbinden." Style="{StaticResource Caption}" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="14,0" IsHitTestVisible="False" />
@@ -414,8 +407,8 @@
                 <Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere Geräte" Click="NextDevices_Click" Padding="9,2" Margin="0" />
               </StackPanel>
             </Grid>
-            <TextBlock x:Name="SharedBudgetText" Grid.Row="1" Text="Alle DYNEX-Geräte teilen sich das Downloadbudget." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,4" TextWrapping="Wrap" />
-            <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Spiele und Sprachchat umgehen die Downloadwarteschlange." Style="{StaticResource Caption}" Margin="0,0,0,6" TextWrapping="Wrap" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <TextBlock x:Name="DevicePriorityText" Grid.Row="1" Text="DYNEX markiert erkannte Spiel- und Sprachpakete für QoS." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,4" TextWrapping="Wrap" />
+            <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Für niedrige Latenz bei voller Leitung Router-QoS oder SQM konfigurieren." Style="{StaticResource Caption}" Margin="0,0,0,6" TextWrapping="Wrap" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             <DataGrid x:Name="DeviceGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="29" ColumnHeaderHeight="27" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
               <DataGrid.Resources>
                 <Style TargetType="DataGridColumnHeader" BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
@@ -448,7 +441,6 @@
                 <DataGridTextColumn Header="STATUS" Binding="{Binding State}" Width="105" ElementStyle="{StaticResource DeviceCell}" />
                 <DataGridTextColumn Header="↓ DOWNLOAD" Binding="{Binding DownloadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="115" ElementStyle="{StaticResource DeviceRateCell}" />
                 <DataGridTextColumn Header="↑ UPLOAD" Binding="{Binding UploadMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="110" ElementStyle="{StaticResource DeviceRateCell}" />
-                <DataGridTextColumn Header="LIMIT" Binding="{Binding LimitMbps, StringFormat={}{0:0.0} Mbps, TargetNullValue=—}" Width="95" ElementStyle="{StaticResource DeviceCell}" />
               </DataGrid.Columns>
             </DataGrid>
           </Grid>
@@ -474,104 +466,33 @@
                     <TextBlock Text="ANSCHLUSS &amp; START" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
                     <TextBlock Text="Internetgeschwindigkeit (Mbit/s)" Style="{StaticResource Caption}" />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
-                      <TextBox x:Name="CapacityBox" Width="96" IsReadOnly="True" Margin="0,0,8,0" VerticalContentAlignment="Center" ToolTip="Wird automatisch per Speedtest ermittelt" />
+                      <TextBox x:Name="CapacityBox" Width="96" IsReadOnly="True" Margin="0,0,8,0" VerticalContentAlignment="Center" ToolTip="Ergebnis einer manuellen Speedtest-Diagnose" />
                       <Button x:Name="SpeedTestButton" Content="Speedtest starten" Click="SpeedTest_Click" Style="{StaticResource CompactButton}" />
                     </StackPanel>
                     <ProgressBar x:Name="SpeedTestProgress" IsIndeterminate="True" Height="3" Foreground="{StaticResource Accent}" Background="{StaticResource Line}" Margin="0,3,0,0" Visibility="Collapsed" />
                     <TextBlock x:Name="SpeedTestHint" Style="{StaticResource Caption}" FontSize="12" Margin="0,3,0,2" MaxHeight="32" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <CheckBox x:Name="AutoStartCheck" Content="Mit Windows starten" Style="{StaticResource WrappedCheck}" />
-                    <CheckBox x:Name="NotificationsCheck" Content="Verbindungs- und Limitmeldungen" ToolTip="Benachrichtigungen bei Verbindung und Limit" Style="{StaticResource WrappedCheck}" />
+                    <CheckBox x:Name="NotificationsCheck" Content="Verbindungs- und Prioritätsmeldungen" ToolTip="Benachrichtigungen bei Verbindungen und bestätigter Paketpriorisierung" Style="{StaticResource WrappedCheck}" />
                     <CheckBox x:Name="PingAlarmCheck" Content="Ping-Alarm beim Spielen" ToolTip="Ping-Alarm beim Spielen (mit vermuteter Ursache)" Style="{StaticResource WrappedCheck}" />
                   </StackPanel>
                 </Border>
-                <Border Style="{StaticResource Card}" Padding="12,7" Margin="0,8,0,0">
-                  <StackPanel>
-                    <TextBlock Text="LIMITS BEIM SPIELEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,3" />
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,2">
-                      <TextBlock Text="Dieser PC (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
-                      <TextBox x:Name="ManualLimitBox" Width="72" Margin="0,0,5,0" ToolTip="Gilt bei tatsächlichem Netzwerkverkehr eines Spiels auf einem DYNEX-PC. Fokus allein reicht nicht; ohne Spielverkehr gibt es kein Limit. Leer = automatisch." />
-                      <Button Content="Speichern" Click="ManualLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0,0,4,0" />
-                      <Button Content="Aufheben" Click="ClearLimit_Click" Style="{StaticResource CompactButton}" Padding="6,4" Margin="0" />
-                    </StackPanel>
-                    <CheckBox x:Name="UploadLimitCheck" Content="Große Uploads begrenzen" Style="{StaticResource WrappedCheck}" Margin="0" ToolTip="Cloud-Sync, Backups, Datei-Uploads. Spiele, Sprachchat und Bestätigungspakete von Downloads bleiben immer frei." />
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                      <TextBlock Text="Upload (Mbps)" Style="{StaticResource Caption}" Margin="0,0,5,0" VerticalAlignment="Center" />
-                      <Grid Width="82" MinHeight="34">
-                        <TextBox x:Name="ManualUploadBox" Width="82" />
-                        <TextBlock Foreground="{StaticResource Muted}" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False">
-                          <TextBlock.Inlines>
-                            <Run Text="{Binding Tag, ElementName=ManualUploadBox}" />
-                          </TextBlock.Inlines>
-                          <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                              <Setter Property="Visibility" Value="Collapsed" />
-                              <Style.Triggers>
-                                <DataTrigger Binding="{Binding Text, ElementName=ManualUploadBox}" Value="">
-                                  <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding IsKeyboardFocused, ElementName=ManualUploadBox}" Value="True">
-                                  <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
-                              </Style.Triggers>
-                            </Style>
-                          </TextBlock.Style>
-                        </TextBlock>
-                      </Grid>
-                      <TextBlock Text="Auto · Speedtest" FontSize="11" Foreground="{StaticResource Muted}" Margin="8,0,0,0" VerticalAlignment="Center">
-                        <TextBlock.Style>
-                          <Style TargetType="TextBlock" BasedOn="{StaticResource Caption}">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Style.Triggers>
-                              <DataTrigger Binding="{Binding Text, ElementName=ManualUploadBox}" Value="">
-                                <Setter Property="Visibility" Value="Visible" />
-                              </DataTrigger>
-                            </Style.Triggers>
-                          </Style>
-                        </TextBlock.Style>
-                      </TextBlock>
-                    </StackPanel>
-                  </StackPanel>
-                </Border>
-              </StackPanel>
+</StackPanel>
               <StackPanel Grid.Column="2">
                 <Border Style="{StaticResource Card}" Padding="14,10">
                   <StackPanel>
                     <TextBlock Text="SPIELE &amp; SPRACHCHAT" Style="{StaticResource SectionTitle}" Margin="0,0,0,5" />
-                    <CheckBox x:Name="DriverCheck" Content="Beim Spielen priorisieren und große Downloads begrenzen" Style="{StaticResource WrappedCheck}" />
-                    <Button x:Name="SetupButton" Content="Downloadbegrenzung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,3,0,0" />
+                    <CheckBox x:Name="DriverCheck" Content="Spiele und Sprachchat priorisieren" Style="{StaticResource WrappedCheck}" />
+                    <Button x:Name="SetupButton" Content="Netzwerkpriorisierung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,3,0,0" />
                     <TextBlock x:Name="SetupHint" Text="Windows bestätigt das Einschalten." Style="{StaticResource Caption}" Margin="0,4,0,5" TextWrapping="Wrap" />
-                    <TextBlock Text="Beim Spielen teilen aktive Downloads auf PC und Handy das gemeinsame Budget. Spiele und Sprachchat bleiben frei." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
+                    <TextBlock Text="DYNEX markiert erkannte Spiel- und Sprachpakete. Router-QoS oder SQM bestimmt, wie der Router sie im ganzen Heimnetz behandelt." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
                 <Border Style="{StaticResource Card}" Padding="12,8" Margin="0,8,0,0">
                   <StackPanel>
-                    <TextBlock Text="BUDGET &amp; DATEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
-                    <TextBlock Text="Gemeinsames Gaming-Budget" Style="{StaticResource Caption}" />
-                    <TextBlock x:Name="AutomaticBudgetText" Text="Automatisch aus Speedtest" Margin="0,3,0,2" FontWeight="SemiBold" ToolTip="DYNEX berechnet das gemeinsame Budget aus der gemessenen Leitung, dem Downloadprofil und der Reserve für Spiele. Aktive Downloads auf PC und Handy teilen sich dieses Budget. Bei normalem PC-Anteil erhalten zwei aktive Downloads jeweils die Hälfte." />
-                    <TextBlock Text="Ein Budget für alle aktiven Downloads." Style="{StaticResource Caption}" Margin="0,0,0,6" />
-                    <Grid>
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="12" />
-                        <ColumnDefinition Width="*" />
-                      </Grid.ColumnDefinitions>
-                      <StackPanel>
-                        <TextBlock Text="Downloadprofil" Style="{StaticResource Caption}" />
-                        <ComboBox x:Name="ProfileCombo" Margin="0,3,0,0" SelectionChanged="ProfileCombo_SelectionChanged" ToolTip="Legt fest, wie viel der Leitung große Downloads beim Spielen nutzen dürfen.">
-                          <ComboBoxItem Content="Turnier (40 %)" Tag="Turnier" />
-                          <ComboBoxItem Content="Standard (65 %)" Tag="Standard" />
-                          <ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt" />
-                        </ComboBox>
-                      </StackPanel>
-                      <StackPanel Grid.Column="2">
-                        <TextBlock Text="PC-Anteil" Style="{StaticResource Caption}" />
-                        <ComboBox x:Name="PriorityCombo" Margin="0,3,0,0" SelectionChanged="PriorityCombo_SelectionChanged" ToolTip="Wirkt nur, wenn alle verbundenen PCs DYNEX 1.0.6 oder neuer nutzen; sonst gleiche Anteile.">
-                          <ComboBoxItem Content="Niedrig · ½ Anteil" Tag="0.5" />
-                          <ComboBoxItem Content="Normal" Tag="1" />
-                          <ComboBoxItem Content="Hoch · 2× Anteil" Tag="2" />
-                        </ComboBox>
-                      </StackPanel>
-                    </Grid>
+                    <TextBlock Text="NETZWERK &amp; DATEN" Style="{StaticResource SectionTitle}" Margin="0,0,0,4" />
+                    <TextBlock Text="Speedtest (Diagnose)" Style="{StaticResource Caption}" />
+                    <TextBlock x:Name="CapacityMeasurementText" Text="Keine Messung" Margin="0,3,0,2" FontWeight="SemiBold" />
+                    <TextBlock Text="Speedtests messen nur die Leitung; der Messwert steuert die Priorisierung nicht." Style="{StaticResource Caption}" Margin="0,0,0,6" TextWrapping="Wrap" />
                     <WrapPanel Margin="0,7,0,0">
                       <Button Content="Diagnose" ToolTip="Diagnose exportieren" Click="Diagnostics_Click" Style="{StaticResource CompactButton}" FontSize="12" Padding="7,4" />
                       <Button Content="Sichern" ToolTip="Einstellungen sichern" Click="ExportSettings_Click" Style="{StaticResource CompactButton}" FontSize="12" Padding="7,4" />
@@ -589,15 +510,16 @@
               </Grid.ColumnDefinitions>
               <StackPanel>
                 <TextBlock Text="SPIELERKENNUNG" Style="{StaticResource SectionTitle}" />
-                <TextBlock Text="Nur bestätigter Netzwerkverkehr eines Spiels löst Schutz aus. Fokus allein reicht nicht; Wallpaper Engine bleibt ausgeschlossen." Style="{StaticResource Caption}" Margin="0,0,0,12" />
+                <TextBlock Text="Nur bestätigter Netzwerkverkehr eines Spiels wird priorisiert. Fokus allein reicht nicht; Wallpaper Engine bleibt ausgeschlossen." Style="{StaticResource Caption}" Margin="0,0,0,12" />
                 <ComboBox x:Name="ModeCombo" SelectionChanged="ModeCombo_SelectionChanged">
                   <ComboBoxItem Content="Bei Fokus und Spielverkehr" Tag="Auto" />
                   <ComboBoxItem Content="Fokus-Erkennung aus" Tag="Off" />
                 </ComboBox>
                 <TextBlock x:Name="GameText" Text="Kein Spiel erkannt" Style="{StaticResource Caption}" Margin="0,4,0,0" />
-                <TextBlock Text="Ohne bestätigten Spielverkehr wird der Prozess beobachtet. Menüs allein lösen kein Limit aus; bei Wechsel zu Desktop oder Discord endet die Fokus-Erkennung." Style="{StaticResource Caption}" Margin="0,6,0,0" />
-                <TextBlock Text="Schon ab Prozessstart beobachten (Prozessnamen, z. B. VALORANT-Win64-Shipping)" Style="{StaticResource FieldLabel}" Margin="0,4,0,3" ToolTip="Diese Spiele werden ab dem Prozessstart beobachtet. Ein Limit beginnt erst bei bestätigtem Netzwerkverkehr des Spiels." />
-                <TextBox x:Name="EarlyGamesBox" />
+                <TextBlock Text="Ohne bestätigten Spielverkehr wird der Prozess beobachtet. Menüs allein lösen keine Priorisierung aus; bei Wechsel zu Desktop oder Discord endet die Fokus-Erkennung." Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                <TextBlock Text="Auch ab Spielstart priorisieren" Style="{StaticResource FieldLabel}" Margin="0,14,0,3" ToolTip="Nützlich für Spiele, die sofort nach dem Start Netzwerkverkehr senden, bevor sie im Vordergrund sind." />
+                <TextBlock Text="Prozessnamen, getrennt mit Semikolon. Die Priorisierung beginnt erst bei erkanntem Spiel-Netzwerkverkehr." Style="{StaticResource Caption}" Margin="0,0,0,5" TextWrapping="Wrap" />
+                <TextBox x:Name="EarlyGamesBox" ToolTip="Beispiele: VALORANT-Win64-Shipping; Game-Win64-Shipping. Ohne bestätigten Netzwerkverkehr wird nichts priorisiert." />
               </StackPanel>
               <Grid x:Name="AdvancedExpander" Grid.Column="2">
                 <Grid.RowDefinitions>
@@ -720,38 +642,7 @@
                 <TextBox x:Name="ExternalBox" Height="34" Padding="8,4" />
               </StackPanel>
             </Grid>
-            <Grid x:Name="ScheduleSettingsSection" Visibility="Collapsed">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="24" />
-                <ColumnDefinition Width="*" />
-              </Grid.ColumnDefinitions>
-              <StackPanel>
-                <TextBlock Text="NACHTS OHNE LIMITS" Style="{StaticResource SectionTitle}" />
-                <CheckBox x:Name="NightFreeCheck" Content="In diesem Zeitraum nie begrenzen" Style="{StaticResource WrappedCheck}" />
-                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <TextBlock Text="von" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,6,0" />
-                  <TextBox x:Name="NightFromBox" Width="76" />
-                  <TextBlock Text="bis" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="10,0,6,0" />
-                  <TextBox x:Name="NightToBox" Width="76" />
-                  <TextBlock Text="Uhr" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="6,0,0,0" />
-                </StackPanel>
-                <TextBlock Text="Große Downloads laufen dann mit voller Geschwindigkeit, auch wenn jemand spielt – ideal für Updates über Nacht." Style="{StaticResource Caption}" Margin="0,10,0,0" TextWrapping="Wrap" />
-              </StackPanel>
-              <StackPanel Grid.Column="2">
-                <TextBlock Text="WOCHENENDE" Style="{StaticResource SectionTitle}" />
-                <TextBlock Text="Profil am Samstag und Sonntag" Style="{StaticResource FieldLabel}" />
-                <ComboBox x:Name="WeekendProfileCombo" Width="220" HorizontalAlignment="Left">
-                  <ComboBoxItem Content="Wie unter Allgemein" Tag="" />
-                  <ComboBoxItem Content="Turnier (40 %)" Tag="Turnier" />
-                  <ComboBoxItem Content="Standard (65 %)" Tag="Standard" />
-                  <ComboBoxItem Content="Entspannt (85 %)" Tag="Entspannt" />
-                </ComboBox>
-                <TextBlock x:Name="ScheduleStatusText" Style="{StaticResource Caption}" Margin="0,12,0,0" TextWrapping="Wrap" />
-                <TextBlock Text="Änderungen mit „Einstellungen speichern“ übernehmen." Style="{StaticResource Caption}" Margin="0,8,0,0" />
-              </StackPanel>
-            </Grid>
-            <ScrollViewer x:Name="AnalysisSettingsSection" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+<ScrollViewer x:Name="AnalysisSettingsSection" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="*" />
@@ -764,7 +655,6 @@
                   <TextBlock Text="WER LÄDT GERADE?" Style="{StaticResource SectionTitle}" Margin="0,16,0,0" />
                   <TextBlock x:Name="TopProgramsText" Style="{StaticResource Caption}" TextWrapping="Wrap" Text="Programme erscheinen, sobald beim Spielen die Priorisierung läuft." />
                   <WrapPanel Margin="0,10,0,0">
-                    <Button Content="Programmregeln" Click="ApplicationRules_Click" Style="{StaticResource CompactButton}" Margin="0,0,6,6"/>
                     <Button Content="Verbrauchsverlauf" Click="UsageHistory_Click" Style="{StaticResource CompactButton}" Margin="0,0,0,6"/>
                   </WrapPanel>
                   <TextBlock Text="INTERNETSTÖRUNGEN" Style="{StaticResource SectionTitle}" Margin="0,16,0,0" />

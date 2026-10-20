@@ -14,10 +14,10 @@ public sealed record NetworkProfilePolicy
     public double? LoadedLatencyMs { get; init; }
     public string Profile { get; init; } = "Standard";
     public double BackgroundPercent { get; init; } = 65;
-    public double ReservePerGamerMbps { get; init; } = 10;
+    public double ReservePerGamerMbps { get; init; }
     public double? ManualLimitMbps { get; init; }
     public double SharePriority { get; init; } = 1;
-    public bool UploadLimitEnabled { get; init; } = true;
+    public bool UploadLimitEnabled { get; init; }
     public double? ManualUploadLimitMbps { get; init; }
     public string RouterTarget { get; init; } = "";
     public string ExternalTarget { get; init; } = "1.1.1.1";
@@ -30,8 +30,8 @@ public sealed record NetworkProfilePolicy
         AutomaticSpeedTestAttempted = s.AutomaticSpeedTestAttempted, UploadCapacityMbps = s.UploadCapacityMbps,
         IdleLatencyMs = s.IdleLatencyMs, LoadedLatencyMs = s.LoadedLatencyMs, Profile = s.Profile,
         BackgroundPercent = s.BackgroundPercent, ReservePerGamerMbps = s.ReservePerGamerMbps,
-        ManualLimitMbps = s.ManualLimitMbps, SharePriority = s.SharePriority,
-        UploadLimitEnabled = s.UploadLimitEnabled, ManualUploadLimitMbps = s.ManualUploadLimitMbps,
+        ManualLimitMbps = null, SharePriority = s.SharePriority,
+        UploadLimitEnabled = false, ManualUploadLimitMbps = null,
         RouterTarget = s.RouterTarget, ExternalTarget = s.ExternalTarget, AutoConnectLan = s.AutoConnectLan, DirectPeers = s.DirectPeers
     };
 
@@ -40,10 +40,16 @@ public sealed record NetworkProfilePolicy
         CapacityMbps = CapacityMbps, CapacityMeasuredAtUtc = CapacityMeasuredAtUtc,
         AutomaticSpeedTestAttempted = AutomaticSpeedTestAttempted, UploadCapacityMbps = UploadCapacityMbps,
         IdleLatencyMs = IdleLatencyMs, LoadedLatencyMs = LoadedLatencyMs, Profile = Profile,
-        BackgroundPercent = BackgroundPercent, ReservePerGamerMbps = ReservePerGamerMbps,
-        ManualLimitMbps = ManualLimitMbps, SharePriority = SharePriority,
-        UploadLimitEnabled = UploadLimitEnabled, ManualUploadLimitMbps = ManualUploadLimitMbps,
+        BackgroundPercent = BackgroundPercent, ReservePerGamerMbps = 0,
+        ManualLimitMbps = null, SharePriority = SharePriority,
+        UploadLimitEnabled = false, ManualUploadLimitMbps = null,
         RouterTarget = RouterTarget, ExternalTarget = ExternalTarget, AutoConnectLan = AutoConnectLan, DirectPeers = DirectPeers
+    };
+
+    internal NetworkProfilePolicy WithoutLimits() => this with
+    {
+        ReservePerGamerMbps = 0, ManualLimitMbps = null,
+        UploadLimitEnabled = false, ManualUploadLimitMbps = null
     };
 }
 

@@ -18,59 +18,17 @@ namespace Dynex.Desktop;
 
 internal static class FeatureUiSmokeChecks
 {
-    private const string RuleName = "featureuismoke";
     internal static async Task RunAsync(MainWindow owner, DynexRuntime runtime, string directory)
     {
         if (DesktopLifecycle.ProfilePath is null || runtime.Settings.DriverEnabled)
             throw new InvalidOperationException("Feature-UI-Checks benötigen ein isoliertes Profil mit ausgeschaltetem Treiber.");
         Directory.CreateDirectory(directory);
-        await VerifyApplicationRulesAsync(owner, runtime, directory);
         await VerifyDevicesAndConnectionTestAsync(owner, runtime, directory);
         await VerifyNetworkProfilesAsync(owner, runtime, directory);
         await VerifyUsageHistoryAsync(owner, runtime, directory);
         await File.WriteAllTextAsync(Path.Combine(directory, "features-result.txt"),
-            "PASS: Programmregeln add/save/reopen/remove; Gerätealias und Sperre über UI; Verbindungstest in isoliertem Profil ohne UDP-Probe; Netzwerkprofil-Umbenennung; Verbrauch heute/7 Tage mit unbekannten Richtungen; alle fünf Featurefenster normal/minimum gerendert, Buttons geprüft. Keine Treiber- oder Produktionsdaten.\n");
+            "PASS: Gerätealias und Sperre über UI; Verbindungstest in isoliertem Profil ohne UDP-Probe; Netzwerkprofil-Umbenennung; Verbrauch heute/7 Tage mit unbekannten Richtungen; Geräte-, Verbindungs-, Profil- und Verlaufsfenster normal/minimum gerendert, Buttons geprüft. Keine Treiber- oder Produktionsdaten.\n");
     }
-
-    private static async Task VerifyApplicationRulesAsync(MainWindow owner, DynexRuntime runtime, string directory)
-    {
-        var rules = CreateRulesWindow(owner, runtime);
-        rules.Show(); await ReadyAsync(rules);
-        var process = Named<ComboBox>(rules, "ProcessBox");
-        var down = Named<TextBox>(rules, "DownloadBox");
-        var upload = Named<TextBox>(rules, "UploadBox");
-        process.ApplyTemplate();
-        if (process.Template.FindName("PART_EditableTextBox", process) is not TextBox editor || !editor.IsVisible)
-            throw new InvalidOperationException("Programmname lässt sich im echten Auswahlfeld nicht eingeben.");
-        editor.Text = "FeatureUiSmoke.exe"; down.Text = "17.5"; upload.Text = "";
-        Click(Named<Button>(rules, "ApplyButton"));
-        if (runtime.Settings.ApplicationRules.Any(r => r.ProcessName == RuleName))
-            throw new InvalidOperationException("Programmregel wurde bereits vor dem ausdrücklichen Speichern persistent.");
-        Click(Named<Button>(rules, "SaveButton"));
-        await UntilAsync(() => runtime.Settings.ApplicationRules.Any(r => r.ProcessName == RuleName));
-        rules.Close();
-
-        rules = CreateRulesWindow(owner, runtime);
-        rules.Show(); await ReadyAsync(rules);
-        var list = Named<DataGrid>(rules, "RulesList");
-        var persisted = list.Items.Cast<ApplicationRule>().Single(r => r.ProcessName == RuleName);
-        if (persisted.DownloadMbps != 17.5 || persisted.UploadMbps is not null)
-            throw new InvalidOperationException("Programmregel wurde nach erneutem Öffnen verändert.");
-        list.SelectedItem = persisted;
-        var remove = Named<Button>(rules, "RemoveButton");
-        if (!remove.IsEnabled) throw new InvalidOperationException("Entfernen wird nach Auswahl einer Regel nicht aktiviert.");
-        await CaptureSizesAsync(rules, directory, "application-rules");
-        Click(remove);
-        if (!runtime.Settings.ApplicationRules.Any(r => r.ProcessName == RuleName))
-            throw new InvalidOperationException("Entfernen speichert ohne ausdrücklichen Speicherklick.");
-        Click(Named<Button>(rules, "SaveButton"));
-        await UntilAsync(() => runtime.Settings.ApplicationRules.All(r => r.ProcessName != RuleName));
-        rules.Close();
-    }
-
-    private static ApplicationRulesWindow CreateRulesWindow(MainWindow owner, DynexRuntime runtime) => new(
-        () => runtime.Settings.ApplicationRules,
-        values => runtime.SaveSettingsAsync(runtime.Settings with { ApplicationRules = values })) { Owner = owner };
 
     private static async Task VerifyDevicesAndConnectionTestAsync(MainWindow owner, DynexRuntime runtime, string directory)
     {

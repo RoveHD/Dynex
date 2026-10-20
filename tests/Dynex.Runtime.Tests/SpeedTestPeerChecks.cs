@@ -40,17 +40,20 @@ internal static class SpeedTestPeerChecks
         remote.Publish(false, downloadMbps: 25, uploadMbps: 0);
         await remote.StartAsync();
         await runtime.StartAsync();
+        await runtime.RefreshStatusAsync();
+        check(service.Calls == 0 && !runtime.IsSpeedTestWaiting, "startup never schedules calibration for priority-only operation");
+        var initialMeasurement = runtime.MeasureCapacityAsync();
         await Until(() => runtime.SpeedTestWaitingFor == SpeedTestWaitReason.PeerTraffic);
         check(service.Calls == 0 && !runtime.Settings.AutomaticSpeedTestAttempted,
-            "automatic calibration waits for a downloading peer without consuming its one automatic attempt");
+            "explicit calibration waits for a downloading peer without consuming its one automatic attempt");
         remote.Publish(false);
         await Until(() => Peers(runtime).SingleOrDefault()?.DownloadMbps is null);
         check(service.Calls == 0 && runtime.IsSpeedTestWaiting,
             "unknown peer throughput cannot start the waiting calibration");
         remote.Publish(false, downloadMbps: 0, uploadMbps: 0);
         var first = await service.NextAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        check(runtime.IsSpeedTestRunning && runtime.Settings.AutomaticSpeedTestAttempted,
-            "a fresh measured idle peer allows the automatic test");
+        check(runtime.IsSpeedTestRunning && !runtime.Settings.AutomaticSpeedTestAttempted,
+            "a fresh measured idle peer allows the explicit diagnostic test");
         first.Complete(120);
         await Task.Delay(200);
         check(runtime.Settings.CapacityMeasuredAtUtc is null,
@@ -59,6 +62,7 @@ internal static class SpeedTestPeerChecks
         await Until(() => !runtime.IsSpeedTestRunning && runtime.Settings.CapacityMbps == 120);
         check(new SettingsStore(profile.Path).Load().CapacityMbps == 120,
             "uncontended capacity is persisted after fresh final peer evidence");
+        await initialMeasurement.WaitAsync(TimeSpan.FromSeconds(10));
         var storedAt = runtime.Settings.CapacityMeasuredAtUtc;
 
         foreach (var transfer in new[] { "download", "upload", "unknown" })

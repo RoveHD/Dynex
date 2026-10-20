@@ -47,7 +47,6 @@ public partial class MainWindow : Window
     private IReadOnlyList<DeviceView> _deviceSnapshot = Array.Empty<DeviceView>();
     private int _devicePage;
     private readonly Dynex.Core.StatusNotifications _notifications = new();
-    private readonly Forms.ToolStripMenuItem _resumeItem;
     private Dynex.Core.SessionSummary? _shownSession;
     private readonly bool _guideAllowed;
     private double? _historyPointerRatio;
@@ -56,8 +55,7 @@ public partial class MainWindow : Window
 
     public MainWindow(DynexRuntime runtime, GitHubUpdateService? updates = null, bool showSetupGuide = false)
     {
-        // Existing installations that already measured their line skip the first-run guide.
-        _guideAllowed = showSetupGuide && runtime.Settings.CapacityMeasuredAtUtc is null;
+        _guideAllowed = showSetupGuide && !runtime.Settings.SetupGuideDone;
         InitializeComponent();
         DeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
         OverviewDeviceGrid.Language = System.Windows.Markup.XmlLanguage.GetLanguage(CultureInfo.CurrentCulture.IetfLanguageTag);
@@ -91,11 +89,6 @@ public partial class MainWindow : Window
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("DYNEX öffnen", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
         menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("Downloadlimit 30 Minuten pausieren", null, (_, _) => Dispatcher.Invoke(() => PauseLimits(TimeSpan.FromMinutes(30))));
-        menu.Items.Add("Downloadlimit 2 Stunden pausieren", null, (_, _) => Dispatcher.Invoke(() => PauseLimits(TimeSpan.FromHours(2))));
-        _resumeItem = new Forms.ToolStripMenuItem("Pause beenden", null, (_, _) => Dispatcher.Invoke(ResumeLimits)) { Enabled = false };
-        menu.Items.Add(_resumeItem);
-        menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Beenden", null, (_, _) => Dispatcher.Invoke(ExitApplication));
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
@@ -116,18 +109,6 @@ public partial class MainWindow : Window
         ApplyResponsiveScale();
     }
 
-    private void PauseLimits(TimeSpan duration)
-    {
-        _runtime.PauseLimits(duration);
-        _resumeItem.Enabled = true;
-        ErrorText.Text = $"Downloadlimit pausiert bis {_runtime.PausedUntil?.ToLocalTime():HH:mm} Uhr. Gilt nur für diesen PC.";
-    }
-    private void ResumeLimits()
-    {
-        _runtime.ResumeLimits();
-        _resumeItem.Enabled = false;
-        ErrorText.Text = "Pause beendet. Das Downloadlimit gilt wieder beim nächsten Messzyklus.";
-    }
     private string? _shownPingAlert;
     private DateTime _analysisRenderedAt;
     private async void ExportQualityLog_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
@@ -174,14 +155,12 @@ public partial class MainWindow : Window
             _shownSession = session;
             if (_runtime.Settings.Notifications) _tray.ShowBalloonTip(8000, "Spielsitzung beendet", session.Text, Forms.ToolTipIcon.Info);
         }
-        _resumeItem.Enabled = s.PausedUntil is not null;
         var ping = s.External.Current is { } ms ? $"{ms:0} ms" : "—";
-        var limit = s.PausedUntil is { } until ? $"pausiert bis {until.ToLocalTime():HH:mm}" : s.LimitMbps is { } cap ? $"{cap:0.#} Mbit/s" : "kein Limit";
-        var text = $"DYNEX · Ping {ping} · Limit {limit} · {s.Devices.Count} PCs";
+        var text = $"DYNEX · Ping {ping} · {s.Devices.Count} Geräte";
         _tray.Text = text.Length <= 63 ? text : text[..63]; // NotifyIcon rejects longer texts.
         if (!_runtime.Settings.Notifications) return;
         var peers = s.Devices.Skip(1).Select(d => d.Name).ToArray();
-        foreach (var note in _notifications.Observe(peers, s.LimitMbps is not null && s.DriverActive, s.LimitReason, s.Connection, DateTimeOffset.UtcNow))
+        foreach (var note in _notifications.Observe(peers, s.QosActive, s.LimitReason, s.Connection, DateTimeOffset.UtcNow))
             if (!string.IsNullOrWhiteSpace(note.Text)) _tray.ShowBalloonTip(5000, note.Title, note.Text, Forms.ToolTipIcon.Info);
     }
 
@@ -216,22 +195,13 @@ public partial class MainWindow : Window
         ApplyFeedbackPreferences();
         PingAlarmCheck.IsChecked = s.PingAlarm;
         EarlyGamesBox.Text = s.EarlyLimitGames;
-        NightFreeCheck.IsChecked = s.NightFree;
-        NightFromBox.Text = s.NightFrom;
-        NightToBox.Text = s.NightTo;
-        WeekendProfileCombo.SelectedIndex = s.WeekendProfile switch { "Turnier" => 1, "Standard" => 2, "Entspannt" => 3, _ => 0 };
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         BetaUpdatesCheck.IsChecked = s.BetaUpdates;
         DriverCheck.IsChecked = s.DriverEnabled; PeersBox.Text = s.DirectPeers;
         _configuredProcesses.Clear();
         foreach (var process in SettingsStore.Split(s.GameProcesses)) _configuredProcesses.Add(process);
         RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
-        ManualLimitBox.Text = s.ManualLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
-        UploadLimitCheck.IsChecked = s.UploadLimitEnabled;
-        ManualUploadBox.Text = s.ManualUploadLimitMbps?.ToString(CultureInfo.CurrentCulture) ?? "";
         ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
-        PriorityCombo.SelectedIndex = s.SharePriority switch { 0.5 => 0, 2 => 2, _ => 1 };
-        ProfileCombo.SelectedIndex = s.Profile switch { "Turnier" => 0, "Entspannt" => 2, "Standard" => 1, _ => -1 };
         _loading = false;
         _updates?.SetEnabled(s.AutoUpdate);
     }
@@ -250,12 +220,8 @@ public partial class MainWindow : Window
                 Notifications = NotificationsCheck.IsChecked == true,
                 UiSounds = UiSoundsCheck.IsChecked == true,
                 UiAnimations = UiAnimationsCheck.IsChecked == true,
-                UploadLimitEnabled = UploadLimitCheck.IsChecked == true,
                 PingAlarm = PingAlarmCheck.IsChecked == true,
                 EarlyLimitGames = EarlyGamesBox.Text.Trim(),
-                NightFree = NightFreeCheck.IsChecked == true, NightFrom = NightFromBox.Text.Trim(), NightTo = NightToBox.Text.Trim(),
-                WeekendProfile = (WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
-                ManualUploadLimitMbps = string.IsNullOrWhiteSpace(ManualUploadBox.Text) ? null : Number(ManualUploadBox.Text, "Upload-Obergrenze"),
                 GameProcesses = ConfiguredProcessesText, DirectPeers = PeersBox.Text.Trim(),
                 RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
             };
@@ -270,9 +236,6 @@ public partial class MainWindow : Window
     private void PeerConnectionTest_Click(object sender, RoutedEventArgs e) => new ConnectionTestWindow(_runtime) { Owner = this }.ShowDialog();
     private void UsageHistory_Click(object sender, RoutedEventArgs e) => _runtime.ShowUsageHistory(this);
     private void NetworkProfiles_Click(object sender, RoutedEventArgs e) => new NetworkProfilesWindow(_runtime) { Owner = this }.ShowDialog();
-    private void ApplicationRules_Click(object sender, RoutedEventArgs e) => new ApplicationRulesWindow(
-        () => _runtime.Settings.ApplicationRules,
-        rules => _runtime.SaveSettingsAsync(_runtime.Settings with { ApplicationRules = rules })) { Owner = this }.ShowDialog();
 
     private async void BetaUpdatesCheck_Changed(object sender, RoutedEventArgs e)
     {
@@ -409,26 +372,15 @@ public partial class MainWindow : Window
             var saved = _runtime.Settings;
             return AutoConnectCheck.IsChecked != saved.AutoConnectLan || AutoStartCheck.IsChecked != saved.AutoStart ||
                 DriverCheck.IsChecked != saved.DriverEnabled || NotificationsCheck.IsChecked != saved.Notifications ||
-                PingAlarmCheck.IsChecked != saved.PingAlarm || UploadLimitCheck.IsChecked != saved.UploadLimitEnabled ||
+                PingAlarmCheck.IsChecked != saved.PingAlarm ||
                 UiSoundsCheck.IsChecked != saved.UiSounds || UiAnimationsCheck.IsChecked != saved.UiAnimations ||
-                NightFreeCheck.IsChecked != saved.NightFree || AutoUpdateCheck.IsChecked != saved.AutoUpdate ||
+                AutoUpdateCheck.IsChecked != saved.AutoUpdate ||
                 BetaUpdatesCheck.IsChecked != saved.BetaUpdates ||
-                EarlyGamesBox.Text.Trim() != saved.EarlyLimitGames || NightFromBox.Text.Trim() != saved.NightFrom ||
-                NightToBox.Text.Trim() != saved.NightTo || !_configuredProcesses.SequenceEqual(SettingsStore.Split(saved.GameProcesses)) ||
+                EarlyGamesBox.Text.Trim() != saved.EarlyLimitGames ||
+                !_configuredProcesses.SequenceEqual(SettingsStore.Split(saved.GameProcesses)) ||
                 PeersBox.Text.Trim() != saved.DirectPeers || RouterBox.Text.Trim() != saved.RouterTarget ||
-                ExternalBox.Text.Trim() != saved.ExternalTarget ||
-                ((WeekendProfileCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != saved.WeekendProfile ||
-                !MatchesLimit(ManualLimitBox.Text, saved.ManualLimitMbps) ||
-                !MatchesLimit(ManualUploadBox.Text, saved.ManualUploadLimitMbps);
+                ExternalBox.Text.Trim() != saved.ExternalTarget;
         }
-    }
-
-    private static bool MatchesLimit(string text, double? saved)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return saved is null;
-        var parsed = double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out var value) ||
-            double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-        return parsed && double.IsFinite(value) && value == saved;
     }
 
     private void NotifyUpdateRestartSafety()
@@ -540,17 +492,12 @@ public partial class MainWindow : Window
         var snapshot = _runtime.Snapshot;
         var fromPeer = snapshot?.CapacityFromPeer == true;
         var capacity = snapshot?.SharedCapacityMbps ?? (settings.CapacityMeasuredAtUtc.HasValue ? settings.CapacityMbps : (double?)null);
-        var uploadCapacity = snapshot?.SharedUploadCapacityMbps ?? (settings.CapacityMeasuredAtUtc.HasValue ? settings.UploadCapacityMbps : null);
         CapacityBox.Text = capacity?.ToString("0.##", CultureInfo.CurrentCulture) ?? "—";
         CapacityBox.ToolTip = fromPeer ? "Frische Leitungskapazität von verbundenem PC; keine eigene Messung."
             : snapshot?.ParticipantCount > 1 ? "Konservative gemeinsame Leitung aus den Kapazitäten verbundener PCs."
             : "Eigene erfolgreiche Speedtest-Messung";
-        // Effective capacity is a placeholder, never a stored manual maximum.
-        ManualUploadBox.Tag = uploadCapacity?.ToString("0.##", CultureInfo.CurrentCulture) ?? "—";
         CapacityBox.Opacity = capacity.HasValue ? 1 : 0.6;
-        AutomaticBudgetText.Text = snapshot?.SharedDownloadBudgetMbps is { } pool
-            ? $"{pool:0.##} Mbit/s · automatisch"
-            : capacity.HasValue ? "Automatisch aus Speedtest" : "Wartet auf Speedtest";
+        CapacityMeasurementText.Text = capacity.HasValue ? $"{capacity:0.##} Mbit/s" : "Noch nicht gemessen";
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
         {
@@ -562,20 +509,14 @@ public partial class MainWindow : Window
         SpeedTestProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         var measured = settings.CapacityMeasuredAtUtc is { } at
             ? $"Gemessen am {at.ToLocalTime():dd.MM.yyyy HH:mm}" +
-              (settings.UploadCapacityMbps is { } upload ? $" · Upload {upload:0.#} Mbit/s. " : ". ")
+              ". "
             : "Noch nicht gemessen. ";
-        var shared = capacity is { } down && snapshot?.ParticipantCount > 1
-            ? $"Gemeinsame Leitung: ↓ {down:0.##}" + (uploadCapacity is { } up ? $" / ↑ {up:0.##}" : "") + " Mbit/s. " : "";
-        if (fromPeer) measured = shared + "Von verbundenem PC übernommen; keine eigene Messung. ";
-        else measured = shared + measured;
+        if (fromPeer) measured = "Leitungswert eines verbundenen PCs; keine eigene Messung. ";
         var showWaiting = waiting && !fromPeer;
         var detail = running || showWaiting ? _runtime.SpeedTestMessage : measured +
-            (fromPeer ? "Eigene Messung und manuelle Obergrenzen bleiben getrennt."
-                : string.IsNullOrEmpty(_runtime.SpeedTestMessage)
-                ? "DYNEX misst einmal automatisch, sobald auf keinem verbundenen PC ein Spiel läuft. Danach nur auf Wunsch. Downloadlimits verwenden eine eigene Messung oder frische PC-Leitungswerte."
-                : _runtime.SpeedTestMessage);
+            (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Manuelle Diagnose; der Messwert steuert keine Priorisierung." : _runtime.SpeedTestMessage);
         SpeedTestHint.Text = running || showWaiting ? _runtime.SpeedTestMessage : measured +
-            (fromPeer ? "Eigene Messung bleibt getrennt." : string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Einmal automatisch, danach manuell." : _runtime.SpeedTestMessage);
+            (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Manuelle Diagnose; der Messwert steuert keine Priorisierung." : _runtime.SpeedTestMessage);
         if (!running && !waiting && Dynex.Core.Bufferbloat.Rate(settings.IdleLatencyMs, settings.LoadedLatencyMs) is { } bloat)
         {
             SpeedTestHint.Text += "\n" + bloat.Summary;
@@ -584,30 +525,6 @@ public partial class MainWindow : Window
         SpeedTestHint.ToolTip = detail;
     }
 
-    private async void ManualLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        var value = Number(ManualLimitBox.Text, "Downloadlimit");
-        await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = value });
-        ErrorText.Text = "Obergrenze gespeichert. Gilt bei bestätigtem Spiel-Netzwerkverkehr.";
-    });
-    private async void ClearLimit_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        ManualLimitBox.Clear();
-        await _runtime.SaveSettingsAsync(_runtime.Settings with { ManualLimitMbps = null });
-        ErrorText.Text = "Manuelles Limit aufgehoben.";
-    });
-    private async void ProfileCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || ProfileCombo.SelectedItem is not ComboBoxItem { Tag: string profile } item) return;
-        await RunUiAction(async () =>
-        {
-            EnsureNetworkEditContext();
-            await _runtime.ApplyProfileAsync(profile);
-            ErrorText.Text = $"Profil {item.Content} aktiv.";
-        });
-    }
     private async void GuideDone_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
         await _runtime.CompleteSetupGuideAsync();
@@ -620,23 +537,10 @@ public partial class MainWindow : Window
         var privateOk = s.NetworkProblem is null &&
             s.Connection?.Kind is not (Dynex.Core.ConnectionProblemKind.NoPrivateNetwork or Dynex.Core.ConnectionProblemKind.FirewallMissing);
         var peersOk = s.Devices.Count > 1;
-        var speedOk = _runtime.Settings.CapacityMeasuredAtUtc is not null || s.SharedCapacityMbps is not null;
         GuideNetworkText.Text = privateOk ? "✓ 1 · Heimnetz ist privat und freigegeben." : "✗ 1 · " + (s.NetworkProblem ?? s.Connection?.ToString() ?? "Netzwerk prüfen.");
         GuidePeerText.Text = peersOk ? $"✓ 2 · {s.Devices.Count - 1} weitere(r) PC verbunden." : "… 2 · Noch kein anderer PC gefunden. DYNEX auf dem zweiten PC starten (bei nur einem PC überspringen).";
-        GuideSpeedText.Text = s.CapacityFromPeer ? "✓ 3 · Leitung von verbundenem PC übernommen."
-            : speedOk ? "✓ 3 · Internetgeschwindigkeit gemessen." : "… 3 · " + (string.IsNullOrEmpty(_runtime.SpeedTestMessage) ? "Speedtest steht noch aus." : _runtime.SpeedTestMessage);
-        GuideDoneButton.Content = privateOk && speedOk ? "Fertig" : "Später";
-    }
-    private async void PriorityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || PriorityCombo.SelectedItem is not ComboBoxItem item ||
-            !double.TryParse(item.Tag?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var priority)) return;
-        await RunUiAction(async () =>
-        {
-            EnsureNetworkEditContext();
-            await _runtime.SaveSettingsAsync(_runtime.Settings with { SharePriority = priority });
-            ErrorText.Text = $"Priorität gespeichert: {item.Content}.";
-        });
+        GuideSpeedText.Text = "✓ 3 · Speedtest ist optional und dient nur der Diagnose.";
+        GuideDoneButton.Content = privateOk ? "Fertig" : "Später";
     }
     private async void ModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -688,7 +592,7 @@ public partial class MainWindow : Window
             await RunUiAction(async () =>
             {
                 await _runtime.StopAsync();
-                SetupHint.Text = "Windows richtet Downloadbegrenzung und Heimnetzverbindung ein …";
+                SetupHint.Text = "Windows richtet die Netzwerkpriorisierung und Heimnetzverbindung ein …";
                 var result = await InstallerPrerequisites.RunAsync();
                 if (result.ExitCode == 3010)
                 {
@@ -825,11 +729,8 @@ public partial class MainWindow : Window
             : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
-        UpCaption.Text = s.UploadLimitMbps is { } upCap ? $"Andere Uploads ≤ {upCap:0.0} Mbps" : "Gesamter Versand";
-        UpCaption.ToolTip = s.UploadLimitMbps is not null
-            ? "Große Uploads anderer Programme sind begrenzt. Spiele, Sprachchat und Download-Bestätigungen bleiben frei."
-            : s.SharedUploadCapacityMbps is null && _runtime.Settings.UploadCapacityMbps is null
-                ? "Upload-Begrenzung benötigt eine eigene Uploadmessung oder frische Upload-Kapazität eines verbundenen PCs." : null;
+        UpCaption.Text = "Gesamter Versand";
+        UpCaption.ToolTip = null;
         if (s.HomeTraffic is { } home)
         {
             // NIC counters include LAN traffic, so the remainder is only an estimate.
@@ -839,43 +740,27 @@ public partial class MainWindow : Window
             DownCaption.ToolTip = $"Router {home.RouterName}: ↓ {home.DownloadMbps:0.0} / ↑ {home.UploadMbps:0.0} Mbit/s\nGeräte ohne DYNEX (Konsole, Handy, TV …) ca. {others:0.0} Mbit/s\nGelesen über UPnP; DYNEX steuert diese Geräte nicht.";
         }
         else { DownCaption.Text = "Gesamter Empfang"; DownCaption.ToolTip = "Router-Werte erscheinen, wenn der Router UPnP-Statusinformationen anbietet."; }
-        LimitText.Text = s.LimitMbps is { } cap ? $"{cap:0.0} Mbps" : "Kein Limit";
-        LimitReasonText.Text = string.IsNullOrEmpty(s.LimitReason) ? "Für große Downloads" : s.LimitReason;
-        LimitReasonText.ToolTip = $"Aktuell: {(s.DownloadMbps is { } now ? $"{now:0.0} Mbit/s" : "—")} · Aktives Limit: {(s.LimitMbps is { } active ? $"{active:0.0} Mbit/s" : "keins")}\nGrund: {LimitReasonText.Text}";
+        PriorityOverviewText.Text = s.QosActive ? "PRIORITÄT AKTIV" : s.ObservingGameTraffic ? "SPIEL WIRD BEOBACHTET" : "BEREIT";
+        PriorityDetailText.Text = s.QosActive
+            ? $"Spiel: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete"
+            : "DYNEX markiert erkannte Pakete; Router-QoS/SQM steuert deren Behandlung im Heimnetz.";
         var installed = PacketFilterSetup.IsInstalled;
-        var observingWithoutGameTraffic = s.ObservingGameTraffic && !s.IsGaming && !s.QosActive && !s.DriverActive;
-        DriverText.Text = s.DriverActive ? "LIMIT AKTIV" : s.QosActive ? "PRIORITÄT AKTIV" : observingWithoutGameTraffic ? "BEOBACHTET" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
-        DriverDetail.Text = s.DriverActive ? "Die Downloadbegrenzung wurde bestätigt." : s.QosActive ? "QoS bestätigt; das Downloadlimit ist nicht aktiv." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet. Keine Begrenzung ohne Spielverkehr." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
+        var observingWithoutGameTraffic = s.ObservingGameTraffic && !s.IsGaming && !s.QosActive;
+        DriverText.Text = s.QosActive ? "PRIORITÄT AKTIV" : observingWithoutGameTraffic ? "BEOBACHTET" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
+        DriverDetail.Text = s.QosActive ? "Spiel- und Sprachpakete werden für QoS markiert." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet; noch keine priorisierten Pakete bestätigt." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
         DriverDetail.ToolTip = s.DriverState;
-        ProtectionStatusText.Text = (s.DriverActive, s.QosActive) switch
-        {
-            (true, true) => "NETZWERKSCHUTZ · PRIORISIERUNG UND DOWNLOADLIMIT AKTIV",
-            (true, false) => "NETZWERKSCHUTZ · DOWNLOADLIMIT AKTIV",
-            (false, true) => "NETZWERKSCHUTZ · PRIORISIERUNG AKTIV",
-            _ when observingWithoutGameTraffic => "NETZWERKSCHUTZ · SPIELVERKEHR WIRD BEOBACHTET",
-            _ when s.ProtectionIdle => "NETZWERKSCHUTZ · INAKTIV",
-            _ => "NETZWERKSCHUTZ · NOCH NICHT AKTIV"
-        };
-        if (s.ApplicationRulesActive)
-        {
-            DriverText.Text = "PROGRAMMREGELN AKTIV";
-            DriverDetail.Text = "Eigene Download- und Uploadlimits für Programme sind bestätigt.";
-            ProtectionStatusText.Text = "NETZWERKSCHUTZ · PROGRAMMREGELN AKTIV";
-        }
+        ProtectionStatusText.Text = s.QosActive ? "NETZWERKSCHUTZ · PRIORISIERUNG AKTIV"
+            : observingWithoutGameTraffic ? "NETZWERKSCHUTZ · SPIELVERKEHR WIRD BEOBACHTET"
+            : s.ProtectionIdle ? "NETZWERKSCHUTZ · INAKTIV" : "NETZWERKSCHUTZ · NOCH NICHT AKTIV";
         if (s.QosActive)
         {
             QosStatusText.Text = "Priorisierung aktiv";
             QosDetailText.Text = $"Spiele: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete";
         }
-        else if (s.ApplicationRulesActive)
-        {
-            QosStatusText.Text = "Programmregeln aktiv";
-            QosDetailText.Text = "Die eingestellten Programme teilen sich je Regel ein eigenes Bandbreitenlimit.";
-        }
         else if (observingWithoutGameTraffic)
         {
             QosStatusText.Text = "BEOBACHTET";
-            QosDetailText.Text = "Spielverkehr wird beobachtet. Keine Begrenzung ohne Spielverkehr.";
+            QosDetailText.Text = "Spielverkehr wird beobachtet; Priorisierung beginnt bei erkanntem Verkehr.";
         }
         else if (s.ProtectionIdle)
         {
@@ -892,15 +777,14 @@ public partial class MainWindow : Window
             QosStatusText.Text = "Priorisierung noch nicht aktiv";
             QosDetailText.Text = _runtime.Settings.DriverEnabled ? "Der Netzwerkfilter hat die Priorisierung noch nicht bestätigt." : "In den Einstellungen einschalten, um Spiele und Sprachchat zu bevorzugen.";
         }
-        QosDetailText.ToolTip = "Erkannte Pakete werden auf diesem PC bevorzugt weitergegeben; ausgehend zusätzlich für QoS markiert. Der Router muss diese Markierungen unterstützen. Zähler gelten für die aktuelle Filtersitzung und bestätigen keine Priorität im Router.";
+        QosDetailText.ToolTip = "DYNEX markiert erkannte Spiel- und Sprachpakete für QoS. Der Router muss diese Markierungen unterstützen. Paket-Zähler belegen keine Behandlung durch den Router.";
         DriverCheck.IsEnabled = s.DriverAvailable && installed && !_settingUp;
         SetupButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
         SetupButton.IsEnabled = s.DriverAvailable && !_settingUp;
-        if (!_settingUp) SetupHint.Text = !s.DriverAvailable ? "Das Download-Modul fehlt. DYNEX bitte vollständig installieren." : installed
-            ? "Schutz greift bei bestätigtem Spiel-Netzwerkverkehr. Prozesse werden ab Fokus oder Spielstart beobachtet; ohne Spielverkehr gibt es kein Limit."
+        if (!_settingUp) SetupHint.Text = !s.DriverAvailable ? "Die Netzwerkkomponente fehlt. DYNEX bitte vollständig installieren." : installed
+            ? "DYNEX markiert bestätigten Spiel- und Sprachverkehr. Router-QoS entscheidet über die weitere Behandlung."
             : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
-        ScheduleStatusText.Text = s.ScheduleReason ?? "Gerade gilt kein Zeitplan.";
         RenderAnalysis(s);
         _deviceSnapshot = s.Devices;
         RenderDevicePage();
@@ -921,27 +805,21 @@ public partial class MainWindow : Window
         NetworkHelpText.ToolTip = s.NetworkDiagnostics is { } network
             ? $"{NetworkHelpText.Text}\nModus: {network.Mode}\nLokale Adressen: {string.Join(", ", network.LocalAddresses)}\nGesendet: {network.SentDatagrams} · Empfangen: {network.ReceivedDatagrams} (davon eigene: {network.SelfDatagrams}) · Bestätigte Statuspakete: {network.AcceptedStatusDatagrams}\nVollständige Werte: Diagnose exportieren."
             : NetworkHelpText.Text;
-        SharedBudgetText.Text = s.SharedDownloadBudgetMbps is { } pool
-            ? $"Gemeinsames Downloadbudget: {pool:0.0} Mbit/s insgesamt · Dein aktives Limit: {(s.LimitMbps is { } own ? $"{own:0.0} Mbit/s" : "noch nicht aktiv") }"
-            : "Sobald Spiel-Netzwerkverkehr bestätigt ist, teilen sich die DYNEX-Geräte ein Downloadbudget.";
-        CoordinationText.Text = s.SharedDownloadBudgetMbps.HasValue
-            ? $"{s.GamingCount} {(s.GamingCount == 1 ? "PC spielt" : "PCs spielen")} · Budget auf {s.ConfirmedParticipantCount}/{s.ParticipantCount} Geräten bestätigt. Spiele und Sprachchat umgehen die Downloadwarteschlange." +
-                (!s.SharedBudgetComplete ? " Gemeinsame Aufteilung noch unvollständig. DYNEX-Version und Anschlussmessung auf allen Geräten prüfen." :
-                    s.ConfirmedParticipantCount < s.ParticipantCount ? " Anteile werden noch übernommen; die Begrenzung muss auf jedem Gerät eingeschaltet sein." : "") +
-                (s.DownloadActivityComplete ? " Aktive Downloads teilen das Budget; neue Downloads werden nach dem nächsten Geräteaustausch berücksichtigt." : " Downloadaktivität noch nicht vollständig bekannt; vorläufig teilen alle Geräte das Budget.")
-            : "Spiel- und Sprachchatpakete umgehen die Downloadwarteschlange. DYNEX muss auf jedem beteiligten Gerät laufen.";
+        DevicePriorityText.Text = s.QosActive
+            ? "DYNEX bestätigt QoS-Markierungen auf diesem PC."
+            : "DYNEX markiert lokal erkannte Spiel- und Sprachpakete für QoS.";
+        CoordinationText.Text = "DYNEX markiert Pakete auf PCs, auf denen es läuft. Router-QoS oder SQM bestimmt die Behandlung im gesamten Anschluss.";
         PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
         if (s.NetworkProblem is not null)
         {
-            SharedBudgetText.Text = "Geräteverbindung nicht bereit · Netzwerk prüfen";
-            CoordinationText.Text = s.NetworkProblem;
+            CoordinationText.Text += " Geräteverbindung: " + s.NetworkProblem;
         }
         // A lone PC without any observed partner is normal; surface only causes DYNEX actually observed.
         else if (s.Connection is { IsProblem: true, Kind: not Dynex.Core.ConnectionProblemKind.NoResponse } advice)
-            CoordinationText.Text = advice.ToString();
+            CoordinationText.Text += " Geräteverbindung: " + advice;
         DrawHistory(s.History);
-        HistoryCompare.Text = $"Ohne Begrenzung: {CompareHistory(s.History, false)}\nMit Begrenzung: {CompareHistory(s.History, true)}";
-        HistoryCompare.ToolTip = "Vergleich gemessener Internet-Pings. Unterschiedliche Werte allein beweisen noch keine Verbesserung durch DYNEX.";
+        HistoryCompare.Text = "Pingmessungen der letzten Minuten.";
+        HistoryCompare.ToolTip = "Pingmessungen am Router und im Internet. Die Anzeige belegt keine Priorität durch deinen Router.";
     }
 
     private void RenderDevicePage()
@@ -1025,7 +903,7 @@ public partial class MainWindow : Window
     internal void ShowSettings(string section = "general")
     {
         section = section.Trim().ToLowerInvariant();
-        if (section is not ("general" or "games" or "network" or "schedule" or "analysis" or "updates" or "appearance"))
+        if (section is not ("general" or "games" or "network" or "analysis" or "updates" or "appearance"))
             throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
         var changed = SettingsPage.Visibility != Visibility.Visible || !Equals(SettingsPage.Tag, section);
         SettingsPage.Tag = section;
@@ -1038,7 +916,6 @@ public partial class MainWindow : Window
         GamesSettingsSection.Visibility = Visibility.Collapsed;
         NetworkSettingsSection.Visibility = Visibility.Collapsed;
         UpdatesSettingsSection.Visibility = Visibility.Collapsed;
-        ScheduleSettingsSection.Visibility = Visibility.Collapsed;
         AnalysisSettingsSection.Visibility = Visibility.Collapsed;
         AppearanceSettingsSection.Visibility = Visibility.Collapsed;
         foreach (var button in SettingsSectionsNav.Children.OfType<System.Windows.Controls.Button>())
@@ -1049,7 +926,6 @@ public partial class MainWindow : Window
             case "games": GamesSettingsSection.Visibility = Visibility.Visible; break;
             case "network": NetworkSettingsSection.Visibility = Visibility.Visible; break;
             case "updates": UpdatesSettingsSection.Visibility = Visibility.Visible; break;
-            case "schedule": ScheduleSettingsSection.Visibility = Visibility.Visible; break;
             case "analysis": AnalysisSettingsSection.Visibility = Visibility.Visible; RenderAnalysis(_runtime.Snapshot); break;
             case "appearance": AppearanceSettingsSection.Visibility = Visibility.Visible; break;
             default: throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
@@ -1058,11 +934,10 @@ public partial class MainWindow : Window
         {
             "games" => ("Spiele", "Erkennung, laufende Programme und Netzwerkverkehr."),
             "network" => ("Netzwerk", "Deine PCs verbinden und die Verbindung prüfen."),
-            "schedule" => ("Zeitplan", "Freie Downloads in der Nacht und passende Wochenendprofile."),
             "analysis" => ("Analyse", "Verlauf, Störungen und Hinweise zu deinem Router."),
             "updates" => ("Updates", "Installierte Version und automatische Aktualisierungen."),
             "appearance" => ("Darstellung", "Klick-Sounds und Bewegung nach deinem Geschmack."),
-            _ => ("Allgemein", "Internetanschluss, Priorisierung und Downloadlimits.")
+            _ => ("Allgemein", "Internetanschluss und Spiel-Priorisierung.")
         };
         PageTitle.Text = section == "analysis" ? "Analyse" : $"Einstellungen · {SettingsHeading.Text}";
         SettingsActionBar.Visibility = section == "analysis" ? Visibility.Collapsed : Visibility.Visible;
@@ -1083,20 +958,6 @@ public partial class MainWindow : Window
         target.Text = string.IsNullOrWhiteSpace(ping.Target) ? "Ziel nicht konfiguriert" : ping.Target;
     }
     private static string Fmt(double? v, string suffix = " ms") => v is { } n ? $"{n:0.0}{suffix}" : "—";
-    private static string CompareHistory(IReadOnlyList<HistoryPoint> history, bool protection)
-    {
-        var samples = history.Where(p => p.Protection == protection).ToArray();
-        var received = samples.Where(p => p.ExternalMs.HasValue).Select(p => p.ExternalMs!.Value).ToArray();
-        var jitter = history.Zip(history.Skip(1))
-            .Where(pair => pair.First.Protection == protection && pair.Second.Protection == protection &&
-                           (pair.Second.Time - pair.First.Time).TotalSeconds < 5 &&
-                           pair.First.ExternalMs.HasValue && pair.Second.ExternalMs.HasValue)
-            .Select(pair => Math.Abs(pair.Second.ExternalMs!.Value - pair.First.ExternalMs!.Value)).ToArray();
-        var mean = received.Length > 0 ? $"{received.Average():0.0} ms" : "—";
-        var loss = samples.Length > 0 ? $"{(samples.Length - received.Length) * 100.0 / samples.Length:0.#}%" : "—";
-        var variation = jitter.Length > 0 ? $"{jitter.Average():0.0} ms" : "—";
-        return samples.Length == 0 ? "noch keine Messungen" : $"Ø {mean} · Schwankung {variation} · {loss} ohne Antwort";
-    }
     private void DrawHistory(IReadOnlyList<HistoryPoint> history)
     {
         _lastHistory = history;
@@ -1276,12 +1137,6 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
-    private static double Number(string value, string label, bool allowZero = false)
-    {
-        var parsed = double.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out var n) || double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out n);
-        if (parsed && double.IsFinite(n) && (allowZero ? n >= 0 : n > 0)) return n;
-        throw new ArgumentException(allowZero ? $"{label} muss eine Zahl ab 0 sein." : $"{label} muss eine Zahl größer 0 sein.");
-    }
     private void ShowFromTray() { Show(); WindowState = WindowState.Normal; Activate(); }
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void Maximize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;

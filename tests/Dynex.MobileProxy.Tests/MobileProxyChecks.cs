@@ -145,47 +145,29 @@ public static class MobileProxyChecks
             && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("::ffff:192.168.1.5"), 443))
             && !LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("1.1.1.1"), 53)), "LAN and DNS bypass policy covers IPv4, IPv6 and mapped addresses");
         Check(LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("8.8.8.8"), 443))
-            && LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("2606:4700::1111"), 443)), "public destinations are shaped (classification only; no WAN traffic)");
+            && LocalSocksProxy.IsInternetDownload(new(IPAddress.Parse("2606:4700::1111"), 443)), "public destinations are classified for telemetry only (no WAN traffic)");
 
-        using (var limiter = new DownloadRateLimiter(1024))
+        using (var limiter = new DownloadRateLimiter(1024, 1))
         {
-            limiter.SetLimit(1024);
-            var watch = Stopwatch.StartNew();
-            await Task.WhenAll(limiter.WaitAsync(512, token).AsTask(), limiter.WaitAsync(512, token).AsTask());
-            Check(watch.Elapsed.TotalSeconds >= .85 && watch.Elapsed.TotalSeconds < 3, "aggregate token bucket limits two waiters to shared rate");
             limiter.SetLimit(1);
-            var waiting = limiter.WaitAsync(1024, token).AsTask();
-            Check(!waiting.IsCompleted, "low-rate download remains pending");
-            limiter.SetLimit(null);
-            await waiting.WaitAsync(TimeSpan.FromSeconds(1));
-            Check(true, "switching to unlimited wakes pending download promptly");
-            limiter.SetLimit(1);
-            waiting = limiter.WaitAsync(1024, token).AsTask();
+            var first = limiter.WaitAsync(1024, token);
+            var second = limiter.WaitAsync(1024, token);
+            Check(first.IsCompletedSuccessfully && second.IsCompletedSuccessfully && limiter.BytesPerSecond is null,
+                "legacy one-byte cap cannot create pacing or a waiter queue");
+            await Task.WhenAll(first.AsTask(), second.AsTask()).WaitAsync(TimeSpan.FromSeconds(1));
             limiter.SetLimit(1024 * 1024);
-            await waiting.WaitAsync(TimeSpan.FromSeconds(1));
-            Check(true, "increasing rate wakes a pending deadline promptly");
-            limiter.SetLimit(1);
-            using var cancelled = new CancellationTokenSource();
-            var first = limiter.WaitAsync(1024, cancelled.Token).AsTask();
-            var second = limiter.WaitAsync(1, token).AsTask();
-            cancelled.Cancel();
-            await ExpectFailure<OperationCanceledException>(() => first, "cancelled head leaves FIFO queue");
+            Check(limiter.WaitAsync(1024, token).IsCompletedSuccessfully && limiter.BytesPerSecond is null,
+                "changing a legacy cap never installs a bucket");
             limiter.SetLimit(null);
-            await second.WaitAsync(TimeSpan.FromSeconds(1));
-            limiter.SetLimit(1);
-            waiting = limiter.WaitAsync(1024, token).AsTask();
-            limiter.Dispose();
-            await ExpectFailure<ObjectDisposedException>(() => waiting, "disposal releases a pending limiter wait");
-        }
-        using (var bounded = new DownloadRateLimiter(100, 1))
-        {
-            bounded.SetLimit(1);
             using var cancel = new CancellationTokenSource();
-            var pending = bounded.WaitAsync(100, cancel.Token).AsTask();
-            await ExpectFailure<InvalidOperationException>(() => bounded.WaitAsync(1, token).AsTask(), "limiter queue has a hard bound");
             cancel.Cancel();
-            await ExpectFailure<OperationCanceledException>(() => pending, "bounded limiter cleans up cancellation");
-            await ExpectFailure<ArgumentOutOfRangeException>(() => bounded.WaitAsync(101, token).AsTask(), "oversize reservation rejected");
+            await ExpectFailure<OperationCanceledException>(() => limiter.WaitAsync(1, cancel.Token).AsTask(),
+                "cancelled forwarding still honors cancellation");
+            await ExpectFailure<ArgumentOutOfRangeException>(() => limiter.WaitAsync(1025, token).AsTask(),
+                "invalid payload reservation remains rejected");
+            limiter.Dispose();
+            await ExpectFailure<ObjectDisposedException>(() => limiter.WaitAsync(1, token).AsTask(),
+                "disposed forwarding compatibility object cannot be reused");
         }
 
         var prepared = 0;
@@ -312,7 +294,7 @@ public static class MobileProxyChecks
             Check((await Reply(client)).Code != 0, "protection failure rejects CONNECT");
         }
 
-        // The target is isolated loopback. Override only its shaping classification for rate tests.
+        // Isolated loopback with public-flow classification proves legacy cap requests cannot delay payload.
         await using (var limitedProxy = new LocalSocksProxy(_ => { }, shouldLimitDownload: _ => true))
         {
             await limitedProxy.StartAsync(token);
@@ -328,53 +310,37 @@ public static class MobileProxyChecks
                     clients.Add(await Connect(limitedProxy, (IPEndPoint)listener.LocalEndpoint));
                     remotes.Add(await accepting);
                 }
-                limitedProxy.SetDownloadLimit(65_536);
-                var watch = Stopwatch.StartNew();
+                limitedProxy.SetDownloadLimit(1);
                 var payload = new byte[65_536];
                 await Task.WhenAll(remotes.Select(remote => Send(remote, payload)));
-                await Task.WhenAll(clients.Select(client => Read(client, payload.Length)));
-                Check(watch.Elapsed.TotalSeconds >= 1.7 && watch.Elapsed.TotalSeconds < 5,
-                    "two TCP streams share a real aggregate 64 KiB/s download limit");
+                await Task.WhenAll(clients.Select(client => Read(client, payload.Length))).WaitAsync(TimeSpan.FromSeconds(2));
                 Check(limitedProxy.DownloadBytes == 131_072 && limitedProxy.UploadBytes == 0,
-                    "TCP counters include actual payload only, not authentication/framing");
-                Check(limitedProxy.Snapshot() is { LimitedDownloadBytes: 131_072, DownloadLimitBytesPerSecond: 65_536 },
-                    "TCP limit confirmation counts actual payload after its limiter reservation");
+                    "two TCP streams forward complete payload despite a legacy one-byte-per-second cap");
+                Check(limitedProxy.Snapshot() is { LimitedDownloadBytes: 0, DownloadLimitBytesPerSecond: null, LimitVersion: 0 },
+                    "legacy cap cannot claim TCP shaping or retain limit metadata");
                 Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 131_072,
-                    "durable TCP bulk ingress counts actual classified payload before pacing");
-                var priorVersion = limitedProxy.Snapshot().LimitVersion;
+                    "public TCP payload accounting is preserved without pacing");
                 limitedProxy.SetDownloadLimit(65_536);
-                Check(limitedProxy.Snapshot().LimitVersion == priorVersion && limitedProxy.Snapshot().LimitedDownloadBytes == 131_072,
-                    "repeated heartbeat with same limit preserves payload evidence");
-                limitedProxy.SetDownloadLimit(1);
-                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0 && limitedProxy.Snapshot().LimitVersion > priorVersion,
-                    "changing a limit invalidates old payload confirmation immediately");
-                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 131_072,
-                    "changing a limit preserves lifetime bulk activity instead of resetting it with confirmation");
+                Check(limitedProxy.Snapshot().DownloadLimitBytesPerSecond is null,
+                    "repeated legacy updates remain unlimited");
                 await Send(clients[1], new byte[32_768]);
                 await Read(remotes[1], 32_768).WaitAsync(TimeSpan.FromSeconds(1));
-                Check(limitedProxy.UploadBytes == 32_768, "upload remains unlimited while download rate is one byte per second");
-                await Send(remotes[0], new byte[32_768]);
-                var pending = Read(clients[0], 32_768);
-                await Task.Delay(60, token);
-                Check(!pending.IsCompleted, "TCP relay blocks at reduced rate");
-                await WaitUntil(() => limitedProxy.Snapshot().BulkDownloadIngressBytes > 131_072);
-                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
-                    "blocked ingress is observed as bulk activity without claiming forwarded/applied payload");
-                limitedProxy.SetDownloadLimit(null);
-                await pending.WaitAsync(TimeSpan.FromSeconds(1));
-                Check(true, "unlimited releases waiting TCP relay");
-                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
-                    "payload released by removing a cap cannot confirm either the old or a new cap");
-                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 163_840,
-                    "removing the limit preserves the cumulative ingress count");
-                await Send(remotes[0], new byte[4096]);
-                await Read(clients[0], 4096);
-                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 167_936 && limitedProxy.Snapshot().LimitedDownloadBytes == 0,
-                    "eligible bulk ingress is measured even with no limiter installed");
+                Check(limitedProxy.UploadBytes == 32_768, "uploads remain unpaced");
                 limitedProxy.SetDownloadLimit(1);
                 await Send(remotes[0], new byte[32_768]);
+                await Read(clients[0], 32_768).WaitAsync(TimeSpan.FromSeconds(1));
+                Check(limitedProxy.Snapshot().LimitedDownloadBytes == 0,
+                    "tiny legacy cap cannot delay a subsequent TCP payload or confirm a limit");
+                limitedProxy.SetDownloadLimit(null);
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 163_840,
+                    "legacy limit removal cannot reset lifetime ingress accounting");
+                await Send(remotes[0], new byte[4096]);
+                await Read(clients[0], 4096);
+                Check(limitedProxy.Snapshot().BulkDownloadIngressBytes == 167_936,
+                    "eligible public ingress remains measured after obsolete cap changes");
                 await limitedProxy.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
-                Check(limitedProxy.Port == 0 && limitedProxy.Snapshot().ActiveSessions == 0, "dispose cancels stalled TCP streams and closes listener");
+                Check(limitedProxy.Port == 0 && limitedProxy.Snapshot().ActiveSessions == 0,
+                    "dispose closes live TCP streams and listener without a limiter queue");
             }
             finally
             {
@@ -462,32 +428,22 @@ public static class MobileProxyChecks
                 await udpClient.SendToAsync((byte[])[0, 0, 0, .. AddressBytes((IPEndPoint)udpTarget.LocalEndPoint!), 42],
                     SocketFlags.None, association.Relay, token);
                 var received = await udpTarget.ReceiveFromAsync(new byte[16], SocketFlags.None, new IPEndPoint(IPAddress.Any, 0), token);
-                mixed.SetDownloadLimit(65_536);
-                var watch = Stopwatch.StartNew();
+                mixed.SetDownloadLimit(1);
                 await Send(tcpTarget, payload);
                 await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
-                await Task.WhenAll(Read(tcpClient, payload.Length), UdpReceive(udpClient));
-                Check(watch.Elapsed.TotalSeconds >= .85 && watch.Elapsed.TotalSeconds < 4,
-                    "TCP and UDP downloads share the same aggregate byte budget");
-                Check(mixed.Snapshot().LimitedDownloadBytes == 65_536,
-                    "TCP and UDP both contribute only forwarded rate-controlled payload to confirmation");
+                await Task.WhenAll(Read(tcpClient, payload.Length), UdpReceive(udpClient)).WaitAsync(TimeSpan.FromSeconds(2));
+                Check(mixed.Snapshot().LimitedDownloadBytes == 0 && mixed.Snapshot().DownloadLimitBytesPerSecond is null,
+                    "authenticated TCP and UDP both bypass a legacy one-byte cap");
                 Check(mixed.Snapshot().BulkDownloadIngressBytes == 65_536,
-                    "TCP and authenticated UDP share the durable bulk ingress counter");
+                    "TCP and authenticated UDP retain public ingress accounting without pacing");
                 mixed.SetDownloadLimit(1);
                 await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
-                var pending = UdpReceive(udpClient);
-                await Task.Delay(60, token);
-                Check(!pending.IsCompleted, "UDP payload waits at low download rate");
-                await WaitUntil(() => mixed.Snapshot().BulkDownloadIngressBytes == 98_304);
-                Check(mixed.Snapshot().LimitedDownloadBytes == 0,
-                    "UDP ingress is measured before its pacing wait without confirming delivery");
+                await UdpReceive(udpClient).WaitAsync(TimeSpan.FromSeconds(1));
+                Check(mixed.Snapshot().BulkDownloadIngressBytes == 98_304 && mixed.Snapshot().LimitedDownloadBytes == 0,
+                    "a second UDP payload also forwards immediately without limit evidence");
                 mixed.SetDownloadLimit(null);
-                await pending.WaitAsync(TimeSpan.FromSeconds(1));
-                Check(true, "unlimited promptly releases a pending UDP response");
-                mixed.SetDownloadLimit(1);
-                await udpTarget.SendToAsync(payload, SocketFlags.None, received.RemoteEndPoint, token);
                 await mixed.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
-                Check(mixed.Snapshot().ActiveSessions == 0, "disposal cancels mixed UDP and TCP sessions");
+                Check(mixed.Snapshot().ActiveSessions == 0, "disposal closes mixed UDP and TCP sessions");
             }
             finally { listener.Stop(); }
         }
@@ -544,16 +500,16 @@ public static class MobileProxyChecks
         check(!monitor.Observe(sample, 1).LimitApplied, "LAN or DNS bypass payload never confirms an installed internet cap");
         clock.Advance(1);
         sample = sample with { DownloadBytes = 127_000, LimitedDownloadBytes = 1_000 };
-        check(monitor.Observe(sample, 1).LimitApplied, "real limited payload confirms the matching current cap");
+        check(!monitor.Observe(sample, 1).LimitApplied, "legacy limited-payload counters cannot claim an active cap");
         clock.Advance(4);
-        check(monitor.Observe(sample, 1) is { DownloadMbps: 0, LimitApplied: true },
-            "confirmed cap remains stable between four-second heartbeat intervals while idle is genuinely measured");
+        check(monitor.Observe(sample, 1) is { DownloadMbps: 0, LimitApplied: false },
+            "measured idle remains available without reporting a legacy cap");
         clock.Advance(8);
         check(monitor.Observe(sample, 1) is { DownloadMbps: null, ForwardingObserved: false, LimitApplied: false },
             "monotonic evidence expiry removes stale route and limit claims without inventing zero traffic");
         clock.Advance(1);
         sample = sample with { DownloadBytes = 128_000, LimitedDownloadBytes = 2_000 };
-        check(monitor.Observe(sample, 1).LimitApplied, "new actual payload restores evidence after idle expiry");
+        check(monitor.Observe(sample, 1) is { ForwardingObserved: true, LimitApplied: false }, "new payload restores forwarding evidence but never a legacy cap");
         sample = sample with { LimitVersion = 2, LimitedDownloadBytes = 0, DownloadLimitBytesPerSecond = 250_000 };
         check(!monitor.Observe(sample, 2).LimitApplied, "cap replacement needs fresh payload under the new limiter version");
         clock.Advance(1);

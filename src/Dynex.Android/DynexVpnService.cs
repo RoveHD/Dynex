@@ -10,8 +10,8 @@ using OperationCanceledException = System.OperationCanceledException;
 
 namespace Dynex.Android;
 
-[Service(Name = "de.dynex.mobile.DynexVpnService", Exported = false, Permission = "android.permission.BIND_VPN_SERVICE")]
-public sealed class DynexVpnService : VpnService
+[Service(Name = "de.dynex.mobile.DynexVpnService", Exported = false)]
+public sealed class DynexVpnService : Service
 {
     private const string ChannelId = "dynex-connection";
     private const int NotificationId = 741;
@@ -21,17 +21,12 @@ public sealed class DynexVpnService : VpnService
     private Task? runner;
     private WifiNetworkMonitor? network;
     private AutoLanPeerService? peers;
-    private NativeTunnelSession? tunnel;
     private LocalSocksProxy? proxy;
-    private volatile bool paused;
-    private int refreshRequested, revoked, configureAdGuard;
+    private int refreshRequested, configureAdGuard;
     private bool adGuardRequested;
     private string? peerKey, proxyKey, lastNetwork, fault, lastNotification;
     private readonly ProxyTrafficMonitor trafficMonitor = new();
-    private readonly MobileLimitPlanner limitPlanner = new();
-    private ProbeStats? lastDownloadProbe;
-    private MobileSettings? plannerSettings;
-    private bool plannerPaused;
+    public override IBinder? OnBind(Intent? intent) => null;
 
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
@@ -45,7 +40,6 @@ public sealed class DynexVpnService : VpnService
         }
         if (action is "Start" or "AdGuardConnect") MobileSettingsStore.SetEnabled(this, true);
         if (!MobileSettingsStore.IsEnabled(this)) { StopSelf(); return StartCommandResult.NotSticky; }
-        if (action == "Pause") paused = intent!.GetBooleanExtra("Pause", false);
         if (action is "Start" or "Refresh" or "SettingsChanged" or "AdGuardConnect") Interlocked.Exchange(ref refreshRequested, 1);
         if (action is "Start" or "AdGuardConnect" || runner is null)
             Interlocked.Exchange(ref configureAdGuard, 1);
@@ -53,15 +47,6 @@ public sealed class DynexVpnService : VpnService
         runner ??= Task.Run(() => RunAsync(lifetime.Token));
         Wake();
         return StartCommandResult.Sticky;
-    }
-
-    public override void OnRevoke()
-    {
-        // Android can revoke our authorization when another VPN takes over. Do not
-        // request it again from the background or stop a separate AdGuard proxy.
-        VpnCompatibility.SetOwnVpn(false);
-        Interlocked.Exchange(ref revoked, 1);
-        Wake();
     }
 
     public override void OnDestroy()
@@ -89,7 +74,7 @@ public sealed class DynexVpnService : VpnService
             var settings = MobileSettingsStore.Load(this);
             var identity = MobileSettingsStore.LoadIdentity(this);
             var deviceId = AutoLanIdentity.GetDeviceId(identity);
-            network = new WifiNetworkMonitor(this, settings.UseAdGuardProxy);
+            network = new WifiNetworkMonitor(this, proxyMode: true);
             network.Changed += Wake;
             var previousProxyMode = settings.UseAdGuardProxy;
             var adGuardVpnInstalled = AdGuardIntegration.IsVpnInstalled(this);
@@ -98,26 +83,18 @@ public sealed class DynexVpnService : VpnService
                 settings = MobileSettingsStore.Load(this);
                 if (settings.UseAdGuardProxy && !previousProxyMode) Interlocked.Exchange(ref configureAdGuard, 1);
                 previousProxyMode = settings.UseAdGuardProxy;
-                network.SetProxyMode(settings.UseAdGuardProxy);
+                // LAN observation coexists with AdGuard/other VPNs; DYNEX owns no VPN.
+                network.SetProxyMode(true);
                 var networkState = network.Snapshot();
                 var wifi = networkState.Wifi;
                 var transport = networkState.Transport;
                 var refresh = Interlocked.Exchange(ref refreshRequested, 0) != 0;
                 var networkChanged = lastNetwork != transport?.Fingerprint;
-                if (networkChanged || plannerSettings != settings || plannerPaused != paused)
-                {
-                    limitPlanner.Reset();
-                    lastDownloadProbe = null;
-                    plannerSettings = settings;
-                    plannerPaused = paused;
-                }
                 if (networkChanged || refresh) { fault = null; lastNetwork = transport?.Fingerprint; }
-                if (Interlocked.Exchange(ref revoked, 0) != 0 && !settings.UseAdGuardProxy)
-                    fault = "VPN-Freigabe entzogen · DYNEX erneut starten, sobald das andere VPN beendet ist";
 
                 // Forget authenticated peer membership immediately when leaving Wi-Fi.
                 var nextPeerKey = settings.AutoConnect && wifi is not null
-                    ? wifi.Fingerprint + "|" + settings.DeviceName + "|" + settings.SharePriority : null;
+                    ? wifi.Fingerprint + "|" + settings.DeviceName : null;
                 if (peerKey != nextPeerKey)
                 {
                     await StopPeersAsync().ConfigureAwait(false);
@@ -126,7 +103,7 @@ public sealed class DynexVpnService : VpnService
                         peers = new AutoLanPeerService(new DynexSettings
                         {
                             DeviceId = deviceId, DeviceName = settings.DeviceName, CapacityMeasured = false,
-                            ShareWeight = settings.SharePriority,
+                            ShareWeight = 1,
                             AppVersion = typeof(DynexVpnService).Assembly.GetName().Version?.ToString(3),
                             HeartbeatInterval = TimeSpan.FromSeconds(4)
                         }, identity, () => network.Current?.Scope ?? AutoLanNetworkSnapshot.Empty, lowPowerDiscovery: true);
@@ -137,16 +114,12 @@ public sealed class DynexVpnService : VpnService
                 }
                 if (refresh && wifi is not null) peers?.RequestDiscovery();
                 var devices = peers?.Snapshot() ?? Array.Empty<PeerAdvertisement>();
-                var plan = limitPlanner.Plan(deviceId, devices, lastDownloadProbe, settings.AutoConnect, paused,
-                    settings.GamingDownloadLimitMbps, settings.SharePriority, wifiConnected: wifi is not null);
-                var cap = wifi is not null ? plan.DownloadLimitMbps : null;
-                var conflict = !settings.UseAdGuardProxy && networkState.OtherVpnActive;
+                var gamingReported = wifi is not null && devices.Any(peer => peer.IsGaming);
                 ProxySnapshot? traffic = null;
                 try
                 {
                     if (settings.UseAdGuardProxy)
                     {
-                        await StopTunnelAsync().ConfigureAwait(false);
                         // Keep only a loopback listener on cellular/offline. No discovery or
                         // polling is kept alive there; outbound sockets are demand-driven.
                         var key = transport?.Fingerprint ?? "offline";
@@ -166,11 +139,9 @@ public sealed class DynexVpnService : VpnService
                             proxy.DownloadObserved += Wake;
                             await proxy.StartAsync(token).ConfigureAwait(false);
                             trafficMonitor.Reset();
-                            lastDownloadProbe = null;
-                            trafficMonitor.Observe(proxy.Snapshot(), cap);
+                            trafficMonitor.Observe(proxy.Snapshot(), null);
                             proxyKey = key;
                         }
-                        proxy?.SetDownloadLimit(cap is { } value ? (long)(value * 125000) : null);
                         if (proxy is not null && Interlocked.Exchange(ref configureAdGuard, 0) != 0 &&
                             AdGuardIntegration.HasSavedPassword(this))
                         {
@@ -184,71 +155,41 @@ public sealed class DynexVpnService : VpnService
                     }
                     else
                     {
-                        if (adGuardRequested) TryDisableAdGuard();
+                        if (adGuardRequested || proxy is not null) TryDisableAdGuard();
                         await StopProxyAsync().ConfigureAwait(false);
-                        if (networkChanged || cap is null || conflict || fault is not null)
-                            await StopTunnelAsync().ConfigureAwait(false);
-                        if (tunnel is not null && !tunnel.IsRunning)
-                        {
-                            fault = "Der lokale VPN-Tunnel wurde beendet · Verbindung aktualisieren";
-                            await StopTunnelAsync().ConfigureAwait(false);
-                        }
-                        if (wifi is not null && cap is { } rate && !conflict && fault is null)
-                        {
-                            if (tunnel is null)
-                            {
-                                // Prepare is never called while another active VPN is present.
-                                if (VpnCompatibility.HasOtherActiveVpn(this)) conflict = true;
-                                else if (Prepare(this) is not null) fault = "VPN-Freigabe fehlt · in DYNEX auf Start tippen";
-                                else
-                                {
-                                    VpnCompatibility.SetOwnVpn(true); network.SetOwnVpn(true);
-                                    tunnel = await NativeTunnelSession.StartAsync(this, wifi, (long)(rate * 125000), Wake, token).ConfigureAwait(false);
-                                    trafficMonitor.Reset();
-                                    lastDownloadProbe = null;
-                                }
-                            }
-                            else tunnel.SetDownloadLimit((long)(rate * 125000));
-                            traffic = tunnel?.Snapshot();
-                        }
+                        // No native VPN/TUN is created: the mobile companion only
+                        // observes LAN peers. Existing AdGuard forwarding is optional.
                     }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    fault = "Begrenzung nicht aktiv (" + ex.GetType().Name + ") · Verbindung aktualisieren";
+                    fault = "Datenweiterleitung nicht aktiv (" + ex.GetType().Name + ") · Verbindung aktualisieren";
                     LogFailure("Traffic service", ex);
-                    await StopTunnelAsync().ConfigureAwait(false);
                     await StopProxyAsync().ConfigureAwait(false);
                     traffic = null;
                 }
 
-                var evidence = trafficMonitor.Observe(wifi is not null ? traffic : null, cap);
+                var evidence = trafficMonitor.Observe(wifi is not null ? traffic : null, null);
                 var download = evidence.DownloadMbps;
                 var upload = evidence.UploadMbps;
-                lastDownloadProbe = download.HasValue || evidence.LimitedDownloadMbps.HasValue
-                    ? new ProbeStats(DateTimeOffset.UtcNow, null, download, IsGamingRelevant: false, TargetId: "",
-                        LimitedDownloadMbps: evidence.LimitedDownloadMbps) : null;
-                var applied = evidence.LimitApplied && (settings.UseAdGuardProxy ? proxy is not null : tunnel?.IsRunning == true);
                 peers?.Publish(false, downloadMbps: download, uploadMbps: upload,
-                    appliedLimitMbps: applied ? cap : null, shaperActive: applied, limitedDownloadMbps: evidence.LimitedDownloadMbps);
-                var status = fault ?? (conflict ? "Anderes VPN aktiv · DYNEX pausiert" : settings.UseAdGuardProxy
-                    ? transport is null ? "Proxy bereit · DYNEX in AdGuard ausnehmen oder Netzverbindung prüfen"
-                        : wifi is null ? "Mobilfunk/anderes Netz · unbegrenzte Proxy-Durchleitung"
+                    appliedLimitMbps: null, shaperActive: false);
+                var status = fault ?? (settings.UseAdGuardProxy
+                    ? transport is null ? "Proxy bereit · Netzverbindung prüfen"
+                        : wifi is null ? "Mobilfunk/anderes Netz · Proxy-Durchleitung"
                         : !evidence.ForwardingObserved ? AdGuardSetupDiagnostics.WaitingStatus(traffic, adGuardRequested)
-                        : cap.HasValue && !applied ? "Limit geplant · noch kein öffentlicher Download über DYNEX bestätigt"
-                        : plan.Reason
-                    : wifi is null ? "Warte auf WLAN · kein VPN und keine Begrenzung"
-                        : devices.Count == 0 ? "WLAN aktiv · suche DYNEX-PCs" : plan.Reason);
-                if (settings.UseAdGuardProxy && wifi is not null && !evidence.ForwardingObserved && adGuardVpnInstalled)
-                    status += " · mögliche AdGuard-VPN-Integration prüfen";
+                        : "AdGuard-Durchleitung aktiv · Bandbreite regelt der Router"
+                    : wifi is null ? "Warte auf WLAN · Hintergrunddienst bereit"
+                        : devices.Count == 0 ? "WLAN aktiv · suche DYNEX-PCs"
+                        : "Mit DYNEX-PCs verbunden · Bandbreite regelt der Router");
                 if (peers?.NetworkStatus is { } peerError) status += " · " + peerError;
-                MobileState.Publish(new(status, devices.Count > 0, peers is not null, plan.GamingActive,
-                    paused, cap.HasValue, applied, cap, download, upload,
-                    devices.Select(p => new MobileDeviceSnapshot(p.DeviceName, p.IsGaming ? "Gaming aktiv" : "Verbunden",
-                        p.DownloadMbps, p.UploadMbps, p.ShaperActive ? p.AppliedLimitMbps : null)).ToArray(),
-                    wifi is not null, conflict, settings.UseAdGuardProxy, true,
+                MobileState.Publish(new(status, devices.Count > 0, peers is not null, gamingReported,
+                    false, false, false, null, download, upload,
+                    devices.Select(peer => new MobileDeviceSnapshot(peer.DeviceName, peer.IsGaming ? "Gaming aktiv" : "Verbunden",
+                        peer.DownloadMbps, peer.UploadMbps, null)).ToArray(),
+                    wifi is not null, false, settings.UseAdGuardProxy, true,
                     settings.UseAdGuardProxy && adGuardRequested, settings.UseAdGuardProxy && evidence.ForwardingObserved,
-                    transport is not null, plan.SharedCapacityMbps, plan.SharedUploadCapacityMbps, adGuardVpnInstalled));
+                    transport is not null, null, null, adGuardVpnInstalled));
                 ShowNotification(status);
                 // On cellular, the proxy only wakes for actual traffic; the controller
                 // sleeps until Android reports a network change or the user acts.
@@ -268,8 +209,7 @@ public sealed class DynexVpnService : VpnService
             {
                 try
                 {
-                    if (adGuardRequested) TryDisableAdGuard();
-                    await CleanupAsync(StopTunnelAsync).ConfigureAwait(false);
+                    if (adGuardRequested || proxy is not null) TryDisableAdGuard();
                     await CleanupAsync(StopProxyAsync).ConfigureAwait(false);
                     await CleanupAsync(StopPeersAsync).ConfigureAwait(false);
                     if (network is not null) { network.Changed -= Wake; network.Dispose(); network = null; }
@@ -293,7 +233,7 @@ public sealed class DynexVpnService : VpnService
     {
         try
         {
-            if (!adGuardRequested && !MobileSettingsStore.Load(this).UseAdGuardProxy) return;
+            if (!adGuardRequested && proxy is null && !MobileSettingsStore.Load(this).UseAdGuardProxy) return;
             if (AdGuardIntegration.HasSavedPassword(this)) AdGuardIntegration.DisableProxy(this);
             adGuardRequested = false;
         }
@@ -302,8 +242,6 @@ public sealed class DynexVpnService : VpnService
 
     private async Task StopPeersAsync()
     {
-        limitPlanner.Reset();
-        lastDownloadProbe = null;
         var old = peers; peers = null; peerKey = null;
         if (old is not null) { old.PeersChanged -= Wake; await old.DisposeAsync().ConfigureAwait(false); }
     }
@@ -315,15 +253,6 @@ public sealed class DynexVpnService : VpnService
         old.DownloadObserved -= Wake;
         await old.DisposeAsync().ConfigureAwait(false);
         trafficMonitor.Reset();
-        lastDownloadProbe = null;
-    }
-
-    private async Task StopTunnelAsync()
-    {
-        var old = tunnel; tunnel = null;
-        if (old is null && !VpnCompatibility.OwnVpnActive) return;
-        try { if (old is not null) await old.DisposeAsync().ConfigureAwait(false); }
-        finally { VpnCompatibility.SetOwnVpn(false); network?.SetOwnVpn(false); trafficMonitor.Reset(); lastDownloadProbe = null; }
     }
 
     private void ShowNotification(string text)

@@ -1,4 +1,3 @@
-using System.Globalization;
 using Dynex.Core;
 using global::Android.Content;
 using global::Android.OS;
@@ -14,7 +13,7 @@ public sealed record MobileSettings
     public string DeviceName { get; init; } = (Build.Model ?? "Handy") + " · Android";
     public bool AutoConnect { get; init; } = true;
     public bool AutoStart { get; init; } = true;
-    public bool UseAdGuardProxy { get; init; } = true;
+    public bool UseAdGuardProxy { get; init; }
     public double? GamingDownloadLimitMbps { get; init; }
     public double SharePriority { get; init; } = 1;
 }
@@ -29,19 +28,15 @@ public static class MobileSettingsStore
     {
         using var prefs = Preferences(context);
         var defaults = new MobileSettings();
-        var raw = prefs.GetString("gamingDownloadLimit", null);
-        double? limit = double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) &&
-            double.IsFinite(parsed) && parsed is >= .1 and <= 100000 ? parsed : null;
-        var weight = prefs.GetFloat("sharePriority", 1);
         return defaults with
         {
             DeviceName = prefs.GetString("name", defaults.DeviceName) ?? defaults.DeviceName,
             AutoConnect = prefs.GetBoolean("autoConnect", true),
             AutoStart = prefs.GetBoolean("autoStart", true),
-            UseAdGuardProxy = prefs.Contains("adGuardProxy") ? prefs.GetBoolean("adGuardProxy", true)
-                : AdGuardIntegration.IsAvailable(context),
-            GamingDownloadLimitMbps = limit,
-            SharePriority = weight is >= .25f and <= 4 ? weight : 1
+            // Preserve an explicitly configured legacy proxy, but never require one for new installs.
+            UseAdGuardProxy = prefs.GetBoolean("adGuardProxy", false),
+            GamingDownloadLimitMbps = null,
+            SharePriority = 1
         };
     }
 
@@ -49,18 +44,14 @@ public static class MobileSettingsStore
     {
         if (string.IsNullOrWhiteSpace(settings.DeviceName) || settings.DeviceName.Length > 80 || settings.DeviceName.Any(char.IsControl))
             throw new ArgumentException("Der Gerätename muss 1–80 lesbare Zeichen enthalten.");
-        if (settings.GamingDownloadLimitMbps is { } limit && (!double.IsFinite(limit) || limit is < .1 or > 100000))
-            throw new ArgumentException("Das Downloadmaximum muss zwischen 0,1 und 100000 Mbit/s liegen.");
-        if (!double.IsFinite(settings.SharePriority) || settings.SharePriority is < .25 or > 4)
-            throw new ArgumentException("Die Gerätepriorität ist ungültig.");
         using var prefs = Preferences(context);
         using var edit = prefs.Edit()!;
         edit.PutString("name", settings.DeviceName.Trim());
         edit.PutBoolean("autoConnect", settings.AutoConnect);
         edit.PutBoolean("autoStart", settings.AutoStart);
         edit.PutBoolean("adGuardProxy", settings.UseAdGuardProxy);
-        edit.PutString("gamingDownloadLimit", settings.GamingDownloadLimitMbps?.ToString("R", CultureInfo.InvariantCulture));
-        edit.PutFloat("sharePriority", (float)settings.SharePriority);
+        edit.Remove("gamingDownloadLimit");
+        edit.Remove("sharePriority");
         if (!edit.Commit()) throw new IOException("Die Einstellungen konnten nicht gespeichert werden.");
     }
 

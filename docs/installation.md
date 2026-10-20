@@ -1,5 +1,7 @@
 # DYNEX 1.0.6 installieren und entfernen
 
+> **Aktueller Betrieb: reine Priorisierung.** Budget-, Limit- und automatische Speedtest-Beschreibungen in diesem historischen Dokument gelten nur für ältere Versionen. Es werden keine Download-/Uploadlimits mehr ausgeführt; alte Einstellungen werden neutralisiert. Der manuelle Speedtest bleibt Diagnose. Aktuelle Abläufe: [README](../README.md), [Paketpriorisierung](qos.md), [Architektur](architecture.md).
+
 Das Release-Setup `artifacts/DYNEX-Setup-1.0.6.exe` installiert DYNEX pro Windows-Benutzer unter `%LOCALAPPDATA%\Programs\DYNEX`. Es enthält die Desktop-App und den erforderlichen `Dynex.Shaper.exe`-Helper. Die App bleibt pro Benutzer installiert und benötigt keine separate .NET-Laufzeit. Für Netzwerkvoraussetzungen und deren Besitznachweis fordert das Setup bei Bedarf Administratorrechte an. Ab 1.0.6 kann der Build App, Helper, Setup, Uninstaller und Bereinigungsprogramm mit einem Authenticode-Zertifikat signieren ([Signieren](updates.md#signieren)); ob ein Release signiert ist, zeigt **Eigenschaften → Digitale Signaturen** der Setup-Datei. `artifacts/DYNEX-Cleanup-1.0.6.exe` bereinigt bereits deinstallierte ältere Versionen, ohne DYNEX neu zu installieren.
 
 ## Start im privaten LAN

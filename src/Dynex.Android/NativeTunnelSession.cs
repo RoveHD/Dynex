@@ -36,7 +36,7 @@ internal sealed class NativeTunnelSession : IAsyncDisposable
         lock (sync)
         {
             ObjectDisposedException.ThrowIf(stopRequested || exited, this);
-            proxy!.SetDownloadLimit(downloadBytesPerSecond);
+            proxy!.SetDownloadLimit(null);
         }
     }
 
@@ -71,12 +71,12 @@ internal sealed class NativeTunnelSession : IAsyncDisposable
                 }
                 catch (Java.Lang.Exception error) { throw new IOException("WLAN-DNS-Auflösung fehlgeschlagen.", error); }
             });
-            session.proxy.SetDownloadLimit(downloadBytesPerSecond);
+            session.proxy.SetDownloadLimit(null);
             await session.proxy.StartAsync().ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
             using (var builder = new VpnService.Builder(service))
             {
-                builder.SetSession("DYNEX · Downloadbegrenzung");
+                builder.SetSession("DYNEX · Datenweiterleitung");
                 builder.SetMtu(1500);
                 builder.SetBlocking(false);
                 builder.SetUnderlyingNetworks([connection.Network]);

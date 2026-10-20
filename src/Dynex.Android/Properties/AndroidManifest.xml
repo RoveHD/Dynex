@@ -10,9 +10,8 @@
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
   <queries><package android:name="com.adguard.android" /><package android:name="com.adguard.vpn" /></queries>
   <application android:allowBackup="false" android:usesCleartextTraffic="false" android:label="DYNEX" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@style/AppTheme" android:extractNativeLibs="true">
-    <service android:name="de.dynex.mobile.DynexVpnService" android:permission="android.permission.BIND_VPN_SERVICE" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="specialUse">
-      <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
-      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled local SOCKS proxy for AdGuard or local VPN; LAN desktop gaming controls Wi-Fi download limits" />
+    <service android:name="de.dynex.mobile.DynexVpnService" android:exported="false" android:stopWithTask="false" android:foregroundServiceType="specialUse">
+      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-enabled LAN device and gaming-status companion; optional unpaced forwarding for an existing AdGuard SOCKS proxy" />
     </service>
   </application>
 </manifest>

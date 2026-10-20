@@ -5,13 +5,6 @@ using System.Text.Json.Nodes;
 
 internal static class NetworkProfileChecks
 {
-    private static double? Budget(UserSettings settings) => new LimitPlanner(new DynexSettings
-    {
-        LineMbps = settings.CapacityMbps, CapacityMeasured = settings.CapacityMeasuredAtUtc.HasValue,
-        HeadroomPercent = 100 - settings.BackgroundPercent, GamingReserveMbps = settings.ReservePerGamerMbps,
-        AdaptiveEnabled = false
-    }).Plan(true, []).SharedDownloadBudgetMbps;
-
     internal static async Task RunAsync(Action<bool, string> check)
     {
         var now = DateTimeOffset.UtcNow;
@@ -27,11 +20,11 @@ internal static class NetworkProfileChecks
         var hotspot = SettingsStore.Normalize(NetworkProfiles.Activate(home, b, now.AddMinutes(1)));
         check(hotspot.CapacityMeasuredAtUtc is null && !hotspot.AutomaticSpeedTestAttempted && hotspot.DirectPeers == "" && hotspot.AutoConnectLan,
             "new network has its own unmeasured capacity and automatic discovery without old direct peers");
-        check(hotspot.GameProcesses == original.GameProcesses && hotspot.ApplicationRules.Single().DownloadMbps == 30,
-            "network switch preserves computer-wide games and program rules");
+        check(hotspot.GameProcesses == original.GameProcesses && hotspot.ApplicationRules.Length == 0,
+            "network switch preserves computer-wide games while removing obsolete program rules");
         hotspot = SettingsStore.Normalize(hotspot with { CapacityMbps = 45, CapacityMeasuredAtUtc = now.AddMinutes(2), AutomaticSpeedTestAttempted = true });
         var restored = SettingsStore.Normalize(NetworkProfiles.Activate(hotspot, a, now.AddMinutes(3)));
-        check(restored.CapacityMbps == 80 && restored.ManualLimitMbps == 30 && restored.UploadCapacityMbps == 12 && restored.DirectPeers == "10.0.0.4",
+        check(restored.CapacityMbps == 80 && restored.ManualLimitMbps is null && restored.UploadCapacityMbps == 12 && restored.DirectPeers == "10.0.0.4",
             "return to home restores its measured speeds and connection settings");
         check(NetworkProfiles.Activate(restored, b, now.AddMinutes(4)).CapacityMbps == 45,
             "each network keeps independent latest measurement");
@@ -50,8 +43,9 @@ internal static class NetworkProfileChecks
             "loading old settings removes obsolete maximum from current settings and every saved network policy");
         var restoredLegacy = SettingsStore.Normalize(NetworkProfiles.Activate(
             SettingsStore.Normalize(NetworkProfiles.Activate(loaded, b, now)), a, now));
-        check(Budget(restoredLegacy) == 28 && restoredLegacy.CapacityMeasuredAtUtc == now,
-            "network switches preserve the measured 80 Mbps profile budget of 28 rather than resurrecting legacy 25");
+        check(restoredLegacy.ManualLimitMbps is null && restoredLegacy.ReservePerGamerMbps == 0 &&
+            restoredLegacy.NetworkProfiles.All(p => p.Policy.ManualLimitMbps is null && !p.Policy.UploadLimitEnabled) && restoredLegacy.CapacityMeasuredAtUtc == now,
+            "network switches preserve measured diagnostic capacity and cannot resurrect any saved shaping policy");
         store.Save(restoredLegacy);
         check(!File.ReadAllText(settingsPath).Contains("SharedDownloadMaximumMbps"),
             "saving migrated settings strips obsolete maximum from disk and inactive profiles");
@@ -82,9 +76,9 @@ internal static class NetworkProfileChecks
         oldBackup["Settings"]!["SharedDownloadMaximumMbps"] = 25;
         oldBackup["Settings"]!["NetworkProfiles"] = legacy["NetworkProfiles"]!.DeepClone();
         await runtime.ImportSettingsAsync(oldBackup.ToJsonString());
-        check(runtime.Settings.CapacityMbps == 45 && Budget(runtime.Settings) == 27 &&
+        check(runtime.Settings.CapacityMbps == 45 && runtime.Settings.ManualLimitMbps is null && runtime.Settings.ApplicationRules.Length == 0 &&
             !runtime.ExportSettings().Contains("SharedDownloadMaximumMbps") && !File.ReadAllText(settingsPath).Contains("SharedDownloadMaximumMbps"),
-            "importing a legacy maximum and saved profiles preserves local measurement and automatic 27 Mbps budget without writing obsolete limits");
+            "importing a legacy maximum and saved profiles preserves local measurement and priority-only policy without writing obsolete limits");
         var measurement = runtime.MeasureCapacityAsync();
         var request = await speed.NextAsync().WaitAsync(TimeSpan.FromSeconds(12));
         current = a;

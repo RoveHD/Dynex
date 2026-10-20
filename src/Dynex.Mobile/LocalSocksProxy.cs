@@ -16,9 +16,8 @@ public readonly record struct ProxySnapshot(long DownloadBytes, long UploadBytes
 /// <summary>
 /// Loopback-only RFC1928/RFC1929 SOCKS5 server for a trusted local TUN engine.
 /// The socket preparer must throw if VPN protection or network binding fails.
-/// Download shaping excludes DNS (destination port 53), loopback, RFC1918, IPv4 link-local,
-/// IPv6 link-local and IPv6 ULA. Other destinations share one 64 KiB burst bucket.
-/// Upload is not shaped. Counters count forwarded payload, excluding SOCKS framing.
+/// All payload is forwarded without bandwidth pacing. Public-download classification
+/// is retained only for traffic counters. Counters exclude SOCKS framing.
 /// UDP has no per-packet authentication in SOCKS5: an authenticated TCP association pins
 /// the loopback UDP source endpoint (first valid datagram if the client specifies port zero).
 /// </summary>
@@ -36,7 +35,6 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     private readonly int maxSessions;
     private readonly int listenPort;
     private readonly ConcurrentDictionary<long, Session> sessions = new();
-    private readonly DownloadRateLimiter limiter = new();
     private readonly byte[] usernameBytes;
     private readonly byte[] passwordBytes;
     private CancellationTokenSource? lifetime;
@@ -48,9 +46,7 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     private long uploadBytes;
     private int port;
     private int downloadNoticeSent;
-    private long limitedDownloadBytes, limitVersion;
     private long bulkDownloadIngressBytes;
-    private long? downloadLimit;
     private long acceptedConnections, authenticatedConnections, authenticationFailures, outboundFailures;
 
     public LocalSocksProxy(Action<Socket> prepareOutboundSocket, int maxSessions = 128,
@@ -86,36 +82,21 @@ public sealed class LocalSocksProxy : IAsyncDisposable
     public ProxySnapshot Snapshot()
     {
         lock (trafficSync) return new(DownloadBytes, UploadBytes, sessions.Count,
-            limitedDownloadBytes, limitVersion, downloadLimit, Interlocked.Read(ref acceptedConnections),
+            0, 0, null, Interlocked.Read(ref acceptedConnections),
             Interlocked.Read(ref authenticatedConnections), Interlocked.Read(ref authenticationFailures), Interlocked.Read(ref outboundFailures),
             Interlocked.Read(ref bulkDownloadIngressBytes));
     }
+    /// <summary>Legacy API: an old cap request cannot slow an existing AdGuard data path.</summary>
     public void SetDownloadLimit(long? bytesPerSecond)
     {
-        lock (trafficSync)
-        {
-            limiter.SetLimit(bytesPerSecond);
-            if (downloadLimit == bytesPerSecond) return;
-            downloadLimit = bytesPerSecond;
-            limitVersion++;
-            limitedDownloadBytes = 0;
-        }
+        if (bytesPerSecond is <= 0) throw new ArgumentOutOfRangeException(nameof(bytesPerSecond));
+        lock (lifecycle) ObjectDisposedException.ThrowIf(disposeTask is not null, this);
     }
 
-    private long? LimitedVersion(bool eligible)
-    {
-        lock (trafficSync) return eligible && downloadLimit.HasValue ? limitVersion : null;
-    }
-
-    private void RecordDownload(int bytes, long? limitedVersion)
+    private void RecordDownload(int bytes)
     {
         if (bytes <= 0) return;
-        lock (trafficSync)
-        {
-            Interlocked.Add(ref downloadBytes, bytes);
-            if (limitedVersion is { } version && version == limitVersion && downloadLimit.HasValue)
-                limitedDownloadBytes += bytes;
-        }
+        Interlocked.Add(ref downloadBytes, bytes);
         if (Interlocked.Exchange(ref downloadNoticeSent, 1) == 0) DownloadObserved?.Invoke();
     }
 
@@ -152,7 +133,6 @@ public sealed class LocalSocksProxy : IAsyncDisposable
         var pending = sessions.Values.ToArray();
         foreach (var session in pending) session.Client.Dispose();
         await Task.WhenAll(pending.Select(s => s.Completion)).ConfigureAwait(false);
-        limiter.Dispose();
         lifetime?.Dispose();
         Volatile.Write(ref port, 0);
     }
@@ -292,15 +272,13 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     try { target.Shutdown(SocketShutdown.Send); } catch (SocketException) { } catch (ObjectDisposedException) { }
                     return;
                 }
-                var limitedVersion = LimitedVersion(limited);
                 if (download && limited) Interlocked.Add(ref bulkDownloadIngressBytes, received);
-                if (limited) await limiter.WaitAsync(received, lifetime.Token).ConfigureAwait(false);
                 var remaining = buffer.AsMemory(0, received);
                 while (!remaining.IsEmpty)
                 {
                     var sent = await target.SendAsync(remaining, SocketFlags.None, lifetime.Token).ConfigureAwait(false);
                     if (sent == 0) throw new IOException("Socket closed while forwarding.");
-                    if (download) RecordDownload(sent, limitedVersion); else Interlocked.Add(ref uploadBytes, sent);
+                    if (download) RecordDownload(sent); else Interlocked.Add(ref uploadBytes, sent);
                     remaining = remaining[sent..];
                 }
             }
@@ -561,13 +539,11 @@ public sealed class LocalSocksProxy : IAsyncDisposable
                     // A SOCKS UDP packet itself must fit in an IPv4 UDP datagram to loopback.
                     if (received.ReceivedBytes + headerLength > MaximumUdpPacket) continue;
                     var eligible = owner.shouldLimitDownload(source);
-                    var limitedVersion = owner.LimitedVersion(eligible);
                     if (eligible) Interlocked.Add(ref owner.bulkDownloadIngressBytes, received.ReceivedBytes);
-                    if (eligible) await owner.limiter.WaitAsync(received.ReceivedBytes, lifetime.Token).ConfigureAwait(false);
                     var packet = EncodeEndpoint(source, received.ReceivedBytes);
                     payload.AsSpan(0, received.ReceivedBytes).CopyTo(packet.AsSpan(headerLength));
                     var sent = await relay.SendToAsync(packet, SocketFlags.None, destination, lifetime.Token).ConfigureAwait(false);
-                    if (sent == packet.Length) owner.RecordDownload(received.ReceivedBytes, limitedVersion);
+                    if (sent == packet.Length) owner.RecordDownload(received.ReceivedBytes);
                 }
             }
             finally { await lifetime.CancelAsync().ConfigureAwait(false); }

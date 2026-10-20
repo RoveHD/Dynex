@@ -18,14 +18,7 @@ internal static class QosChecks
         check(NdisPacketDevice.GetSendIoctlIndex(1) == 2 && NdisPacketDevice.GetSendIoctlIndex(2) == 3,
             "original NDIS flags route outbound to adapter and inbound to MSTCP");
         foreach (var ipv6 in new[] { false, true })
-        {
-            using var game = Packet(Flow(ipv6), PacketDirection.Outbound, new byte[160], 0, ipv6 ? 0 : 12);
-            var before = game.Buffer.AsSpan(0, game.Length).ToArray();
-            check(!QosPacketMarker.TryMark(game, PacketPriority.Game) && game.Buffer.AsSpan(0, game.Length).SequenceEqual(before),
-                $"IPv{(ipv6 ? 6 : 4)} game packets are never modified, only prioritized");
-        }
-        foreach (var ipv6 in new[] { false, true })
-        foreach (var priority in new[] { PacketPriority.Voice })
+        foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice })
         {
             var correct = true;
             for (var ecn = 0; ecn < 4; ecn++)
@@ -40,7 +33,7 @@ internal static class QosChecks
                 var before = packet.Buffer.AsSpan(0, packet.Length).ToArray();
                 correct &= QosPacketMarker.TryMark(packet, priority);
                 var ds = ipv6 ? ((ip[0] & 15) << 4) | (ip[1] >> 4) : ip[1];
-                correct &= ds >> 2 == 46 && (ds & 3) == ecn;
+                correct &= ds >> 2 == (priority == PacketPriority.Game ? 32 : 46) && (ds & 3) == ecn;
                 var payload = offset + (ipv6 ? 40 : 32);
                 correct &= packet.Buffer.AsSpan(payload, packet.Length - payload).SequenceEqual(before.AsSpan(payload));
                 correct &= packet.Buffer.AsSpan(0, offset).SequenceEqual(before.AsSpan(0, offset));
@@ -140,7 +133,7 @@ internal static class QosChecks
         await using (var pump = new PacketPump(source, null, null, qosPolicy.Classify))
         {
             await Until(() => pump.VoicePriorityPackets == 1);
-            check(pump.Active && !pump.HasDownloadLimit && pump.QosEnabled && sentDscp == 46 && pump.SentBytes == 0 && pump.BypassedBytes > 0,
+            check(pump.Active && !pump.HasDownloadLimit && pump.QosEnabled && sentDscp == 46 && pump.SentBytes == pump.BypassedBytes && pump.BypassedBytes > 0,
                 "QoS-only pump marks and sends voice immediately with no download pacing");
         }
         source = new FakeDevice(_ => throw new IOException("failed QoS send"));
@@ -186,8 +179,8 @@ internal static class QosChecks
             await writer.WriteLineAsync(JsonSerializer.Serialize(new { mbps = limit, qosEnabled = true }));
             using (state = JsonDocument.Parse((await reader.ReadLineAsync(timeout.Token))!))
                 check(created == 1 && !devices[0].Disposed && state.RootElement.GetProperty("qosActive").GetBoolean() &&
-                    state.RootElement.GetProperty("active").GetBoolean() == limit.HasValue,
-                    "adaptive limit/QoS-only transition retains the native queue: " + (limit?.ToString() ?? "no cap"));
+                    !state.RootElement.GetProperty("active").GetBoolean() && state.RootElement.GetProperty("mbps").ValueKind == JsonValueKind.Null,
+                    "obsolete limit changes cannot reenable shaping or restart QoS capture: " + (limit?.ToString() ?? "no cap"));
         }
         await writer.WriteLineAsync("{\"mbps\":null}");
         using (state = JsonDocument.Parse((await reader.ReadLineAsync(timeout.Token))!))

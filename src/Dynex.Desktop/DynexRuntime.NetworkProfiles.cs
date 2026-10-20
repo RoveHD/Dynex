@@ -32,9 +32,8 @@ public sealed partial class DynexRuntime
         store.Save(next);
         Settings = next;
         networkIdentityConfirmed = true;
-        activePlanner = null; plannerPolicy = null;
         lock (history) history.Clear();
-        NetworkProfileStatus = "Aktiv: " + ActiveNetworkName + (next.CapacityMeasuredAtUtc is null ? " · Speedtest steht aus" : " · Messwerte wiederhergestellt");
+        NetworkProfileStatus = "Aktiv: " + ActiveNetworkName + (next.CapacityMeasuredAtUtc is null ? "" : " · Messwerte wiederhergestellt");
         return true;
     }
 
@@ -72,9 +71,8 @@ public sealed partial class DynexRuntime
     private async Task RefreshNetworkProfileAsync(bool reconnect)
     {
         var observed = await Task.Run(readNetworkIdentity);
-        var interrupted = false;
         if (CancelSupersededNetworkTest(observed) is { } ending)
-        { await ending; interrupted = true; }
+            await ending;
         while (true)
         {
             Task? finishing = null;
@@ -92,11 +90,7 @@ public sealed partial class DynexRuntime
                 {
                     if (!changed && (!reconnect || IsSpeedTestRunning || IsSpeedTestWaiting))
                     {
-                        var wasConfirmed = networkIdentityConfirmed;
                         ApplyNetworkIdentity(current);
-                        // The network may have returned to A while its old waiting test
-                        // was canceled, or become identifiable after an unknown startup.
-                        if (interrupted || !wasConfirmed) StartNetworkSpeedTestIfNeeded(current);
                         return;
                     }
                     ApplyNetworkIdentity(current);
@@ -105,7 +99,6 @@ public sealed partial class DynexRuntime
                     // when Windows retained the same network GUID after standby/DHCP.
                     await shaper.StopAsync();
                     await StartWorkerAsync();
-                    StartNetworkSpeedTestIfNeeded(current);
                     return;
                 }
             }
@@ -113,16 +106,9 @@ public sealed partial class DynexRuntime
             // A waiting test's finally needs this same gate. Await the identified task
             // only after releasing it, then verify the network again before applying.
             await finishing!;
-            interrupted = true;
         }
     }
 
-    private void StartNetworkSpeedTestIfNeeded(NetworkIdentity? current)
-    {
-        if (automaticSpeedTestEnabled && !Settings.AutomaticSpeedTestAttempted && Settings.CapacityMeasuredAtUtc is null &&
-            (!networkProfilesEnabled || current is not null && current.Id == Settings.ActiveNetworkProfileId) &&
-            speedTestTask is not { IsCompleted: false }) _ = BeginSpeedTest(automatic: true);
-    }
     public async Task RenameNetworkProfileAsync(string id, string name)
     {
         name = name.Trim();

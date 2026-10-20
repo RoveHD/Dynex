@@ -77,8 +77,8 @@ public sealed class DebugSelfTestActivity : Activity
         desktop.Publish(true); phone.Publish(false);
         while (!phone.Snapshot().Any(p => p.IsGaming && p.BudgetProposal is not null)) await Task.Delay(25, timeout.Token);
         var decision = MobileLimitPolicy.Plan(phoneSettings.DeviceId, phone.Snapshot());
-        if (decision.DownloadLimitMbps is not > 0) throw new InvalidOperationException("Gaming must plan a mobile limit.");
-        report("PASS: Android crypto interoperates with desktop Core; authenticated gaming plans a real budget.");
+        if (!decision.GamingActive || decision.DownloadLimitMbps is not null) throw new InvalidOperationException("Gaming must remain visible without installing a mobile limit.");
+        report("PASS: Android crypto interoperates with desktop Core; authenticated gaming is observed without a mobile budget.");
         while (desktop.Snapshot().Count == 0) await Task.Delay(25, timeout.Token);
         var remotePhone = desktop.Snapshot().Single();
         if (remotePhone.IsGaming || remotePhone.BudgetProposal is not null || remotePhone.DownloadMbps is not null)
@@ -94,7 +94,7 @@ public sealed class DebugSelfTestActivity : Activity
         while (phone.Snapshot().Count != 0) await Task.Delay(25, timeout.Token);
         if (MobileLimitPolicy.Plan(phoneSettings.DeviceId, phone.Snapshot()).DownloadLimitMbps is not null)
             throw new InvalidOperationException("Disconnected desktop must clear limit.");
-        report("PASS: Game end and peer expiry release the mobile limit.");
+        report("PASS: Game end and peer expiry retain unlimited mobile forwarding.");
     }
 }
 #endif

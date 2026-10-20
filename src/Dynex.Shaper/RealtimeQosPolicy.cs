@@ -122,16 +122,16 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
 public static class QosPacketMarker
 {
     /// <summary>
-    /// Only voice packets are ever marked. Game packets are prioritized (they skip every queue) but are
-    /// never modified: they leave this PC byte-for-byte as the game sent them. There is no option to change that.
+    /// Mark only outgoing interactive game/voice IP headers. Preserve ECN,
+    /// transport headers and payload; incoming and unknown traffic stay unchanged.
     /// </summary>
     public static bool TryMark(CapturedPacket packet, PacketPriority priority)
     {
-        if (priority != PacketPriority.Voice) return false;
+        if (priority is not (PacketPriority.Game or PacketPriority.Voice)) return false;
         if (packet.Direction != PacketDirection.Outbound ||
             packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);
-        const int dscp = 46; // Expedited Forwarding for voice.
+        var dscp = priority == PacketPriority.Game ? 32 : 46; // CS4 games, EF voice.
         if (ip[0] >> 4 == 4)
         {
             if (ip.Length < 20) return false;

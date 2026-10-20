@@ -1,68 +1,21 @@
-# DYNEX für Android
+# Android als Begleit-App ohne Limits
 
-DYNEX Android verbindet sich im WLAN mit DYNEX-PCs. Die App erkennt selbst keine Spiele. Sie liest den authentifizierten Gaming-Status und berechnet aus dem vom PC gemessenen, freigegebenen Leitungsbudget ihren Downloadanteil. Ein optionales Handy-Limit ist nur eine zusätzliche Obergrenze. Ohne gemessenen Budgetvorschlag oder aktives PC-Gaming wird kein Limit erfunden. Das Limit gilt nur für Downloads; Mobilfunk bleibt unbegrenzt.
+Die Android-App verbindet sich im selben WLAN mit DYNEX-PCs und zeigt deren Gamingstatus sowie verfügbare Telemetrie. Sie läuft als Vordergrunddienst weiter, wenn die Oberfläche geschlossen wird. Bei Mobilfunk und ohne passendes WLAN wartet die LAN-Kommunikation energiesparend auf einen Netzwerkwechsel.
 
-Seit 1.0.13 wertet das Handy außerdem frische Latenzmeldungen der spielenden PCs aus. Bei anhaltend erhöhter PC-Netzwerklatenz und tatsächlich ausgelastetem Handy-Download senkt es seinen Anteil schrittweise; nach mehreren neuen, gesunden PC-Messungen gibt es langsam wieder Bandbreite frei. Ein manuelles Handy-Maximum bleibt eine Obergrenze und wird ebenfalls nachgeregelt. Wiederholte oder alte Messungen lösen keine weiteren Schritte aus. Die App verwendet den konfigurierten Netzwerktest des PCs, nicht direkt den im Spiel angezeigten Ping, und erzeugt selbst keine zusätzlichen Ping-Abfragen.
+## Keine Drosselung und keine mobile Spielerkennung
 
-Diese Anpassung benötigt einen gültigen Leerlaufvergleich des PCs (höchstens 30 Minuten alt) sowie eine aktuelle gemessene Handy-Last. Fehlt der Vergleich, zeigt DYNEX **PC-Latenzvergleich fehlt · festes Downloadbudget**; es verspricht dann keine adaptive Nachregelung. Bei WLAN-/Sitzungswechsel, Pause, fehlendem Gaming oder fehlendem Budget wird der Zustand zurückgesetzt. Handy-Uploads bleiben vorerst unbegrenzt; eine garantierte Paket-Reihenfolge im Router entsteht durch die Downloadsteuerung nicht.
+Automatische Budgets, manuelle Handy-Limits und Gewichtungen sind entfernt. Alte gespeicherte Limits werden neutralisiert. Der native VPN-Tunnel wird nicht mehr zum Begrenzen gestartet; eine frühere Sitzung wird beim Start des neuen Dienstes beendet. Die App erkennt keine Handyspiele und meldet keine erfundene lokale Spielpriorisierung.
 
-## Automatisches gemeinsames Budget ab 1.0.14
+Auch die verbliebenen Proxy-/Tunnel-Kompatibilitätsschnittstellen wenden keine Raten mehr an. Direkte Aufrufe mit alten Raten können keine Weiterleitung drosseln.
 
-Es gibt kein manuell einzutragendes gemeinsames Gaming-Maximum mehr. DYNEX leitet den Pool aus den gemessenen Anschlusswerten der PCs, deren Profilanteilen und der Spielreserve ab; Android erfindet keine eigene Anschlussmessung. Aktive Downloader teilen das Budget entsprechend den bestehenden Prioritätsgewichten. Bei gleichem Gewicht und 25 Mbit/s Pool erhalten ein, zwei oder drei aktive Downloader bis zu 25, 12,5 beziehungsweise 8,33 Mbit/s je Gerät. Ein Gaming-PC ohne großen Download belegt keinen laufenden Downloadanteil. Ein optionales Handy-Limit und die adaptive Nachregelung können den eigenen Anteil weiter senken.
+## Bereits eingerichtetes AdGuard
 
-Die Aktivität stammt aus frischen, tatsächlich klassifizierten Downloadbytes des PC-Filters beziehungsweise des Handy-Proxys vor der Drosselung. Unbekannte Werte bleiben unbekannt; solange nicht alle Aktivitätswerte vorliegen, werden vorsichtig alle verbundenen Geräte berücksichtigt. Auch ein ruhendes Gerät hat eine begrenzte Startzuteilung. Neue oder endende Downloads werden nach dem nächsten Geräteaustausch berücksichtigt; die dezentrale Regelung kann während dieses Übergangs kurz über dem gemeinsamen Budget liegen. 1.0.13 kann neue Vorschläge ohne Maximum empfangen, aber ein dort gespeicherter gemeinsamer Höchstwert kann weiter zu einer kleineren Planung führen. Für einheitlich automatische Planung sollten alle Geräte 1.0.14 verwenden. Ohne Gaming bleibt das Limit aus, und Mobilfunk bleibt unbegrenzt.
+Ein in AdGuard gespeicherter DYNEX-SOCKS5-Proxy bleibt im bisherigen AdGuard-Modus als unbegrenzte Durchleitung verfügbar. Dadurch lässt ein Update die bestehende Weiterleitung nicht ins Leere laufen. Das gilt auch für Mobilfunk. Die App startet keinen neuen AdGuard-Einrichtungsassistenten für diese entfernte Funktion.
 
-## Voraussetzungen und Build
+Wenn AdGuard noch Daten über den Proxy schickt, müssen DYNEX und der bestehende Dienst weiterhin laufen, bis der Nutzer die alte Proxy-Konfiguration in AdGuard entfernt. DYNEX ändert diese fremde Konfiguration beim Update nicht stillschweigend.
 
-Der lokale Build wurde mit .NET SDK 9.0.315 und Android workload 35.0.78 sowie den Repository-Tools unter `.tools` eingerichtet: Android API 35/build-tools 35.0.0 und Microsoft JDK 17.0.14. SDK und Workload müssen zuvor installiert sein; die Skripte installieren sie nicht und ändern weder `PATH` noch globale SDK-Einstellungen. `prepare-android.ps1` stellt das offizielle hev-socks5-tunnel 2.19.0 AAR bereit, prüft den fest eingetragenen SHA-256 und extrahiert nur die beiden benötigten ABI-Bibliotheken.
+## Messwerte
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/prepare-android.ps1
-powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1 -Configuration Debug
-```
+Ein bestehender Proxy misst nur den tatsächlich durch ihn weitergeleiteten Verkehr. Ohne diesen Pfad bleibt der Handyverbrauch unbekannt; die App zeigt keine angenommenen Nullwerte und behauptet keine vollständige systemweite Verkehrsmessung.
 
-Für einen Release-Konfigurationsbuild kann `-Configuration Release` verwendet werden. Ohne expliziten Keystore erzeugt das Skript ein `*-TESTSIGNATURE.apk` in `artifacts/android/`. Für eine dauerhaft signierte Release-APK werden zusätzlich `-SigningKeyStore`, `-SigningKeyAlias`, `-SigningStorePasswordReference` und `-SigningKeyPasswordReference` gemeinsam angegeben. Passwortreferenzen akzeptieren ausschließlich `env:NAME` oder `file:PFAD`; Geheimnisse gehören nicht in die Kommandozeile oder ins Repository. Der Keystore muss für spätere Updates erhalten bleiben. Die signierte Ausgabe erhält eine SHA-256-Datei; der Build veröffentlicht sie nicht automatisch.
-
-Bei Passwortdateien für Store und Key zwei getrennte Dateien verwenden, auch wenn beide dasselbe Passwort enthalten: `apksigner` liest eine gemeinsam referenzierte Datei sequenziell. Alternativ dieselbe `env:NAME`-Referenz verwenden. Das Skript baut seriell mit `-m:1` und übergibt SDK/JDK nur für diesen Build. Auch Debug-APKs enthalten die Assemblies vollständig und verwenden die normale Android-Laufzeit ohne Soft-Debugger. Mit dem Soft-Debugger der hier verwendeten Toolchain blockierten schon unabhängige Thread-/Timer-Prüfungen ohne Produktlogik.
-
-## AdGuard-Einrichtungsassistent
-
-Beim ersten Öffnen mit installiertem AdGuard startet der Assistent. Ohne AdGuard erscheint er nicht; die zugehörige Einrichtung ist deaktiviert. Wird AdGuard später installiert, bietet DYNEX die Einrichtung beim nächsten Öffnen an. Bei installiertem AdGuard bleibt der Assistent unter **Einstellungen → AdGuard einrichten** erreichbar. Er benötigt AdGuard für Android ab Version 4 und führt durch drei Schritte:
-
-1. AdGuard öffnen und unter **App-Verwaltung → DYNEX → Datenverkehr durch AdGuard leiten** DYNEX selbst ausnehmen, damit keine Proxy-Schleife entsteht. Anschließend unter **Einstellungen → Allgemein → Erweiterte Einstellungen → Automatisierung** die Automatisierung freigeben.
-2. Das dort angezeigte Automatisierungs-Passwort einmal lokal in DYNEX eingeben. DYNEX speichert es mit einem eigenen, nicht exportierbaren Android-Keystore-Schlüssel verschlüsselt außerhalb von Android-Backups. DYNEX startet zuerst seinen lokalen Listener und fordert dann über AdGuards dokumentierte Schnittstelle die Einrichtung und Aktivierung des SOCKS5-Proxys an. Ein bisher ausgewählter Proxy wird dabei ersetzt; Werbe- und DNS-Filter werden nicht geändert.
-3. Eine Browserseite oder App laden. Der Assistent bestätigt Weiterleitung erst nach tatsächlich über den Proxy übertragenen Downloadbytes. Eine versendete Anfrage, ein offener Listener oder eine bloße Verbindung reichen nicht als Bestätigung.
-
-Der lokale Proxy lauscht ausschließlich auf `127.0.0.1:37831`, mit dem Namen `dynex` und einem zufällig erzeugten eigenen Proxy-Passwort. Diese Werte trägt DYNEX ein; sie müssen nicht abgetippt werden. AdGuard behält seine lokale VPN-Verbindung; DYNEX braucht dafür keine eigene Android-VPN-Freigabe. Die Ausnahme für DYNEX selbst ist nötig: Im Test mit AdGuard 4.14.2 funktionierte die Weiterleitung erst danach. AdGuards öffentliche Automatisierung bietet dafür keine dokumentierte Aktion; der Assistent erklärt diesen einmaligen Schritt. Nur tatsächlich durch AdGuard und dessen Proxy geleitete Apps können begrenzt werden.
-
-Im AdGuard-Modus sucht DYNEX nur im WLAN nach PCs. Mobilfunk wird nicht begrenzt; die Proxy-Durchleitung bleibt dort aktiv. Ohne PC-Gaming wird kein Downloadlimit angewendet. **Pause** entfernt das Limit und lässt die Weiterleitung bestehen. Bei **Stoppen** fordert DYNEX AdGuard auf, den Proxy auszuschalten. Nimmt AdGuard die Anfrage nicht an, etwa nach einer Passwortänderung, oder beendet Android DYNEX hart, kann der weiter eingestellte Proxy die Internetverbindung blockieren. Dann den Proxy in AdGuard ausschalten oder DYNEX neu starten. Die Schnittstelle liefert keine dokumentierte Bestätigung für die Anwendung einer Einstellung.
-
-### Wenn AdGuard nicht weiterleitet
-
-Der Einrichtungsassistent prüft nach der Rückkehr aus AdGuard automatisch die aktuell für DYNEX geltende Netzroute. Wird DYNEX noch durch ein VPN geleitet oder ist keine Route prüfbar, bleibt der erste Schritt offen. Der Abschluss wird erst bei direkter App-Route und beobachteter Proxyweiterleitung freigegeben. Die App-Ausnahme selbst bietet AdGuard nicht als dokumentierte Automatisierungsaktion an; sie muss einmal in AdGuard gesetzt werden.
-
-Ein laufender DYNEX-Dienst und eine sichtbare PC-Verbindung bestätigen noch keinen Datenverkehr durch den Proxy. Ohne bestätigte Weiterleitung zeigt DYNEX unbekannte Messwerte statt 0,0 Mbit/s. Ein Downloadlimit gilt erst nach tatsächlich unter diesem Limit weitergeleiteten Internetdaten als angewendet; DNS- und lokale Verbindungen sind dafür kein Nachweis.
-
-Die **Integration mit der separaten App AdGuard VPN** kann die Proxy-Einstellungen sperren. AdGuard zeigt dann auf seiner Proxy-Seite den Hinweis, zuerst diese Integration zu deaktivieren. Das lokale VPN des AdGuard-Werbeblockers bleibt für DYNEX weiterhin nötig und kann aktiv bleiben. Das Abschalten der zusätzlichen AdGuard-VPN-Integration kann jedoch die IP-Verschleierung beenden und ist deshalb eine ausdrückliche Entscheidung des Nutzers. DYNEX schaltet sie nicht stillschweigend aus. Die bloße Installation von AdGuard VPN beweist noch keinen Konflikt.
-
-Prüfe außerdem die im Assistenten beschriebene Ausnahme für DYNEX und ob die gewünschte Download-App über AdGuard und dessen Proxy geleitet wird. Die Anzeige bezieht sich auf diesen weitergeleiteten Verkehr, nicht auf Apps, die AdGuard umgehen.
-
-## Betrieb ohne AdGuard
-
-Im eigenständigen Modus benötigt DYNEX die einmalige Android-VPN-Freigabe. Ein bereits aktives anderes VPN blockiert diesen Modus. Der Tunnel läuft nur bei gemeldetem PC-Gaming und vorhandenem Downloadlimit. Bei Mobilfunk wartet DYNEX passiv auf ein WLAN-Ereignis und sucht nicht nach PCs.
-
-Der WLAN-Status wird über Netzwerkereignisse und einen viersekündigen Heartbeat beobachtet; bei Mobilfunk ruht die periodische Suche. DYNEX verwendet dafür weder Wake-Locks noch GPS noch WLAN-Scans. Eine konkrete Akkuersparnis wird nicht zugesichert. Benachrichtigungen zeigen den tatsächlichen Lauf- und Limitstatus; ein laufender Proxy-Dienst allein bedeutet noch nicht, dass AdGuard bereits Daten durch ihn leitet.
-
-Nach **Schutz einschalten** bleibt der Vordergrunddienst auch beim Verlassen der Oberfläche und Entfernen aus der Liste zuletzt geöffneter Apps aktiv. **Stoppen** beendet ihn ausdrücklich. Androids erzwungenes Beenden und herstellerspezifische Akku-Eingriffe können einen Dienst trotzdem beenden. Der Android-Autostart bleibt einstellbar; DYNEX fordert keine dauerhafte CPU-Wachhaltung an.
-
-Die Übersicht zeigt die von verbundenen PCs übernommene Download-/Uploadkapazität in Mbit/s. Daraus berechnet DYNEX den Downloadanteil des Handys. Ein unbekannter Uploadwert bleibt **—**; das Handy erfindet keine eigene Leitungsmessung. Ohne laufenden Dienst sind Pause, Stoppen und Aktualisieren deaktiviert; ohne WLAN oder automatische PC-Verbindung ist auch die Suche deaktiviert. Speichern wird erst bei Änderungen aktiv, eine angeforderte Suche meldet sich sichtbar zurück.
-
-## Prüfstatus und Grenzen
-
-Die portable Limitberechnung und die öffentlichen VPN-Routen wurden separat geprüft; die 361 Core-Prüfungen enthalten auch den mobilen Netzwerkbereich. Die Proxy-Prüfung mit `--tcp-only` meldet 92 erfolgreiche Host-Prüfungen. UDP und TCP-Half-Close sind damit nicht abgedeckt: Schon die direkten Vergleichssockets ohne DYNEX-Proxy funktionierten auf diesem Windows-Testhost nicht zuverlässig.
-
-Die Debug-APK ist gebaut und in einem isolierten Android-35-Emulator installiert. Die unabhängigen Laufzeitprüfungen, 131 Proxy-Prüfungen einschließlich IPv4/IPv6, UDP und TCP-Half-Close sowie drei Android/Core-Kommunikationsprüfungen bestanden. Mit der echten AdGuard-App 4.14.2 wurden die automatische Proxy-Konfiguration, echte Browserweiterleitung über WLAN und simulierten Mobilfunk sowie die Proxy-Abschaltung beim DYNEX-Stopp geprüft. Der Erststart-Assistent wurde auf dem kleinen Emulatorbildschirm geöffnet und durchlaufen. Ein physischer WLAN-/FRITZ!Box-/AdGuard-Test und eine Akkuverbrauchsmessung stehen aus; Emulatorprüfungen ersetzen diese nicht.
-
-Für reproduzierbares WLAN benötigt der hier eingesetzte Emulator 37.2.12 das Startargument `-feature -WiFiPacketStream`: Sein standardmäßiger Netsim-WLAN-Dienst beendete den gRPC-Datenstrom bereits vor dem App-Start. Der alternative, lokal dokumentierte WLAN-Pfad stellte reguläre DHCP-Adressen und Routen wieder her. Das betrifft nur die Testumgebung, nicht das APK.
-
-Eine Verbindung mit aktivem AdGuard ohne jede Freigabe ist nicht möglich. Siehe [AdGuard-Automatisierung](https://adguard.com/kb/de/adguard-for-android/solving-problems/tasker/) und [ausgehender Proxy](https://adguard.com/kb/adguard-for-android/solving-problems/outbound-proxy/).
+Die portable Policy-, Routing- und Proxytests prüfen den Betrieb ohne Caps sowie vorhandene Sicherheits- und Routinggrenzen. Eine erfolgreiche APK-Kompilierung ersetzt keinen Test auf einem physischen Handy.

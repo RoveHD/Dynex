@@ -151,9 +151,9 @@ internal static class StatusNotificationTests
         check(lost is [{ Title: "PC nicht mehr verbunden" }] && lost[0].Text.Contains("PC 2"), "departed PC notifies once by name");
         check(notes.Observe(["PC 2"], false, "", null, t.AddSeconds(6)) is [{ Title: "PC verbunden" }], "reconnected PC notifies");
         check(notes.Observe([], false, "", null, t.AddSeconds(8)).Count == 0, "flapping PC is rate limited");
-        check(notes.Observe([], true, "Gaming auf PC 2 erkannt", null, t.AddSeconds(10)) is [{ Text: "Gaming auf PC 2 erkannt" }],
-            "limit activation notifies with its reason");
-        check(notes.Observe([], true, "x", null, t.AddSeconds(12)).Count == 0, "an ongoing limit does not repeat");
+        check(notes.Observe([], true, "Gaming auf PC 2 erkannt", null, t.AddSeconds(10)) is [{ Title: "Paketpriorisierung aktiv", Text: "Gaming auf PC 2 erkannt" }],
+            "priority activation notifies with its reason without claiming a bandwidth cap");
+        check(notes.Observe([], true, "x", null, t.AddSeconds(12)).Count == 0, "ongoing priority does not repeat");
         var advice = new PeerNetworkDiagnostics("Automatisch", [], []).Assess();
         check(notes.Observe([], true, "x", advice, t.AddSeconds(14)) is [{ Title: "Verbindungsproblem" }], "a new actionable problem notifies");
         check(LimitExplanation.Describe(new LimitDecision(16, "", true, null, false), true, null, [], true, false, true, true, null, 16,
@@ -205,6 +205,9 @@ internal static class SessionTrackerTests
         check(summary is { Game: "CS2", AveragePingMs: { } avg, MaxPingMs: 40 } s && Math.Round(avg) == 30 && Math.Round(s.Duration.TotalSeconds) == 180 &&
             Math.Round(s.LimitedFor.TotalSeconds) == 120 && s.PingLossPercent > 0, "ended session reports duration, ping, loss and limited time");
         check(summary!.Text.StartsWith("CS2: 3 min · Ø Ping 30 ms (max 40 ms)"), "summary text is readable");
+        check(!summary.Text.Contains("begrenzt", StringComparison.OrdinalIgnoreCase) &&
+            !WeeklyReport.Build([summary], [], t.AddSeconds(182)).Contains("begrenzt", StringComparison.OrdinalIgnoreCase),
+            "current session and weekly report never claim historical bandwidth caps are active");
         tracker.Observe(true, "Short", 20, false, t.AddMinutes(10));
         check(tracker.Observe(false, null, null, false, t.AddMinutes(10).AddSeconds(30)) is null, "very short sessions are not reported");
     }

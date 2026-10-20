@@ -140,12 +140,11 @@ catch (FormatException) { Check(true, "invalid protected PID rejected"); }
     for (var i = 0; i < 100; i++) { device.Enqueue(Packet(flow)); device.Enqueue(Packet(download2)); }
     await using var pump = new PacketPump(device, .1, combined.ShouldLimit, realtime.Classify);
     var deadline = DateTime.UtcNow.AddSeconds(2);
-    while (pump.ReceivedBytes < 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
-    Check(pump.ReceivedBytes >= 288000 && pump.DroppedPackets > 0, "two bulk flows fill the single shared bounded queue");
-    deadline = DateTime.UtcNow.AddSeconds(1);
-    while (pump.LimitedDownloadBytes < 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
-    Check(pump.LimitedDownloadBytes == 288000 && pump.SentBytes < pump.LimitedDownloadBytes,
-        "bulk demand counts all ingress IP bytes before pacing and overflow drops");
+    while (pump.SentBytes < 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
+    Check(pump.SentBytes == 288000 && pump.DroppedPackets == 0 && !pump.HasDownloadLimit,
+        "two bulk flows pass in full despite an obsolete low download limit");
+    Check(pump.LimitedDownloadBytes == 0,
+        "priority-only forwarding never creates shared-budget demand");
     long interactiveBytes = 0;
     for (var i = 0; i < 32; i++)
         foreach (var interactive in new[] { game4, game6, voice4, voice6 })
@@ -157,20 +156,20 @@ catch (FormatException) { Check(true, "invalid protected PID rejected"); }
     await interactiveDone.Task.WaitAsync(TimeSpan.FromSeconds(2));
     // BypassedBytes is incremented immediately after Send returns.
     deadline = DateTime.UtcNow.AddSeconds(1);
-    while (pump.BypassedBytes < interactiveBytes && DateTime.UtcNow < deadline) await Task.Delay(5);
+    while (pump.BypassedBytes < 288000 + interactiveBytes && DateTime.UtcNow < deadline) await Task.Delay(5);
     Check(new ushort[] { 51000, 51001, 52000, 52001 }.All(port => delivered.GetValueOrDefault(port) == 32),
         "all IPv4/IPv6 game and Discord packets pass while both downloads are saturated");
-    Check(pump.BypassedBytes == interactiveBytes && pump.SentBytes < 288000,
-        "protected traffic bypasses the download backlog instead of sharing its cap");
+    Check(pump.BypassedBytes == 288000 + interactiveBytes && pump.SentBytes == pump.BypassedBytes,
+        "bulk and protected traffic both forward immediately without a backlog");
     Check(pump.GamePriorityPackets == 64 && pump.VoicePriorityPackets > 0,
         "real QoS classifier counts successful v4/v6 game/voice priority delivery with two saturated downloads");
-    Check(pump.LimitedDownloadBytes == 288000, "protected IPv4/IPv6 game and voice packets never inflate download demand");
+    Check(pump.LimitedDownloadBytes == 0, "game and voice packets do not create any limiting demand");
     pump.UpdateLimit(null);
     device.Enqueue(Packet(flow, ethernet: true));
     deadline = DateTime.UtcNow.AddSeconds(1);
-    while (pump.LimitedDownloadBytes == 288000 && DateTime.UtcNow < deadline) await Task.Delay(5);
-    Check(pump.LimitedDownloadBytes == 289440 && !pump.HasDownloadLimit,
-        "bulk ingress remains measurable without a current cap and excludes Ethernet overhead");
+    while (pump.SentBytes < 289454 + interactiveBytes && DateTime.UtcNow < deadline) await Task.Delay(5);
+    Check(pump.SentBytes == 289454 + interactiveBytes && pump.LimitedDownloadBytes == 0 && !pump.HasDownloadLimit,
+        "Ethernet bulk packets remain immediately forwarded after obsolete cap removal");
 }
 owners = [new(flow, 501, started, "WhatsApp")];
 Check(Feed(new(Snapshot, [], () => now), flow), "additional voice-app QoS eligibility does not exempt its TCP file downloads");
@@ -198,7 +197,7 @@ Check(!FeedUpload(new(Snapshot, [], () => now), flow, 1200), "voice chat uploads
 owners = [];
 Check(!FeedUpload(new(Snapshot, [], () => now), flow), "uploads of unknown owners stay free");
 
-// Pump: a saturated upload is paced while game packets and inbound traffic pass immediately.
+// Pump: legacy upload caps cannot delay either bulk, game or inbound traffic.
 var game = new SocketFlow(TransportProtocol.Udp, IPAddress.Parse("10.0.0.5"), 52010, IPAddress.Parse("198.51.100.20"), 27015);
 owners = [new(flow, 601, started, "OneDrive"), new(game, 700, started, "game")];
 var pumpPolicy = new BulkDownloadPolicy(Snapshot, []);
@@ -210,24 +209,24 @@ var modifiedGamePackets = 0;
 using (var device = new PacketTestDevice(packet =>
 {
     var port = BinaryPrimitives.ReadUInt16BigEndian(packet.Buffer.AsSpan(packet.IpOffset + 20));
-    if (port == 52010 && !packet.Buffer.AsSpan(0, packet.Length).SequenceEqual(gameTemplate)) Interlocked.Increment(ref modifiedGamePackets);
+    if (port == 52010 && (!packet.Buffer.AsSpan(packet.IpOffset + 20, packet.Length - packet.IpOffset - 20).SequenceEqual(gameTemplate.AsSpan(20)) ||
+        packet.Buffer[packet.IpOffset + 1] >> 2 != 32)) Interlocked.Increment(ref modifiedGamePackets);
     sentOut.AddOrUpdate(port, 1, (_, n) => n + 1);
 }))
 {
     var qos = new RealtimeQosPolicy(Snapshot);
     qos.Protect([new(700, started.UtcTicks)]);
     await using var pump = new PacketPump(device, null, pumpPolicy.ShouldLimit, qos.Classify, uploadMbps: 1, shouldLimitUpload: pumpPolicy.ShouldLimitUpload);
-    Check(pump.HasUploadLimit && !pump.HasDownloadLimit, "upload-only limit is active without a download limit");
+    Check(!pump.HasUploadLimit && !pump.HasDownloadLimit, "obsolete upload limit cannot activate shaping");
     for (var i = 0; i < 600; i++) device.Enqueue(Out(flow));
     for (var i = 0; i < 40; i++) device.Enqueue(Out(game, 200));
     for (var i = 0; i < 40; i++) device.Enqueue(Packet(flow));
     var deadline = DateTime.UtcNow.AddSeconds(2);
     while (sentOut.GetValueOrDefault((ushort)52010) < 40 && DateTime.UtcNow < deadline) await Task.Delay(5);
-    await Task.Delay(300);
     Check(sentOut.GetValueOrDefault((ushort)52010) == 40, "all game packets leave immediately while an upload is saturated");
-    Check(modifiedGamePackets == 0, "prioritized game packets leave byte-for-byte unchanged");
+    Check(modifiedGamePackets == 0, "outgoing game packets get CS4 while transport and payload stay unchanged");
     Check(sentOut.GetValueOrDefault((ushort)443) == 40, "inbound download packets are untouched by the upload limit");
-    Check(pump.UploadSentBytes < 600 * 1440 / 2, "bulk upload is paced to the configured rate instead of leaving at once");
+    Check(pump.UploadSentBytes == 600 * 1440 + 40 * 228, "all bulk and game uploads are sent without pacing");
     pump.UpdateUploadLimit(null);
     Check(!pump.HasUploadLimit, "upload limit can be lifted without restarting capture");
 }

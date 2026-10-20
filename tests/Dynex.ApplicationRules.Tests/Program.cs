@@ -23,7 +23,7 @@ Reject(() => ApplicationRules.Validate([new("steam")]), "empty rule rejected");
 Reject(() => ApplicationRules.Normalize(Enumerable.Range(0, 33).Select(i => new ApplicationRule("app" + i, 1))), "rule count bounded");
 Check(ApplicationRules.Normalize([new("steam", null, 5, false)])[0] is { Enabled: false, DownloadMbps: null, UploadMbps: 5 }, "disabled upload-only persists");
 var parsed = ControlProtocol.ParseCommand("{\"mbps\":null,\"applicationRules\":[{\"processName\":\"Steam.EXE\",\"downloadMbps\":30,\"uploadMbps\":5}]}");
-Check(parsed.ApplicationRules is [{ ProcessName: "steam", DownloadMbps: 30, UploadMbps: 5 }], "IPC rule parsing");
+Check(parsed.ApplicationRules is { Length: 0 } && parsed.Mbps is null && parsed.UploadMbps is null, "IPC validates but discards obsolete rules and caps");
 foreach (var json in new[] {
     "[{\"processName\":\"steam\"}]", "[{\"processName\":\"C:/steam\",\"downloadMbps\":1}]",
     "[{\"processName\":\"steam\",\"downloadMbps\":0}]",
@@ -62,80 +62,46 @@ snapshot = OwnershipSnapshot.Create([new(flow, 42, started, "steam")]);
 using (var packet = Packet(10, PacketDirection.Inbound)) Check(policy.Classify(packet) is null, "explicit rules preserve LAN bypass");
 flow = internetFlow;
 
-// In-memory driver boundary only: no installation, UAC or real packet capture.
+// Legacy caps cannot create queues or call removed shaping classifiers.
+foreach (var priority in new[] { PacketPriority.None, PacketPriority.Game, PacketPriority.Voice })
 using (var device = new Device())
 {
-    var slow = new ApplicationLimit("steam", .1, null);
-    await using var pump = new PacketPump(device, null, applicationRule: p => p.Buffer[0] == 1 ? slow : null, applicationRules: [slow]);
-    for (var i = 0; i < 4; i++) device.Push(Raw(1, 1500));
-    device.Push(Raw(2, 1500));
-    await device.WaitCount(1);
-    Check(device.Sent.First().Marker == 2, "slow app does not block unrelated traffic");
-    for (var i = 0; i < 12; i++) { pump.UpdateApplicationRules([slow]); await Task.Delay(10); }
-    await device.WaitCount(4);
-    var times = device.Sent.Where(x => x.Marker == 1).Select(x => x.At).ToArray();
-    Check(times.Length >= 3 && Stopwatch.GetElapsedTime(times[0], times[2]).TotalSeconds >= .20, "same-name packets share cumulative budget");
-    Check(pump.LimitedDownloadBytes == 6000, "explicit download lanes count otherwise unclassified ingress without a global cap");
+    var legacy = new ApplicationLimit("steam", .1, .1);
+    var obsoleteCalls = 0;
+    await using var pump = new PacketPump(device, .1,
+        shouldLimit: _ => { obsoleteCalls++; throw new IOException("obsolete download classifier"); },
+        priority: _ => priority, uploadMbps: .1,
+        shouldLimitUpload: _ => { obsoleteCalls++; throw new IOException("obsolete upload classifier"); },
+        applicationRule: _ => { obsoleteCalls++; throw new IOException("obsolete app classifier"); },
+        applicationRules: [legacy]);
+    for (var i = 0; i < 4; i++) device.Push(Raw(1, 10000));
+    device.Push(Raw(2, 10000, PacketDirection.Outbound));
+    await device.WaitCount(5);
+    Check(!pump.HasApplicationRules && !pump.HasDownloadLimit && !pump.HasUploadLimit,
+        "no legacy cap can create shaping lanes: " + priority);
+    Check(obsoleteCalls == 0 && pump.Failure is null && pump.DroppedPackets == 0,
+        "obsolete classifiers never run and all packets pass: " + priority);
+    Check(device.Sent.Count == 5 && device.Sent.First().Marker == 1,
+        "forwarding retains arrival order without a delayed app lane");
+    pump.UpdateLimit(.1); pump.UpdateUploadLimit(.1); pump.UpdateApplicationRules([legacy]);
+    device.Push(Raw(3, 10000)); await device.WaitCount(6);
+    Check(!pump.HasApplicationRules && pump.LimitedDownloadBytes == 0,
+        "legacy updates never restore app limits or shared-budget demand");
 }
-using (var device = new Device())
+foreach (var classifierFailure in new[] { false, true })
+using (var device = new Device { ThrowOnSend = !classifierFailure })
 {
-    var a = new ApplicationLimit("steam", 10, null); var b = new ApplicationLimit("onedrive", 10, null);
-    await using var pump = new PacketPump(device, .1, shouldLimit: _ => true,
-        applicationRule: p => p.Buffer[0] == 1 ? a : b, applicationRules: [a, b]);
-    for (var i = 0; i < 3; i++) { device.Push(Raw(1, 1500)); device.Push(Raw(2, 1500)); }
-    await device.WaitCount(4);
-    var times = device.Sent.Select(x => x.At).ToArray();
-    Check(Stopwatch.GetElapsedTime(times[0], times[3]).TotalSeconds >= .30, "both apps share global budget in addition to app budgets");
-    Check(pump.LimitedDownloadBytes == 9000, "bulk classification plus an explicit download lane counts every ingress packet exactly once");
-}
-foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice })
-using (var device = new Device())
-{
-    var slow = new ApplicationLimit("steam", .1, .1);
-    await using var pump = new PacketPump(device, null, priority: _ => priority,
-        applicationRule: _ => slow, applicationRules: [slow]);
-    device.Push(Raw(1, 10000));
-    using var received = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-    while (pump.LimitedDownloadBytes < 10000) await Task.Delay(5, received.Token);
-    Check(device.Sent.Count == 0, "explicit rule overrides interactive exemption: " + priority);
-    Check(pump.LimitedDownloadBytes == 10000, "explicit interactive download lane contributes shared demand: " + priority);
-    pump.UpdateApplicationRules([]);
-    await device.WaitCount(1);
-    Check(!pump.HasApplicationRules, "removal releases current delayed packet immediately");
-    device.Push(Raw(2, 10000));
-    await device.WaitCount(2);
-    Check(pump.Failure is null, "removed queue does not fail delivery");
-    Check(pump.LimitedDownloadBytes == 10000, "interactive traffic without an active explicit rule contributes no download demand: " + priority);
-}
-using (var device = new Device())
-{
-    var slow = new ApplicationLimit("steam", .1, .1);
-    await using var pump = new PacketPump(device, null, applicationRule: _ => slow, applicationRules: [slow]);
-    device.Push(Raw(1, 10000));
-    device.Push(Raw(2, 1000, PacketDirection.Outbound));
-    await device.WaitCount(1);
-    Check(device.Sent.First().Marker == 2, "upload and download queues independent");
-    Check(pump.LimitedDownloadBytes == 10000, "explicit upload traffic does not inflate shared download demand");
-}
-using (var device = new Device { ThrowOnSend = true })
-{
-    var rule = new ApplicationLimit("steam", 10, null);
-    await using var pump = new PacketPump(device, null, applicationRule: _ => rule, applicationRules: [rule]);
+    await using var pump = new PacketPump(device, null,
+        priority: _ => classifierFailure ? throw new IOException("injected priority failure") : PacketPriority.None);
     device.Push(Raw(1, 1500));
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
     while (pump.Failure is null) await Task.Delay(5, timeout.Token);
-    Check(!pump.Active && device.Disposed && pump.Failure is IOException, "app sender failures close capture and release device");
-}
-using (var device = new Device())
-{
-    await using var pump = new PacketPump(device, null, applicationRule: _ => throw new IOException("injected ownership failure"));
-    device.Push(Raw(1, 1500));
-    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-    while (pump.Failure is null) await Task.Delay(5, timeout.Token);
-    Check(!pump.Active && device.Disposed, "classification errors close capture without retaining packet buffers");
+    await pump.DisposeAsync();
+    Check(!pump.Active && device.Disposed && pump.Failure is IOException,
+        "priority and send errors still release capture: " + classifierFailure);
 }
 // Exercise the real helper command loop with memory streams and a fake device.
-// In particular, download-only app rules must start capture even with no global limit/QoS/game.
+// Obsolete app-only commands must not start capture without QoS/observation.
 {
     var leftToRight = Channel.CreateUnbounded<byte[]>(); var rightToLeft = Channel.CreateUnbounded<byte[]>();
     using var desktop = new MemoryDuplex(rightToLeft, leftToRight);
@@ -157,8 +123,15 @@ using (var device = new Device())
     {
         await commands.WriteLineAsync(downRule);
         using var status = JsonDocument.Parse((await replies.ReadLineAsync(timeout.Token))!);
-        Check(created == 1 && current is { Disposed: false } && !status.RootElement.GetProperty("captureReleased").GetBoolean(), "download-only app rule starts/retains helper without global limits");
+        Check(created == 0 && current is null && status.RootElement.GetProperty("captureReleased").GetBoolean(), "obsolete app-only rule cannot start capture");
     }
+    await commands.WriteLineAsync("{\"mbps\":1,\"uploadMbps\":0.1,\"qosEnabled\":true,\"applicationRules\":[{\"processName\":\"steam\",\"downloadMbps\":0.1}]}");
+    using (var status = JsonDocument.Parse((await replies.ReadLineAsync(timeout.Token))!))
+        Check(created == 1 && current is { Disposed: false } &&
+            !status.RootElement.GetProperty("active").GetBoolean() &&
+            !status.RootElement.GetProperty("uploadActive").GetBoolean() &&
+            !status.RootElement.GetProperty("applicationRulesActive").GetBoolean(),
+            "QoS capture discards all obsolete cap fields at the helper boundary");
     await commands.WriteLineAsync("{\"mbps\":null,\"commandId\":9}");
     using (var status = JsonDocument.Parse((await replies.ReadLineAsync(timeout.Token))!))
         Check(current is { Disposed: true } && status.RootElement.GetProperty("captureReleased").GetBoolean(), "removing final app rule releases real helper session");

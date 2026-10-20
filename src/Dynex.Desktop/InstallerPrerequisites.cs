@@ -22,7 +22,7 @@ internal static class InstallerPrerequisites
             // Check conflicting Windows block rules before any filter download
             // or elevation, including on a PC without the filter yet installed.
             var firewallReady = firewallConfigured();
-            if (isInstalled() && firewallReady && installationRegistered()) return new(0, "Downloadbegrenzung und private Heimnetzverbindung sind bereits eingerichtet.");
+            if (isInstalled() && firewallReady && installationRegistered()) return new(0, "Paketpriorisierung und private Heimnetzverbindung sind bereits eingerichtet.");
             var code = await install();
             if (code == 1602) return Failure(1602, "Die Windows-Rückfrage oder Einrichtung wurde abgebrochen.");
             if (code is not (0 or 3010))
@@ -34,8 +34,8 @@ internal static class InstallerPrerequisites
             }
             if (!isInstalled() || !firewallConfigured()) return Failure(1, "Windows hat die benötigten Komponenten noch nicht bestätigt.");
             return code == 3010
-                ? new(3010, "Die Einrichtung wurde abgeschlossen. Windows muss zum Aktivieren der Downloadbegrenzung neu gestartet werden; DYNEX startet den PC nicht automatisch neu.")
-                : new(0, "Downloadbegrenzung und private Heimnetzverbindung wurden eingerichtet.");
+                ? new(3010, "Die Einrichtung wurde abgeschlossen. Windows muss zum Aktivieren der Paketpriorisierung neu gestartet werden; DYNEX startet den PC nicht automatisch neu.")
+                : new(0, "Paketpriorisierung und private Heimnetzverbindung wurden eingerichtet.");
         }
         catch (Exception error) when (error is OperationCanceledException || error is Win32Exception { NativeErrorCode: 1223 })
         { return Failure(1602, "Die Windows-Rückfrage oder Einrichtung wurde abgebrochen."); }
@@ -62,8 +62,8 @@ internal static class InstallerPrerequisites
             var firewallCode = await (installFirewall?.Invoke() ?? RunElevatedAsync("--setup-machine-firewall"));
             if (firewallCode is 1602 or 1223) throw new OperationCanceledException("Die Windows-Einrichtung wurde abgebrochen.");
             throw new IOException((firewallCode == 0
-                ? "Die Firewallfreigabe für DYNEX-PCs wurde eingerichtet. Die Downloadbegrenzung konnte nicht vorbereitet werden: "
-                : $"Die Downloadbegrenzung konnte nicht vorbereitet werden; auch die Firewallfreigabe wurde nicht bestätigt (Windows-Code {firewallCode}): ") + error.Message, error);
+                ? "Die Firewallfreigabe für DYNEX-PCs wurde eingerichtet. Die Paketpriorisierung konnte nicht vorbereitet werden: "
+                : $"Die Paketpriorisierung konnte nicht vorbereitet werden; auch die Firewallfreigabe wurde nicht bestätigt (Windows-Code {firewallCode}): ") + error.Message, error);
         }
         if (installMachine is not null) return await installMachine(package);
         var arguments = package is null ? new List<string>() : [package];
@@ -112,7 +112,7 @@ internal static class InstallerPrerequisites
                 if (cleanup && RemovedInstallationStillExists(target))
                     return await WriteRemovalResultAsync(resultName, new(5203, "DYNEX ist noch installiert. Bitte zuerst die normale DYNEX-Deinstallation in den Windows-Einstellungen ausführen."));
                 if (!cleanup && RunningInstallationStillExists(target))
-                    return await WriteRemovalResultAsync(resultName, new(5203, "DYNEX oder seine Downloadbegrenzung läuft noch. Bitte DYNEX vollständig beenden und die Deinstallation erneut starten. Es wurde kein Filter entfernt."));
+                    return await WriteRemovalResultAsync(resultName, new(5203, "DYNEX oder seine Paketpriorisierung läuft noch. Bitte DYNEX vollständig beenden und die Deinstallation erneut starten. Es wurde kein Filter entfernt."));
                 var extra = args.Length == 2 ? new[] { "--confirm-legacy-filter-removal" } : [];
                 var code = cleanup
                     ? await RunElevatedAsync("--cleanup-machine", new[] { WindowsIdentity.GetCurrent().User!.Value }.Concat(extra).ToArray())
@@ -142,7 +142,7 @@ internal static class InstallerPrerequisites
                 // wrapper already checked other main processes; recheck the
                 // elevated packet helper immediately before native removal.
                 if (!cleanup && RunningInstallationStillExists(target, includeApplication: false))
-                    return await WriteRemovalResultAsync(resultName, new(5203, "Die DYNEX-Downloadbegrenzung läuft noch. Bitte DYNEX vollständig beenden und die Deinstallation wiederholen. Es wurde kein Filter entfernt."));
+                    return await WriteRemovalResultAsync(resultName, new(5203, "Die DYNEX-Paketpriorisierung läuft noch. Bitte DYNEX vollständig beenden und die Deinstallation wiederholen. Es wurde kein Filter entfernt."));
                 return await WithSetupLockAsync(async () => await WriteRemovalResultAsync(resultName,
                     await InstallerSystem.RemoveAsync(new WindowsInstallerSystem(), target, args.Length == minimum + 1)));
             }

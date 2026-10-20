@@ -31,8 +31,8 @@ internal static class HelperRecoveryChecks
         check(!applying.IsCompleted, "an old command ACK cannot acknowledge the current apply");
         await fixture.Output.WriteLineAsync(JsonSerializer.Serialize(new { active = true, mbps = 8, qosActive = true, commandId = id }));
         await applying.WaitAsync(fixture.Timeout.Token);
-        check(fixture.Controller.Status is { Active: true, Mbps: 8, QosActive: true },
-            "matching authenticated status confirms the requested activation");
+        check(fixture.Controller.Status is { Active: false, Mbps: null, QosActive: true },
+            "matching authenticated status confirms QoS while ignoring obsolete cap status");
         await fixture.ShutdownAsync();
     }
 
@@ -73,7 +73,7 @@ internal static class HelperRecoveryChecks
         Set(fixture.Controller, "captureRequested", true);
         Set(fixture.Controller, "writer", new StreamWriter(new FailingWriteStream(), new UTF8Encoding(false)) { AutoFlush = true });
         var stopping = fixture.Controller.StopAsync();
-        const string cause = "Download-Helfer sicher beendet: Seit 7 Sekunden kein Steuerbefehl von DYNEX empfangen.";
+        const string cause = "Priorisierungs-Helfer sicher beendet: Seit 7 Sekunden kein Steuerbefehl von DYNEX empfangen.";
         await fixture.Output.WriteLineAsync(JsonSerializer.Serialize(new { active = false, mbps = (double?)null, stopped = true,
             releaseError = (string?)null, error = cause, stopReason = "heartbeat-timeout" }));
         fixture.Client.Dispose();
@@ -87,7 +87,7 @@ internal static class HelperRecoveryChecks
         var device = new FakeDevice(_ => { });
         using var fixture = await HelperPipe.CreateAsync(() => device);
         await fixture.Input.ReadLineAsync(fixture.Timeout.Token);
-        await fixture.Output.WriteLineAsync("{\"mbps\":8,\"commandId\":1}");
+        await fixture.Output.WriteLineAsync("{\"mbps\":8,\"qosEnabled\":true,\"commandId\":1}");
         await fixture.Input.ReadLineAsync(fixture.Timeout.Token);
         using var final = JsonDocument.Parse((await fixture.Input.ReadLineAsync(fixture.Timeout.Token))!);
         check(final.RootElement.GetProperty("stopped").GetBoolean() && final.RootElement.GetProperty("captureReleased").GetBoolean() &&
@@ -103,7 +103,7 @@ internal static class HelperRecoveryChecks
         var device = new FakeDevice(_ => { });
         using var fixture = await HelperPipe.CreateAsync(() => device);
         await fixture.Input.ReadLineAsync(fixture.Timeout.Token);
-        await fixture.Output.WriteLineAsync("{\"mbps\":8,\"commandId\":1}");
+        await fixture.Output.WriteLineAsync("{\"mbps\":8,\"qosEnabled\":true,\"commandId\":1}");
         await fixture.Input.ReadLineAsync(fixture.Timeout.Token);
         await fixture.Output.WriteLineAsync("{\"mbps\":8,\"commandId\":-1}");
         using var final = JsonDocument.Parse((await fixture.Input.ReadLineAsync(fixture.Timeout.Token))!);
@@ -125,14 +125,14 @@ internal static class HelperRecoveryChecks
             await fixture.Output.WriteLineAsync(command);
             return JsonDocument.Parse((await fixture.Input.ReadLineAsync(fixture.Timeout.Token))!);
         }
-        using (var failed = await Send("{\"mbps\":8,\"commandId\":1}"))
+        using (var failed = await Send("{\"mbps\":8,\"qosEnabled\":true,\"commandId\":1}"))
             check(created == 1 && failed.RootElement.GetProperty("error").GetString() == "injected initial device failure",
                 "capture setup failure is reported with its original cause");
-        using (await Send("{\"mbps\":8,\"commandId\":2}"))
+        using (await Send("{\"mbps\":8,\"qosEnabled\":true,\"commandId\":2}"))
             check(created == 1, "continuous policy heartbeats do not repeatedly recreate a failed device");
         using (var idle = await Send("{\"mbps\":null,\"commandId\":3}"))
             check(idle.RootElement.GetProperty("captureReleased").GetBoolean(), "idle explicitly confirms release after failed capture setup");
-        using (await Send("{\"mbps\":8,\"commandId\":4}"))
+        using (await Send("{\"mbps\":8,\"qosEnabled\":true,\"commandId\":4}"))
             check(created == 2, "fresh gaming after confirmed idle can create capture again");
         using (await Send("{\"mbps\":null,\"shutdown\":true}")) { }
         await fixture.Helper.WaitAsync(fixture.Timeout.Token);

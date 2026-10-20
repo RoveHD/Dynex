@@ -4,8 +4,8 @@ public readonly record struct ProxyTrafficStatus(double? DownloadMbps, double? U
     bool ForwardingObserved, bool LimitApplied, double? LimitedDownloadMbps = null);
 
 /// <summary>
-/// Forwarding/shaping evidence comes only from forwarded SOCKS payload. Classified
-/// bulk activity uses a separate lifetime ingress counter before pacing; a live
+/// Forwarding evidence comes only from forwarded SOCKS payload. Public download
+/// activity uses a separate lifetime ingress counter; a live
 /// counter can measure idle without claiming forwarding. DNS/LAN bypass never counts.
 /// One instance belongs to one proxy/TUN lifetime and must be reset on replacement.
 /// </summary>
@@ -14,14 +14,14 @@ public sealed class ProxyTrafficMonitor(TimeProvider? timeProvider = null)
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private static readonly TimeSpan EvidenceLifetime = TimeSpan.FromSeconds(12);
     private ProxySnapshot? previous;
-    private long previousAt, forwardingAt, limitedAt;
-    private bool forwarding, limited;
+    private long previousAt, forwardingAt;
+    private bool forwarding;
 
     public void Reset()
     {
         previous = null;
-        previousAt = forwardingAt = limitedAt = 0;
-        forwarding = limited = false;
+        previousAt = forwardingAt = 0;
+        forwarding = false;
     }
 
     public ProxyTrafficStatus Observe(ProxySnapshot? sample, double? plannedMbps)
@@ -54,14 +54,9 @@ public sealed class ProxyTrafficMonitor(TimeProvider? timeProvider = null)
                 up = Math.Min(100000, (current.UploadBytes - baseline.UploadBytes) * 8d / seconds / 1_000_000);
             }
         }
-        var sameLimit = prior?.LimitVersion == current.LimitVersion;
-        if (!sameLimit) limited = false;
-        if (current.LimitedDownloadBytes > (sameLimit ? prior!.Value.LimitedDownloadBytes : 0))
-        { limited = true; limitedAt = now; }
-        var matchingLimit = plannedMbps is > 0 && current.DownloadLimitBytesPerSecond == (long)(plannedMbps.Value * 125000);
-        var applied = matchingLimit && limited && clock.GetElapsedTime(limitedAt, now) < EvidenceLifetime;
+        // Legacy limit fields cannot establish an applied cap in the priority-only app.
         previous = current;
         previousAt = now;
-        return new(down, up, fresh, applied, bulk);
+        return new(down, up, fresh, false, bulk);
     }
 }

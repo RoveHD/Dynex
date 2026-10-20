@@ -31,10 +31,9 @@ internal static class CapacitySharingChecks
         await remote.StartAsync();
         await runtime.StartAsync();
         await Until(() => runtime.Snapshot is { CapacityFromPeer: true, SharedCapacityMbps: 800,
-            SharedUploadCapacityMbps: 120, DriverActive: true, LimitMbps: 315, UploadLimitMbps: 48 });
-        check(runtime.PlannedDownloadLimitMbps == 315 && !runtime.Snapshot!.LimitReason.Contains("Speedtest gespeichert") &&
-            runtime.Snapshot.Detail.Contains("verbundenem PC"),
-            "fresh authenticated PC capacity enables both real fake-helper caps and truthful peer-source explanation without local measurement");
+            SharedUploadCapacityMbps: 120, DriverActive: false, QosActive: true, LimitMbps: null, UploadLimitMbps: null });
+        check(runtime.PlannedDownloadLimitMbps is null && runtime.Snapshot!.SharedDownloadBudgetMbps is null && !runtime.Snapshot.SharedBudgetComplete,
+            "fresh authenticated peer capacity remains diagnostic and enables QoS without download or upload caps");
         await Until(() => remote.Snapshot().Count == 1);
         check(remote.Snapshot().Single().BudgetProposal is null && !runtime.Settings.CapacityMeasuredAtUtc.HasValue &&
             runtime.Settings.CapacityMbps == 80 && runtime.Settings.UploadCapacityMbps == 8 &&

@@ -9,7 +9,6 @@ public static class WeeklyReport
         var events = quality.Where(e => e.StartUtc >= since).ToArray();
         if (week.Length == 0 && events.Length == 0) return "In den letzten 7 Tagen wurden noch keine Spielsitzungen oder Störungen erfasst.";
         var played = TimeSpan.FromTicks(week.Sum(s => s.Duration.Ticks));
-        var limited = TimeSpan.FromTicks(week.Sum(s => s.LimitedFor.Ticks));
         var pings = week.Where(s => s.AveragePingMs is not null).ToArray();
         var lines = new List<string>
         {
@@ -19,7 +18,6 @@ public static class WeeklyReport
             pings.Length > 0
                 ? $"Ping: Ø {pings.Average(s => s.AveragePingMs!.Value):0} ms · höchster Wert {pings.Max(s => s.MaxPingMs ?? 0):0} ms"
                 : "Ping: keine Messwerte",
-            $"Downloads begrenzt: {limited.TotalHours:0.#} h ({(played.Ticks > 0 ? 100.0 * limited.Ticks / played.Ticks : 0):0} % der Spielzeit)",
             $"Internetstörungen: {events.Count(e => e.Kind == QualityEvent.Outage)} Ausfälle · {events.Count(e => e.Kind == QualityEvent.Spike)} Pingspitzen"
         };
         return string.Join(Environment.NewLine, lines);
