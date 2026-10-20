@@ -784,6 +784,10 @@ internal static class DesktopLifecycle
         }
         window.Width = 900; window.Height = 650; window.ShowDevices(); window.UpdateLayout();
         var wrappedCoordination = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
+        var originalCoordination = wrappedCoordination.Text;
+        wrappedCoordination.Text += " Geräteverbindung: " + string.Join(" ", Enumerable.Repeat(
+            "Ein Gerät mit langem Namen antwortet noch nicht; die Verbindung wird weiter geprüft.", 4));
+        window.UpdateLayout();
         if (wrappedCoordination.ActualHeight <= wrappedCoordination.FontSize * 1.5)
             throw new Exception("Der Hinweis zur netzwerkweiten Routerpriorisierung wird im Mindestfenster nicht umgebrochen.");
         var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
@@ -793,6 +797,8 @@ internal static class DesktopLifecycle
             throw new Exception("Die Kopfzeile der Geräteansicht überlappt im Mindestfenster den Inhalt.");
         window.UpdateLayout();
         Capture(window, Path.Combine(directory, "devices-traffic-fixture-900x650.png"));
+        wrappedCoordination.Text = originalCoordination;
+        window.UpdateLayout();
         var diagnostic = await runtime.ExportDiagnosticsAsync();
         using (var json = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(diagnostic)))
         {
