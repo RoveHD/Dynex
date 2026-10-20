@@ -17,6 +17,8 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
     private ControlProtocol.ProtectedProcess[] _protected = [];
     private readonly Dictionary<StreamKey, RtpState> _rtp = new();
     private readonly Dictionary<OwnerKey, VoiceBudget> _voice = new();
+    private readonly StreamingVideoPolicy _video = new();
+    internal Func<MediaEvidenceSnapshot>? MediaEvidence { get; init; }
     private double _lastCleanup;
 
     public void Protect(IEnumerable<ControlProtocol.ProtectedProcess> processes) =>
@@ -32,7 +34,11 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
         if (flow.LocalPort is 53 or 5353 or 5355 or 39274 || flow.RemotePort is 53 or 5353 or 5355 or 39274)
             return PacketPriority.None;
         var owner = snapshot().Classify(flow);
-        if (owner?.ProcessStartedAtUtc is not { } started || string.IsNullOrEmpty(owner.ProcessName)) return PacketPriority.None;
+        if (owner?.ProcessStartedAtUtc is not { } started || string.IsNullOrEmpty(owner.ProcessName))
+        {
+            _video.Observe(flow, null, packet.Direction, ip, ip.Slice(payloadOffset, payloadLength), payloadOffset, _clock());
+            return PacketPriority.None;
+        }
         var isGame = Volatile.Read(ref _protected).Any(p => p.ProcessId == owner.ProcessId && p.StartedAtUtcTicks == started.UtcTicks);
         accounting?.Observe(owner.ProcessName, packet.Direction == PacketDirection.Inbound, packet.Length - packet.IpOffset);
         if (isGame)
@@ -42,8 +48,10 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
             return payloadLength <= (flow.Protocol == TransportProtocol.Tcp ? 768 : 1400)
                 ? PacketPriority.Game : PacketPriority.None;
         }
-        if (flow.Protocol != TransportProtocol.Udp || payloadLength is < 1 or > 600) return PacketPriority.None;
         var now = _clock();
+        var fallback = _video.Observe(flow, owner, packet.Direction, ip, ip.Slice(payloadOffset, payloadLength), payloadOffset, now)
+            || MediaEvidence?.Invoke().Matches(owner, flow, now) == true ? PacketPriority.Video : PacketPriority.None;
+        if (flow.Protocol != TransportProtocol.Udp || payloadLength is < 1 or > 600) return fallback;
         if (now - _lastCleanup > 5)
         {
             foreach (var key in _rtp.Where(p => now - p.Value.LastAt > 2).Select(p => p.Key).ToArray()) _rtp.Remove(key);
@@ -52,17 +60,17 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
         }
         var identity = new OwnerKey(owner.ProcessId, started.UtcTicks, packet.Direction);
         var knownApplication = BulkDownloadPolicy.IsVoiceApplication(owner.ProcessName) || AdditionalVoiceApplications.Contains(owner.ProcessName);
-        if (!knownApplication && !ObserveAudioRtp(new(flow, identity), ip.Slice(payloadOffset, payloadLength), now)) return PacketPriority.None;
+        if (!knownApplication && !ObserveAudioRtp(new(flow, identity), ip.Slice(payloadOffset, payloadLength), now)) return fallback;
         // EF is metered, not an unlimited whole-application privilege. This
         // includes small video/control packets that cannot be decrypted here.
         if (!_voice.TryGetValue(identity, out var budget))
         {
-            if (_voice.Count >= 4096) return PacketPriority.None;
+            if (_voice.Count >= 4096) return fallback;
             _voice.Add(identity, budget = new VoiceBudget { LastAt = now, Tokens = 4096 });
         }
         budget.Tokens = Math.Min(4096, budget.Tokens + Math.Max(0, now - budget.LastAt) * 65536);
         budget.LastAt = now;
-        if (budget.Tokens < packet.Length) return PacketPriority.None;
+        if (budget.Tokens < packet.Length) return fallback;
         budget.Tokens -= packet.Length;
         return PacketPriority.Voice;
     }
@@ -122,16 +130,16 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
 public static class QosPacketMarker
 {
     /// <summary>
-    /// Mark only outgoing interactive game/voice IP headers. Preserve ECN,
+    /// Mark only outgoing identified game/voice/video IP headers. Preserve ECN,
     /// transport headers and payload; incoming and unknown traffic stay unchanged.
     /// </summary>
     public static bool TryMark(CapturedPacket packet, PacketPriority priority)
     {
-        if (priority is not (PacketPriority.Game or PacketPriority.Voice)) return false;
+        if (priority is not (PacketPriority.Game or PacketPriority.Voice or PacketPriority.Video)) return false;
         if (packet.Direction != PacketDirection.Outbound ||
             packet.IpOffset < 0 || packet.IpOffset >= packet.Length) return false;
         var ip = packet.Buffer.AsSpan(packet.IpOffset, packet.Length - packet.IpOffset);
-        var dscp = priority == PacketPriority.Game ? 32 : 46; // CS4 games, EF voice.
+        var dscp = priority switch { PacketPriority.Game => 32, PacketPriority.Voice => 46, _ => 34 }; // CS4 / EF / AF41.
         if (ip[0] >> 4 == 4)
         {
             if (ip.Length < 20) return false;

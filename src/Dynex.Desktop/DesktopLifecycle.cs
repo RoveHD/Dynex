@@ -519,10 +519,10 @@ internal static class DesktopLifecycle
             window.Width = 900; window.Height = 650; window.ShowOverview();
             var idle = snapshot with
             {
-                State = "Bereit für deine nächste Runde", Detail = "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv.",
+                State = "Paketpriorisierung ausgeschaltet", Detail = "Die Paketpriorisierung ist ausgeschaltet.",
                 IsGaming = false, Game = "", DriverActive = false, QosActive = false,
-                DriverState = "Netzwerkfilter inaktiv. Kein Spiel im Fokus.", LimitMbps = null,
-                GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = true,
+                DriverState = "Netzwerkfilter ausgeschaltet.", LimitMbps = null,
+                GamePriorityPackets = 0, VoicePriorityPackets = 0, VideoPriorityPackets = 0, ProtectionIdle = true,
                 SharedDownloadBudgetMbps = null, GamingCount = 0
             };
             render.Invoke(window, [idle]); window.UpdateLayout();
@@ -533,9 +533,9 @@ internal static class DesktopLifecycle
             render.Invoke(window, [idle with { ProtectionIdle = false, DriverState = "Freigabe nicht bestätigt: Testfehler" }]);
             if (Text("QosStatusText") == "Netzwerkfilter inaktiv" || Text("ProtectionStatusText") == "NETZWERKSCHUTZ · INAKTIV")
                 throw new Exception("Unbestätigte Freigabe wird fälschlich als Filter-Leerlauf angezeigt.");
-            render.Invoke(window, [idle with { DriverActive = false, QosActive = true, ProtectionIdle = false, GamePriorityPackets = 12, VoicePriorityPackets = 4 }]);
+            render.Invoke(window, [idle with { DriverActive = false, QosActive = true, ProtectionIdle = false, GamePriorityPackets = 12, VoicePriorityPackets = 4, VideoPriorityPackets = 8 }]);
             if (Text("PriorityOverviewText") != "PRIORITÄT AKTIV" || Text("QosStatusText") != "Priorisierung aktiv" ||
-                !Text("QosDetailText").Contains("12") || !Text("QosDetailText").Contains("4"))
+                !Text("QosDetailText").Contains("12") || !Text("QosDetailText").Contains("4") || !Text("QosDetailText").Contains("8"))
                 throw new Exception("Prioritätsstatus wird nicht anhand der bestätigten QoS-Markierungen und Paket-Zähler angezeigt.");
         }
         finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
@@ -617,8 +617,7 @@ internal static class DesktopLifecycle
             runtime.Updated += OnUpdated;
             try
             {
-                // A first-run normal profile may perform its existing automatic capacity test (up to 10 s).
-                // The overall bound accommodates that existing startup path plus fresh two-second samples.
+                // Allow initial network discovery plus three fresh snapshots.
                 if (!ready.Task.IsCompleted && await Task.WhenAny(ready.Task, Task.Delay(TimeSpan.FromSeconds(45))) != ready.Task)
                     throw new TimeoutException("Innerhalb von 45 Sekunden sind keine drei frischen Runtime-Snapshots eingetroffen.");
             }
@@ -639,8 +638,8 @@ internal static class DesktopLifecycle
                 $"Status: {snapshot.State}\nDetails: {snapshot.Detail}\n" +
                 $"Gaming: {snapshot.IsGaming} ({snapshot.Game})\n" +
                 $"Netzwerkkomponente verfügbar: {snapshot.DriverAvailable}\nKomponentenstatus: {snapshot.DriverState}\n" +
-                $"Priorisierung aktiv: {snapshot.QosActive}; Spiel-/Sprachpakete: {snapshot.GamePriorityPackets}/{snapshot.VoicePriorityPackets}\n" +
-                $"Netzwerkfilter ohne Gaming bestätigt inaktiv: {snapshot.ProtectionIdle}\n" +
+                $"Priorisierung aktiv: {snapshot.QosActive}; Spiel-/Sprach-/Videopakete: {snapshot.GamePriorityPackets}/{snapshot.VoicePriorityPackets}/{snapshot.VideoPriorityPackets}\n" +
+                $"Freigegebene/ausgeschaltete Capture-Sitzung bestätigt: {snapshot.ProtectionIdle}\n" +
                 $"Download/Upload: {snapshot.DownloadMbps?.ToString("0.##") ?? "unbekannt"}/{snapshot.UploadMbps?.ToString("0.##") ?? "unbekannt"} Mbit/s\n" +
                 $"Router-Ping: {snapshot.Router.Current?.ToString("0.##") ?? "unbekannt"} ms; Internet-Ping: {snapshot.External.Current?.ToString("0.##") ?? "unbekannt"} ms\n" +
                 $"Geräte: {snapshot.Devices.Count}; Verlaufspunkte: {snapshot.History.Count}\n" +

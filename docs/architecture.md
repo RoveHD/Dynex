@@ -6,8 +6,8 @@
 
 1. Der Desktop erkennt Spielprozesse mit Prozess-ID und Startzeit und bestimmt die für Beobachtung geeigneten Spiele.
 2. Der Helfer ordnet tatsächliche Netzwerkpakete anhand frischer Socket-/Prozesstabellen zu.
-3. Bestätigter Spielverkehr aktiviert die passende Priorisierung; unbekannte Zuordnung bleibt unverändert.
-4. Geeignete ausgehende Pakete erhalten CS4 für Spiele oder EF für Sprache. Alle Pakete werden sofort weitergeleitet.
+3. Der eingeschaltete Priorisierungsschalter aktiviert die Paketverarbeitung auch ohne Spiel; unbekannte Zuordnung bleibt unverändert.
+4. Geeignete ausgehende Pakete erhalten CS4 für Spiele, EF für Sprache oder AF41 für nachgewiesene Videoverbindungen. Alle Pakete werden sofort weitergeleitet.
 5. Bestätigungen und Zähler gelangen über die prozessgebundene lokale Pipe zur Oberfläche; Durchsatz- und Gamingmeldungen werden authentifiziert im privaten LAN geteilt.
 
 Es gibt keine ausgeführte Budgetplanung, keine adaptive Bandbreitenabsenkung und keine individuellen Programm- oder Gerätelimits. Historische Modellfelder und reine Berechnungsklassen dienen der Lese-/Quellkompatibilität; Runtime, IPC und Paketpfad können daraus keine Limits aktivieren.

@@ -13,7 +13,7 @@ public interface IPacketDevice : IDisposable
 
 public sealed class PacketReleaseException(string message, Exception? inner = null) : IOException(message, inner);
 public enum PacketDirection { Inbound, Outbound }
-public enum PacketPriority { None, Game, Voice }
+public enum PacketPriority { None, Game, Voice, Video }
 
 public sealed class CapturedPacket : IDisposable
 {
@@ -50,7 +50,7 @@ public sealed class PacketPump : IAsyncDisposable
     private readonly Action<CapturedPacket>? _observer;
     private readonly Task _receiver;
     private long _receivedBytes, _sentBytes, _uploadSentBytes, _bypassedBytes;
-    private long _gamePriorityPackets, _voicePriorityPackets;
+    private long _gamePriorityPackets, _voicePriorityPackets, _videoPriorityPackets;
     private Exception? _failure;
     private string? _cleanupError;
     private int _closed;
@@ -77,6 +77,7 @@ public sealed class PacketPump : IAsyncDisposable
     public bool QosEnabled => _priority is not null;
     public long GamePriorityPackets => Interlocked.Read(ref _gamePriorityPackets);
     public long VoicePriorityPackets => Interlocked.Read(ref _voicePriorityPackets);
+    public long VideoPriorityPackets => Interlocked.Read(ref _videoPriorityPackets);
     public Exception? Failure => Volatile.Read(ref _failure);
     public string? CleanupError => Volatile.Read(ref _cleanupError);
     public long ReceivedBytes => Interlocked.Read(ref _receivedBytes);
@@ -115,6 +116,7 @@ public sealed class PacketPump : IAsyncDisposable
                 {
                     if (priority == PacketPriority.Game) Interlocked.Increment(ref _gamePriorityPackets);
                     if (priority == PacketPriority.Voice) Interlocked.Increment(ref _voicePriorityPackets);
+                    if (priority == PacketPriority.Video) Interlocked.Increment(ref _videoPriorityPackets);
                 }
             }
         }

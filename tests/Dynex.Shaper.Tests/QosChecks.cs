@@ -18,7 +18,7 @@ internal static class QosChecks
         check(NdisPacketDevice.GetSendIoctlIndex(1) == 2 && NdisPacketDevice.GetSendIoctlIndex(2) == 3,
             "original NDIS flags route outbound to adapter and inbound to MSTCP");
         foreach (var ipv6 in new[] { false, true })
-        foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice })
+        foreach (var priority in new[] { PacketPriority.Game, PacketPriority.Voice, PacketPriority.Video })
         {
             var correct = true;
             for (var ecn = 0; ecn < 4; ecn++)
@@ -33,7 +33,7 @@ internal static class QosChecks
                 var before = packet.Buffer.AsSpan(0, packet.Length).ToArray();
                 correct &= QosPacketMarker.TryMark(packet, priority);
                 var ds = ipv6 ? ((ip[0] & 15) << 4) | (ip[1] >> 4) : ip[1];
-                correct &= ds >> 2 == (priority == PacketPriority.Game ? 32 : 46) && (ds & 3) == ecn;
+                correct &= ds >> 2 == (priority switch { PacketPriority.Game => 32, PacketPriority.Voice => 46, _ => 34 }) && (ds & 3) == ecn;
                 var payload = offset + (ipv6 ? 40 : 32);
                 correct &= packet.Buffer.AsSpan(payload, packet.Length - payload).SequenceEqual(before.AsSpan(payload));
                 correct &= packet.Buffer.AsSpan(0, offset).SequenceEqual(before.AsSpan(0, offset));
@@ -136,6 +136,14 @@ internal static class QosChecks
             check(pump.Active && !pump.HasDownloadLimit && pump.QosEnabled && sentDscp == 46 && pump.SentBytes == pump.BypassedBytes && pump.BypassedBytes > 0,
                 "QoS-only pump marks and sends voice immediately with no download pacing");
         }
+        source = new FakeDevice(packet => sentDscp = packet.Buffer[packet.IpOffset + 1] >> 2);
+        source.Enqueue(Packet(currentFlow, PacketDirection.Outbound, new byte[200]));
+        await using (var pump = new PacketPump(source, .1, priority: _ => PacketPriority.Video))
+        {
+            await Until(() => pump.VideoPriorityPackets == 1);
+            check(sentDscp == 34 && pump.BypassedBytes == pump.SentBytes && !pump.HasDownloadLimit,
+                "video pump counts successful AF41 forwarding with obsolete caps inert");
+        }
         source = new FakeDevice(_ => throw new IOException("failed QoS send"));
         source.Enqueue(Packet(currentFlow, PacketDirection.Outbound, new byte[200]));
         await using (var pump = new PacketPump(source, null, null, qosPolicy.Classify))
@@ -203,9 +211,9 @@ internal static class QosChecks
         using var output = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
         var controller = new ShaperController();
         var reader = (Task)typeof(ShaperController).GetMethod("ReadStatusAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(controller, [server, timeout.Token])!;
-        await output.WriteLineAsync("{\"active\":false,\"mbps\":null,\"qosActive\":true,\"gamePriorityPackets\":12,\"voicePriorityPackets\":34}");
+        await output.WriteLineAsync("{\"active\":false,\"mbps\":null,\"qosActive\":true,\"gamePriorityPackets\":12,\"voicePriorityPackets\":34,\"videoPriorityPackets\":56}");
         await Until(() => controller.Status.QosActive);
-        check(!controller.Status.Active && controller.Status.Mbps is null && controller.Status.GamePriorityPackets == 12 && controller.Status.VoicePriorityPackets == 34,
+        check(!controller.Status.Active && controller.Status.Mbps is null && controller.Status.GamePriorityPackets == 12 && controller.Status.VoicePriorityPackets == 34 && controller.Status.VideoPriorityPackets == 56,
             "desktop parses actual QoS-only status and priority counters");
         typeof(ShaperController).GetField("lastStatus", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(controller, Stopwatch.GetTimestamp() - 7 * Stopwatch.Frequency);
         check(!controller.Status.Active && !controller.Status.QosActive, "stale desktop QoS status loses activation claim");
@@ -217,7 +225,7 @@ internal static class QosChecks
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         while (!ready()) await Task.Delay(5, timeout.Token);
     }
-    private static SocketFlow Flow(bool ipv6) => new(TransportProtocol.Udp,
+    internal static SocketFlow Flow(bool ipv6) => new(TransportProtocol.Udp,
         IPAddress.Parse(ipv6 ? "2001:db8:1::5" : "192.168.1.5"), 50001,
         IPAddress.Parse(ipv6 ? "2001:db8:2::8" : "192.168.1.1"), 49197);
     private static byte[] Rtp(byte pt, ushort sequence, uint timestamp)
@@ -233,7 +241,7 @@ internal static class QosChecks
         uint sum = 0; for (var i = 0; i < header.Length; i += 2) sum += BinaryPrimitives.ReadUInt16BigEndian(header.Slice(i));
         while (sum >> 16 != 0) sum = (sum & 65535) + (sum >> 16); return sum;
     }
-    private static CapturedPacket Packet(SocketFlow flow, PacketDirection direction, byte[] payload, int tags = 0, int options = 0)
+    internal static CapturedPacket Packet(SocketFlow flow, PacketDirection direction, byte[] payload, int tags = 0, int options = 0)
     {
         var ipv6 = flow.LocalAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
         var offset = 14 + tags * 4; var ipLength = (ipv6 ? 40 : 20 + options) + (flow.Protocol == TransportProtocol.Tcp ? 20 : 8) + payload.Length;

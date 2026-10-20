@@ -1,5 +1,13 @@
 # DYNEX · Prüfstatus
 
+## ELFIX-Medienmeldung, 1.0.19 (21.10.2026)
+
+Die Shaper-Suite bestand 567 Prüfungen einschließlich 119 neuer Medienprüfungen und echtem optionalem Node-Pipe-Client (`DYNEX_TEST_NODE_MEDIA=1`). Die Prüfungen binden Medienhinweise an Benutzer, ELFIX-Programmdatei, tatsächliche Prozessstartzeit und den genauen Server-Endpunkt; ungültige Nachrichten, Überflutung, Ablauf, fremde Prozesse und Verbindungsabbruch geben keine Freigabe. Der Anti-Cheat-API-Guard bestand.
+
+Der gekoppelte lokale Test mit Electron 44.4.3 verwendet echte HTTPS-Antworten, den unveränderten Windows-Prozessprüfer und tatsächliche Betriebssystem-Socketzuordnung. Sowohl eingebetteter Browserabruf als auch `spielerNetz.medienAbruf` des eigenen ELFIX-Players wurden geprüft. Die zugeordnete Verbindung ergab AF41 an einem Testpaket bei erhaltenem ECN; ein fremder Browser erbte keine Markierung, und Pipe-Abbruch löschte die Freigabe. Auf ELFIX-Seite bestanden 41 Senderprüfungen, Sicherheits-/Medien-CORS-Prüfungen, Player-Regressionsprüfungen und Lint.
+
+Dieser Test öffnet keinen Kernel-Filter. Ein echter erhöhter Helfer, physischer Router und Last aus zwei Geräten wurden damit nicht geprüft. CI-Abnahme und veröffentlichte Artefakte werden zusätzlich an den konkreten Release-Commit gebunden. Details: [ELFIX-Integration](elfix-integration.md).
+
 ## Reine Priorisierung, 1.0.16 (20.10.2026)
 
 Lokal bestanden: Shaper 331 Checks, Bulk-Kompatibilität 61, alte Programmregeln 53, Runtime 227, gezielte Runtime-Priorisierung 14, Downloadaktivität ohne Limits 23, Spielverkehr/Sitzung 24 und DeviceRuntime 10. Dazu Status-/Sitzungsanzeige und Bericht 37, Setup 127 und Verbrauchsverlauf. Die Paketprüfungen bestätigen CS4/EF, Headerprüfsumme, ECN/VLAN/IPv6-Flowlabel, unveränderte Transportheader/Nutzdaten und unmittelbare Weiterleitung trotz alter globaler und anwendungsbezogener Caps. Der aktive Paketpfad enthält keine Pacing-Warteschlangen.

@@ -66,4 +66,4 @@ public sealed record RuntimeSnapshot(
     double? UploadLimitMbps = null, string? PingAlert = null, IReadOnlyList<ProgramTraffic>? TopPrograms = null,
     string? ScheduleReason = null, bool WaitingForGameTraffic = false, bool ObservingGameTraffic = false,
     bool ApplicationRulesActive = false, double? SharedUploadCapacityMbps = null,
-    bool CapacityFromPeer = false, bool DownloadActivityComplete = false);
+    bool CapacityFromPeer = false, bool DownloadActivityComplete = false, long VideoPriorityPackets = 0);

@@ -742,12 +742,12 @@ public partial class MainWindow : Window
         else { DownCaption.Text = "Gesamter Empfang"; DownCaption.ToolTip = "Router-Werte erscheinen, wenn der Router UPnP-Statusinformationen anbietet."; }
         PriorityOverviewText.Text = s.QosActive ? "PRIORITÄT AKTIV" : s.ObservingGameTraffic ? "SPIEL WIRD BEOBACHTET" : "BEREIT";
         PriorityDetailText.Text = s.QosActive
-            ? $"Spiel: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete"
+            ? $"Spiel: {s.GamePriorityPackets:N0} · Sprache: {s.VoicePriorityPackets:N0} · Video: {s.VideoPriorityPackets:N0}"
             : "DYNEX markiert erkannte Pakete; Router-QoS/SQM steuert deren Behandlung im Heimnetz.";
         var installed = PacketFilterSetup.IsInstalled;
         var observingWithoutGameTraffic = s.ObservingGameTraffic && !s.IsGaming && !s.QosActive;
         DriverText.Text = s.QosActive ? "PRIORITÄT AKTIV" : observingWithoutGameTraffic ? "BEOBACHTET" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
-        DriverDetail.Text = s.QosActive ? "Spiel- und Sprachpakete werden für QoS markiert." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet; noch keine priorisierten Pakete bestätigt." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
+        DriverDetail.Text = s.QosActive ? "Spiel-, Sprach- und erkannte Videopakete werden für QoS markiert." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet; noch keine priorisierten Pakete bestätigt." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
         DriverDetail.ToolTip = s.DriverState;
         ProtectionStatusText.Text = s.QosActive ? "NETZWERKSCHUTZ · PRIORISIERUNG AKTIV"
             : observingWithoutGameTraffic ? "NETZWERKSCHUTZ · SPIELVERKEHR WIRD BEOBACHTET"
@@ -755,7 +755,7 @@ public partial class MainWindow : Window
         if (s.QosActive)
         {
             QosStatusText.Text = "Priorisierung aktiv";
-            QosDetailText.Text = $"Spiele: {s.GamePriorityPackets:N0} · Sprachchat: {s.VoicePriorityPackets:N0} Pakete";
+            QosDetailText.Text = $"Spiele: {s.GamePriorityPackets:N0} · Sprache: {s.VoicePriorityPackets:N0} · Video: {s.VideoPriorityPackets:N0}";
         }
         else if (observingWithoutGameTraffic)
         {
@@ -765,19 +765,19 @@ public partial class MainWindow : Window
         else if (s.ProtectionIdle)
         {
             QosStatusText.Text = "Netzwerkfilter inaktiv";
-            QosDetailText.Text = "Kein Spiel im Fokus auf deinen DYNEX-PCs.";
+            QosDetailText.Text = "Paketpriorisierung ausgeschaltet oder für die Diagnose pausiert.";
         }
-        else if (s.GamePriorityPackets > 0 || s.VoicePriorityPackets > 0)
+        else if (s.GamePriorityPackets > 0 || s.VoicePriorityPackets > 0 || s.VideoPriorityPackets > 0)
         {
             QosStatusText.Text = "QoS nicht bestätigt";
-            QosDetailText.Text = $"Zuletzt: {s.GamePriorityPackets:N0} Spiel- und {s.VoicePriorityPackets:N0} Sprachpakete";
+            QosDetailText.Text = $"Zuletzt: Spiel {s.GamePriorityPackets:N0} · Sprache {s.VoicePriorityPackets:N0} · Video {s.VideoPriorityPackets:N0}";
         }
         else
         {
             QosStatusText.Text = "Priorisierung noch nicht aktiv";
-            QosDetailText.Text = _runtime.Settings.DriverEnabled ? "Der Netzwerkfilter hat die Priorisierung noch nicht bestätigt." : "In den Einstellungen einschalten, um Spiele und Sprachchat zu bevorzugen.";
+            QosDetailText.Text = _runtime.Settings.DriverEnabled ? "Der Netzwerkfilter hat die Priorisierung noch nicht bestätigt." : "In den Einstellungen einschalten: Spiele und Sprache zuerst, erkannte Videos danach.";
         }
-        QosDetailText.ToolTip = "DYNEX markiert erkannte Spiel- und Sprachpakete für QoS. Der Router muss diese Markierungen unterstützen. Paket-Zähler belegen keine Behandlung durch den Router.";
+        QosDetailText.ToolTip = "DYNEX markiert erkannte Spiel-, Sprach- und Videopakete für QoS. Der Router muss diese Markierungen unterstützen. Paket-Zähler belegen keine Behandlung durch den Router.";
         DriverCheck.IsEnabled = s.DriverAvailable && installed && !_settingUp;
         SetupButton.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
         SetupButton.IsEnabled = s.DriverAvailable && !_settingUp;
@@ -807,7 +807,7 @@ public partial class MainWindow : Window
             : NetworkHelpText.Text;
         DevicePriorityText.Text = s.QosActive
             ? "DYNEX bestätigt QoS-Markierungen auf diesem PC."
-            : "DYNEX markiert lokal erkannte Spiel- und Sprachpakete für QoS.";
+            : "DYNEX markiert lokal erkannte Spiel-, Sprach- und Videopakete für QoS.";
         CoordinationText.Text = "DYNEX markiert Pakete auf PCs, auf denen es läuft. Router-QoS oder SQM bestimmt die Behandlung im gesamten Anschluss.";
         PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
         if (s.NetworkProblem is not null)

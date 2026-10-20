@@ -586,10 +586,9 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     var capacityFromPeer = settings.CapacityMeasuredAtUtc is null && sharedCapacity is not null;
                     PlannedDownloadLimitMbps = null;
                     if (settings.DriverEnabled && shapingAllowed && !IsSpeedTestRunning)
-                        await shaper.ApplyAsync(null, token, detectedGames, qosEnabled: gamingActive,
-                            protectionStillNeeded: () => service.Snapshot().Any(p => p.IsGaming) ||
-                                settings.Mode != GamingMode.Off && GameProtection.FindCandidates(
-                                    scanGames(settings.GameProcesses), readForeground(), early).Any(g => HasGameTraffic(g, readGameTraffic())),
+                        await shaper.ApplyAsync(null, token, detectedGames, qosEnabled: true,
+                            protectionStillNeeded: () => Settings.DriverEnabled && shapingAllowed &&
+                                !IsSpeedTestRunning && !stopping && !token.IsCancellationRequested,
                             observeGameTraffic: canObserve,
                             observationStillNeeded: () => settings.Mode != GamingMode.Off && GameProtection.FindCandidates(
                                 scanGames(settings.GameProcesses), readForeground(), early).Any(g => g.ProcessId > 0 && g.ProcessStartedAt is not null));
@@ -608,20 +607,15 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                         devices.Select(d => new LoadSource(d.Name, d.DownloadMbps, d.UploadMbps, d.TopProgram)).ToArray(), now) is { } alert)
                         lastPingAlert = alert;
                     if (quality.Observe(measurement.External.Current, measurement.Router.Current, now) is { } qualityEvent) RecordQuality(qualityEvent);
-                    var state = driver.QosActive ? "Paketpriorisierung aktiv" : gaming ? "Gaming-Modus aktiv" : gamingActive ? "Gaming im LAN erkannt"
-                        : waitingForTraffic ? "Warte auf Spielverkehr" : "Bereit für deine nächste Runde";
-                    var detail = gaming
-                        ? "DYNEX markiert geeignete Spiel- und Sprachpakete. Der Router muss die Markierungen für den Vorrang auswerten."
-                        : gamingActive ? "Gaming im Heimnetz erkannt. DYNEX markiert geeignete Spiel- und Sprachpakete auf diesem PC."
-                        : waitingForTraffic ? (driver.ObservingGameTraffic && canObserve
-                            ? "Kein Spielverkehr erkannt. Downloads und Uploads bleiben frei; DYNEX beobachtet weiter."
-                            : "Spielverkehr noch nicht messbar. Downloads und Uploads bleiben frei. " + driver.Message)
-                        : captureReleased ? "Kein Spiel im Fokus. Der Netzwerkfilter ist inaktiv."
-                        : "Kein Spiel im Fokus. DYNEX gibt den Netzwerkfilter frei: " + driver.Message;
+                    var state = driver.QosActive ? "Paketpriorisierung aktiv" : settings.DriverEnabled
+                        ? "Paketpriorisierung noch nicht aktiv" : "Paketpriorisierung ausgeschaltet";
+                    var detail = driver.QosActive
+                        ? "Spiele und Sprache haben Vorrang; erkannte Videoverbindungen folgen darunter. Der Router muss die Markierungen auswerten."
+                        : settings.DriverEnabled ? "DYNEX wartet auf die bestätigte Paketpriorisierung: " + driver.Message
+                        : captureReleased ? "Die Paketpriorisierung ist ausgeschaltet."
+                        : "DYNEX gibt den Netzwerkfilter frei: " + driver.Message;
                     if (IsSpeedTestRunning) { state = "Internetgeschwindigkeit wird gemessen"; detail = SpeedTestMessage; }
                     else if (IsSpeedTestWaiting) detail = SpeedTestMessage;
-                    if (gamingActive && !driver.QosActive && !IsSpeedTestRunning)
-                        detail = "Gaming erkannt. Die Paketpriorisierung ist noch nicht aktiv: " + driver.Message;
                     // Router discovery can take seconds; never let it delay game detection or priority.
                     // Every six seconds is enough for a home overview and spares the router's CPU.
                     if (routerSample is { IsCompleted: true })
@@ -649,20 +643,20 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     if (DeviceRegistryError is { } registryError) networkState = string.Join(" · ", new[] { networkState, registryError }.Where(s => !string.IsNullOrEmpty(s)));
                     var diagnostics = service.GetNetworkDiagnostics();
                     var connection = Volatile.Read(ref networkConnection);
-                    var priorityReason = driver.QosActive ? "Spiel- und Sprachpakete werden priorisiert"
+                    var priorityReason = driver.QosActive ? "Spiel-, Sprach- und erkannte Videopakete werden priorisiert"
                         : waitingForTraffic ? "Warte auf tatsächlichen Spielverkehr" : "Paketpriorisierung ist bereit";
                     var snapshot = new RuntimeSnapshot(state, detail, gaming, game, false,
                         driver.Message, null, measurement.Down, measurement.Up, measurement.Router, measurement.External, devices, points,
                         networkState ?? $"{remote.Count} verbundene PCs · {(settings.AutoConnectLan ? "Automatisch im privaten LAN" : "Private Gruppe")}", Fingerprint(), shaper.IsAvailable,
                         null, remote.Count + 1, gamingCount, sharedCapacity, false, 0,
                         driver.QosActive, driver.GamePriorityPackets, driver.VoicePriorityPackets, networkState,
-                        ProtectionIdle: !gamingActive && captureReleased,
+                        ProtectionIdle: !driver.QosActive && captureReleased,
                         NetworkDiagnostics: diagnostics, LimitReason: priorityReason,
                         Connection: diagnostics.Assess(connection?.FirewallConfigured, connection?.Lan), LastSession: lastSession, HomeTraffic: homeTraffic,
                         PingAlert: lastPingAlert, TopPrograms: driver.TopPrograms,
                         WaitingForGameTraffic: waitingForTraffic,
                         ObservingGameTraffic: driver.ObservingGameTraffic && canObserve,
-                        SharedUploadCapacityMbps: sharedUpload, CapacityFromPeer: capacityFromPeer);
+                        SharedUploadCapacityMbps: sharedUpload, CapacityFromPeer: capacityFromPeer, VideoPriorityPackets: driver.VideoPriorityPackets);
                     Snapshot = snapshot;
                     Updated?.Invoke(snapshot);
                     foreach (var request in pending) request.TrySetResult(snapshot);
@@ -682,7 +676,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     var prior = Snapshot ?? new RuntimeSnapshot("", "", false, "", false, "", null, 0, 0, emptyPing, emptyPing, [], [], initialNetworkError ?? service.NetworkStatus ?? "", Fingerprint());
                     Snapshot = prior with { State = "Messung unterbrochen", Detail = ex.Message, IsGaming = false, DriverActive = false, LimitMbps = null, DownloadMbps = null, UploadMbps = null, Devices = [], Router = emptyPing, External = emptyPing, DriverState = shaper.Status.Message,
                         SharedDownloadBudgetMbps = null, ParticipantCount = 1, GamingCount = 0, SharedCapacityMbps = null, SharedBudgetComplete = false, ConfirmedParticipantCount = 0,
-                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null,
+                        QosActive = false, GamePriorityPackets = 0, VoicePriorityPackets = 0, VideoPriorityPackets = 0, ProtectionIdle = false, NetworkDiagnostics = null,
                         LimitReason = "Messung unterbrochen · Priorisierung inaktiv", Connection = null, HomeTraffic = null,
                         WaitingForGameTraffic = false, ObservingGameTraffic = false, SharedUploadCapacityMbps = null, CapacityFromPeer = false,
                         DownloadActivityComplete = false };

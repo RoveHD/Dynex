@@ -36,9 +36,9 @@ internal static class GameTrafficChecks
         });
         await runtime.StartAsync();
         await Until(() => runtime.Snapshot is { WaitingForGameTraffic: true, ObservingGameTraffic: true });
-        check(runtime.Snapshot is { IsGaming: false, DriverActive: false, QosActive: false, UploadLimitMbps: null } &&
+        check(runtime.Snapshot is { IsGaming: false, DriverActive: false, QosActive: true, UploadLimitMbps: null } &&
             runtime.PlannedDownloadLimitMbps is null && !fixture.Controller.CaptureReleased,
-            "a focused game with a bound UDP socket but no packets only observes; download/upload/QoS stay off");
+            "a bound game socket alone does not publish Gaming while general priority remains active without caps");
 
         await Until(() =>
         {
@@ -49,9 +49,9 @@ internal static class GameTrafficChecks
             "a real owner-table match for synthetic inbound game packets activates helper, IPC and runtime prioritization without caps");
 
         await Until(() => runtime.Snapshot is
-            { WaitingForGameTraffic: true, ObservingGameTraffic: true, IsGaming: false, DriverActive: false, QosActive: false, UploadLimitMbps: null }, 20);
+            { WaitingForGameTraffic: true, ObservingGameTraffic: true, IsGaming: false, DriverActive: false, QosActive: true, UploadLimitMbps: null }, 20);
         check(runtime.PlannedDownloadLimitMbps is null && !runtime.Snapshot!.Devices[0].Gaming && !fixture.Controller.CaptureReleased,
-            "ten seconds without game packets releases priority and Gaming publication but keeps passive observation");
+            "ten seconds without game packets clears Gaming publication while general priority and observation remain active");
 
         var settings = (DynexSettings)typeof(DynexRuntime)
             .GetMethod("CoreSettings", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(runtime, null)!;
@@ -69,9 +69,9 @@ internal static class GameTrafficChecks
         check(runtime.Snapshot!.WaitingForGameTraffic,
             "a network-idle local game does not suppress protection requested by an authenticated gaming peer");
         remote.Publish(false, game: "Idle remote game");
-        await Until(() => runtime.Snapshot is { GamingCount: 0, DriverActive: false, QosActive: false, ObservingGameTraffic: true });
+        await Until(() => runtime.Snapshot is { GamingCount: 0, DriverActive: false, QosActive: true, ObservingGameTraffic: true });
         check(runtime.PlannedDownloadLimitMbps is null && runtime.Snapshot!.UploadLimitMbps is null,
-            "remote idle releases priority while the quiet local game continues to be observed");
+            "remote idle preserves general priority while the quiet local game continues to be observed");
 
         await Until(() =>
         {
@@ -82,9 +82,11 @@ internal static class GameTrafficChecks
             "outbound game packets reactivate protection after an idle period without restarting the game");
         Volatile.Write(ref games, []);
         Volatile.Write(ref foreground, null);
-        await Until(() => runtime.Snapshot is { ProtectionIdle: true, ObservingGameTraffic: false });
+        await Until(() => runtime.Snapshot is { IsGaming: false, QosActive: true, ObservingGameTraffic: false });
+        await runtime.SaveSettingsAsync(runtime.Settings with { DriverEnabled = false });
+        await Until(() => runtime.Snapshot is { ProtectionIdle: true, QosActive: false });
         check(fixture.Controller.CaptureReleased && fixture.Created == fixture.Disposed,
-            "closing the game releases observation and the actual fake capture device completely");
+            "closing the game clears observation; disabling general priority releases the fake capture completely");
         check(runtime.Snapshot!.LastSession is { LimitedFor: var limitedFor } && limitedFor == TimeSpan.Zero,
             "a session with active QoS records zero bandwidth-limited time");
         await runtime.StopAsync();

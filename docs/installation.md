@@ -47,11 +47,11 @@ Bis 1.0.4 schaltete nur der Import den Empfänger in die private Gruppe, währen
 
 ## Wirkungsbereich
 
-Der Netzwerkfilter wird nur aktiv, wenn auf diesem oder einem verbundenen DYNEX-PC ein erkanntes Spiel im Vordergrund ist. Ohne Gaming gibt DYNEX auch die Sprachchat-Priorisierung frei. Die App bleibt zur Spiel- und PC-Erkennung geöffnet; Sprachchat allein aktiviert keine Paketverarbeitung. Fokusänderungen werden im regulären Mess- und Peerzyklus übernommen. Für dieses Verhalten alle PCs auf 1.0.3 oder neuer aktualisieren.
+Mit **Paketpriorisierung aktivieren (Spiele, Sprache, Video)** bleibt die Priorisierung auch ohne laufendes Spiel aktiv. Erkannte Spiele und Sprache erhalten Vorrang vor nachgewiesenen Videoverbindungen. Abschalten, Diagnose-Speedtest und Beenden geben die Capture-Sitzung frei. Nach dem Speedtest wird eine weiterhin eingeschaltete Priorisierung wieder aufgenommen.
 
-DYNEX berücksichtigt große Netzwerkflüsse erst nach mindestens 250 ms Laufzeit und 256 KiB übertragenen Daten. Damit werden kurze Interaktionen nicht vorschnell als Downloads gewertet. Große Downloads auf dem eigenen Gaming-PC werden ebenfalls aus seinem Anteil begrenzt. Spiele sowie Discord, Microsoft Teams, Zoom, TeamSpeak und Mumble sind ausgenommen; ebenso reine TCP-ACKs, DNS und privater LAN-Verkehr. Unbekannte Flows sowie veraltete oder nicht sicher zuordenbare Prozess-IDs werden ebenfalls ausgenommen.
+DYNEX leitet alle Pakete unmittelbar weiter und begrenzt keine Downloads oder Uploads. Eine frische Prozesszuordnung und passende Paket-/Mediennachweise bestimmen die DSCP-Markierung. Browser- und ELFIX-Verkehr wird nicht pauschal als Video behandelt; Details und Grenzen stehen unter [QoS](qos.md).
 
-Die adaptive Pingreserve ist immer aktiv und hat keinen sichtbaren Ein-/Aus-Schalter. Eine gültige Leerlauf-Baseline des Gaming-Peers kann das Hintergrundbudget am Download-PC anpassen. Das verspricht keine feste Pingzahl oder bestimmte Verbesserung. Eine Prozesserkennung bestätigt keinen Multiplayerstatus oder aktives Match.
+Der Router muss die Markierungen für Vorrang auswerten. DYNEX konfiguriert weder Router-SQM noch Autorate und garantiert keinen bestimmten Ping. Eine Prozesserkennung bestätigt keinen Multiplayerstatus oder ein aktives Match.
 
 Der Filter ist adapter- und systemweit. Andere VPN-, Sicherheits-, Virtualisierungs- oder Filtersoftware kann mit NDISRD um denselben Adapter konkurrieren. DYNEX darf einen belegten oder nicht eindeutig verfügbaren Filter nicht übernehmen; bei Konflikt bleibt die Begrenzung aus. Die Deinstallation unterscheidet deshalb eigene, gemeinsam genutzte und bereits vorher vorhandene Filter.
 

@@ -244,7 +244,7 @@
             <StackPanel>
               <TextBlock Text="PAKETPRIORISIERUNG" Style="{StaticResource Caption}" />
               <TextBlock x:Name="PriorityOverviewText" Text="Wird geprüft" FontSize="{DynamicResource UiMetricFontSize}" FontWeight="SemiBold" Margin="0,2" />
-              <TextBlock x:Name="PriorityDetailText" Text="DYNEX markiert erkannte Spiel- und Sprachpakete für QoS." Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+              <TextBlock x:Name="PriorityDetailText" Text="DYNEX markiert erkannte Spiel-, Sprach- und Videopakete für QoS." Style="{StaticResource Caption}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
             </StackPanel>
           </Border>
           <Border Style="{StaticResource Card}" Padding="10,7">
@@ -407,7 +407,7 @@
                 <Button x:Name="NextDevicesButton" Content="→" ToolTip="Weitere Geräte" Click="NextDevices_Click" Padding="9,2" Margin="0" />
               </StackPanel>
             </Grid>
-            <TextBlock x:Name="DevicePriorityText" Grid.Row="1" Text="DYNEX markiert erkannte Spiel- und Sprachpakete für QoS." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,4" TextWrapping="Wrap" />
+            <TextBlock x:Name="DevicePriorityText" Grid.Row="1" Text="DYNEX markiert erkannte Spiel-, Sprach- und Videopakete für QoS." Foreground="{StaticResource Accent}" FontSize="{DynamicResource UiSmallFontSize}" Margin="0,3,0,4" TextWrapping="Wrap" />
             <TextBlock x:Name="CoordinationText" Grid.Row="2" Text="Für niedrige Latenz bei voller Leitung Router-QoS oder SQM konfigurieren." Style="{StaticResource Caption}" Margin="0,0,0,6" TextWrapping="Wrap" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
             <DataGrid x:Name="DeviceGrid" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" CanUserResizeColumns="False" CanUserSortColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#111318" Foreground="#E6E6E8" BorderThickness="0" RowBackground="#111318" AlternatingRowBackground="#15171D" BorderBrush="#292B33" RowHeight="29" ColumnHeaderHeight="27" ScrollViewer.VerticalScrollBarVisibility="Disabled" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
               <DataGrid.Resources>
@@ -480,11 +480,11 @@
               <StackPanel Grid.Column="2">
                 <Border Style="{StaticResource Card}" Padding="14,10">
                   <StackPanel>
-                    <TextBlock Text="SPIELE &amp; SPRACHCHAT" Style="{StaticResource SectionTitle}" Margin="0,0,0,5" />
-                    <CheckBox x:Name="DriverCheck" Content="Spiele und Sprachchat priorisieren" Style="{StaticResource WrappedCheck}" />
+                    <TextBlock Text="PAKETPRIORISIERUNG" Style="{StaticResource SectionTitle}" Margin="0,0,0,5" />
+                    <CheckBox x:Name="DriverCheck" Content="Paketpriorisierung aktivieren (Spiele, Sprache, Video)" Style="{StaticResource WrappedCheck}" />
                     <Button x:Name="SetupButton" Content="Netzwerkpriorisierung einrichten" Click="Setup_Click" Style="{StaticResource CompactButton}" HorizontalAlignment="Left" Background="{StaticResource DeepRed}" BorderBrush="{StaticResource DeepRed}" Margin="0,3,0,0" />
                     <TextBlock x:Name="SetupHint" Text="Windows bestätigt das Einschalten." Style="{StaticResource Caption}" Margin="0,4,0,5" TextWrapping="Wrap" />
-                    <TextBlock Text="DYNEX markiert erkannte Spiel- und Sprachpakete. Router-QoS oder SQM bestimmt, wie der Router sie im ganzen Heimnetz behandelt." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
+                    <TextBlock Text="DYNEX markiert erkannte Spiel-, Sprach- und Videopakete. Router-QoS oder SQM bestimmt, wie der Router sie im ganzen Heimnetz behandelt." Style="{StaticResource Caption}" FontSize="11" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
                 <Border Style="{StaticResource Card}" Padding="12,8" Margin="0,8,0,0">

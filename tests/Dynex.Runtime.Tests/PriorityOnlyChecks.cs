@@ -42,6 +42,14 @@ internal static class PriorityOnlyChecks
         using var fixture = await CaptureFixture.CreateAsync();
         await fixture.Controller.ApplyAsync(25, CancellationToken.None, qosEnabled: true, uploadMbps: 5,
             appRules: [new("steam", 12, 3)]);
+        // A command ACK can precede the first completed OS ownership snapshot.
+        // Require the actual fresh status, rather than depending on task order.
+        using (var ready = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
+            while (!fixture.Controller.Status.QosActive)
+            {
+                await Task.Delay(20, ready.Token);
+                await fixture.Controller.ApplyAsync(null, ready.Token, qosEnabled: true);
+            }
         check(fixture.Created == 1 && fixture.Controller.Status is { QosActive: true, Active: false, Mbps: null,
                 UploadMbps: null, ApplicationRulesActive: false },
             "real controller/helper IPC retains priority while discarding legacy download/upload/app arguments");

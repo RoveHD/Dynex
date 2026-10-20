@@ -79,7 +79,7 @@ internal static class Program
                 {
                     active = false,
                     qosActive = false,
-                    gamePriorityPackets = 0L, voicePriorityPackets = 0L,
+                    gamePriorityPackets = 0L, voicePriorityPackets = 0L, videoPriorityPackets = 0L,
                     mbps = (double?)null,
                     error = $"Priorisierungs-Helfer konnte nicht initialisiert oder fortgesetzt werden ({e.GetType().Name}, 0x{e.HResult:X8}).",
                     phase = "helper-error",
@@ -107,7 +107,11 @@ internal static class Program
         long acknowledgedCommandId = 0;
         using var ownership = new TrafficOwnership();
         var accounting = new TrafficAccounting();
-        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting);
+        // Synthetic device sessions used by tests must never claim the user's production pipe.
+        var mediaEvidence = createDevice is null ? new MediaEvidenceReceiver() : null;
+        var mediaWorker = mediaEvidence is null ? Task.CompletedTask : Task.Run(() => mediaEvidence.RunAsync(stop.Token));
+        var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting)
+        { MediaEvidence = mediaEvidence is null ? null : () => mediaEvidence.Snapshot };
         var gameTraffic = new GameTrafficMonitor(() => ownership.Snapshot);
         var ownershipWorker = Task.Run(async () =>
         {
@@ -163,6 +167,7 @@ internal static class Program
                     topPrograms = current?.Active == true ? top.Select(p => new { name = p.Name, downMbps = p.DownMbps, upMbps = p.UpMbps }).ToArray() : [],
                     gamePriorityPackets = current?.GamePriorityPackets ?? 0,
                     voicePriorityPackets = current?.VoicePriorityPackets ?? 0,
+                    videoPriorityPackets = current?.VideoPriorityPackets ?? 0,
                     error = cleanupError ?? (terminating ? Volatile.Read(ref terminationMessage) : null) ?? current?.Failure?.Message ?? error ?? (current?.Active == true && !ownershipReady
                         ? "Programmzuordnung nicht verfügbar; Pakete werden unverändert weitergeleitet. " + ownership.LastError : null),
                     releaseError = cleanupError,
@@ -320,6 +325,7 @@ internal static class Program
             if (current is not null) await ReleaseAsync(current);
             await watchdog;
             await ownershipWorker;
+            await mediaWorker;
             try { await StatusAsync(terminating: true); }
             catch (Exception reportError) when (reportError is IOException or OperationCanceledException or ObjectDisposedException) { }
         }

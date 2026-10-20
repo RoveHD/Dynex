@@ -215,6 +215,7 @@ internal sealed class ShaperController : IAsyncDisposable
                 var expirations = ReadActiveGames(root, observing);
                 var gamePackets = ReadCounter(root, "gamePriorityPackets");
                 var voicePackets = ReadCounter(root, "voicePriorityPackets");
+                var videoPackets = ReadCounter(root, "videoPriorityPackets");
                 double? limitedDownloadMbps = null;
                 if (root.TryGetProperty("limitedDownloadMbps", out var limitedDownload) && limitedDownload.ValueKind != JsonValueKind.Null)
                 {
@@ -235,11 +236,11 @@ internal sealed class ShaperController : IAsyncDisposable
                             programs.Add(new(name, item.GetProperty("downMbps").GetDouble(), item.GetProperty("upMbps").GetDouble()));
                 var next = new ShaperStatus(false, null, error ?? (active || appActive || uploadActive || limit is not null || uploadLimit is not null
                     ? "Der Helfer meldet veraltete Bandbreitenregeln. DYNEX bitte vollständig neu starten."
-                    : qosActive ? "Priorisierung aktiv · Spiel- und Sprachpakete werden markiert."
+                    : qosActive ? "Priorisierung aktiv · Spiele, Sprache und erkannte Videos werden markiert."
                     : observing ? "Spielverkehr wird beobachtet."
                     : "Paketpriorisierung bereit."),
                     qosActive, gamePackets, voicePackets, null, programs, observing,
-                    observing ? expirations.Keys.ToArray() : null, false, limitedDownloadMbps);
+                    observing ? expirations.Keys.ToArray() : null, false, limitedDownloadMbps, VideoPriorityPackets: videoPackets);
                 lock (sync)
                 {
                     if (root.TryGetProperty("releaseError", out var cleanup) && cleanup.ValueKind == JsonValueKind.String)
@@ -409,5 +410,5 @@ internal sealed class ShaperController : IAsyncDisposable
         bool QosActive = false, long GamePriorityPackets = 0, long VoicePriorityPackets = 0, double? UploadMbps = null,
         IReadOnlyList<ProgramTraffic>? TopPrograms = null, bool ObservingGameTraffic = false,
         IReadOnlyList<GameTrafficIdentity>? ActiveGameProcesses = null, bool ApplicationRulesActive = false,
-        double? LimitedDownloadMbps = null);
+        double? LimitedDownloadMbps = null, long VideoPriorityPackets = 0);
 }
