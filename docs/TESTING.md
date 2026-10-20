@@ -2,7 +2,7 @@
 
 ## Reine Priorisierung, 1.0.16 (20.10.2026)
 
-Lokal bestanden: Shaper 331 Checks, Bulk-Kompatibilität 61, alte Programmregeln 53, Runtime 227, gezielte Runtime-Priorisierung 14, Downloadaktivität ohne Limits 23, Spielverkehr/Sitzung 24 und DeviceRuntime 10. Dazu Status-/Sitzungsanzeige 14, Setup 127 und Verbrauchsverlauf. Die Paketprüfungen bestätigen CS4/EF, Headerprüfsumme, ECN/VLAN/IPv6-Flowlabel, unveränderte Transportheader/Nutzdaten und unmittelbare Weiterleitung trotz alter globaler und anwendungsbezogener Caps. Der aktive Paketpfad enthält keine Pacing-Warteschlangen.
+Lokal bestanden: Shaper 331 Checks, Bulk-Kompatibilität 61, alte Programmregeln 53, Runtime 227, gezielte Runtime-Priorisierung 14, Downloadaktivität ohne Limits 23, Spielverkehr/Sitzung 24 und DeviceRuntime 10. Dazu Status-/Sitzungsanzeige und Bericht 37, Setup 127 und Verbrauchsverlauf. Die Paketprüfungen bestätigen CS4/EF, Headerprüfsumme, ECN/VLAN/IPv6-Flowlabel, unveränderte Transportheader/Nutzdaten und unmittelbare Weiterleitung trotz alter globaler und anwendungsbezogener Caps. Der aktive Paketpfad enthält keine Pacing-Warteschlangen.
 
 MobilePolicy 65, MobileRoutes 53 und MobileProxy TCP 123 Checks bestanden. Der vollständige lokale Core-LAN-Test erreicht einen Timeout bei „closed scope rejection“; der vollständige MobileProxy-Test hängt bereits am unabhängigen direkten UDP-Host-Basistest. Diese lokalen Läufe gelten nicht als vollständig bestanden. Die unveränderten vollständigen Tests bleiben in CI und Releaseprüfung verpflichtend; es gibt keinen Test-Skip oder Produktions-Fallback dafür.
 

@@ -57,7 +57,8 @@ internal static class ComfortTests
             new(t.AddDays(-10), TimeSpan.FromHours(5), "Old", 10, 10, 0, TimeSpan.Zero)];
         var report = WeeklyReport.Build(sessions, [ended!], t);
         check(report.Contains("3 h in 2 Sitzungen") && report.Contains("meistgespielt: CS2") && report.Contains("Ø 30 ms") &&
-            report.Contains("33 %") && report.Contains("1 Ausfälle"), "weekly report summarizes the last seven days");
+            !report.Contains("begrenzt", StringComparison.OrdinalIgnoreCase) && report.Contains("1 Ausfälle"),
+            "weekly report summarizes the last seven days without removed limiting statistics");
         check(WeeklyReport.Build([], [], t).Contains("noch keine"), "empty week is stated plainly");
     }
 }

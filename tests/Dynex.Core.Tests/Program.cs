@@ -18,6 +18,7 @@ if (args.Contains("--priority-status-only"))
 {
     StatusNotificationTests.Run(Check);
     SessionTrackerTests.Run(Check);
+    ComfortTests.Run(Check);
     Console.WriteLine($"{checks} priority notification/session checks passed; no network or shaper started.");
     return;
 }
