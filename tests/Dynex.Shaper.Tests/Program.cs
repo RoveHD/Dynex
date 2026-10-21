@@ -436,6 +436,7 @@ Check(NdisPacketDevice.GetIpOffset(ethernet.AsSpan(0, 15)) == -1, "truncated VLA
 ethernet[12] = 8; ethernet[13] = 6;
 Check(NdisPacketDevice.GetIpOffset(ethernet) == -1, "ARP bypasses");
 await QosChecks.Run(Check);
+RealtimeVideoChecks.Run(Check);
 StreamingChecks.Run(Check);
 await MediaEvidenceChecks.Run(Check);
 await GameTrafficChecks.Run(Check);

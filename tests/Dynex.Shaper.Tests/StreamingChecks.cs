@@ -8,10 +8,48 @@ internal static class StreamingChecks
 {
     internal static void Run(Action<bool, string> check)
     {
-        foreach (var host in new[] { "r1---sn.example.googlevideo.com", "ipv4-c001.nflxvideo.net" })
+        string[] mediaHosts =
+        [
+            "r1---sn.example.googlevideo.com", "ipv4-c001.nflxvideo.net",
+            "video-weaver.fra02.hls.ttvnw.net", "video-edge-abc.vie01.abs.hls.ttvnw.net",
+            "vod-ftc-na-west-2.media.dssott.com", "linear-akc-na-east-1.media.dssott.com",
+            "s3-iad-ww.cf.dash.row.aiv-cdn.net", "s3.ll.dash.row.aiv-cdn.net",
+            "s3-iad-ww.cf.videorolls.row.aiv-cdn.net",
+            "vod-adaptive-ak.vimeocdn.com", "skyfire.vimeocdn.com",
+            "rtmp.cloud.vimeo.com", "rtmp-global.cloud.vimeo.com", "vod-ak-aoc.tv.apple.com"
+        ];
+        foreach (var host in mediaHosts)
             check(StreamingVideoPolicy.IsMediaHost(host), "media CDN suffix: " + host);
-        foreach (var host in new[] { "youtube.com", "netflix.com", "evilgooglevideo.com", "googlevideo.com.evil.test", "cdn.example", "github.com" })
+        foreach (var host in new[]
+        {
+            "youtube.com", "netflix.com", "twitch.tv", "gql.twitch.tv", "irc.chat.twitch.tv", "usher.ttvnw.net",
+            "disneyplus.com", "disney.playback.edge.bamgrid.com", "search-api-disney.svcs.dssott.com",
+            "primevideo.com", "js-assets.aiv-cdn.net", "api.eu-west-1.aiv-delivery.net", "aiv-cdn.net",
+            "vimeo.com", "f.vimeocdn.com", "i.vimeocdn.com", "videoapi-sprites.vimeocdn.com",
+            "tv.apple.com", "cloudfront.net", "shared.cloudfront.net", "akamaized.net", "arbitrary.akamaized.net",
+            "evilgooglevideo.com", "googlevideo.com.evil.test", "cdn.example", "github.com"
+        })
             check(!StreamingVideoPolicy.IsMediaHost(host), "general/shared/spoofed host stays unmarked: " + host);
+        foreach (var suffix in new[] { "hls.ttvnw.net", "media.dssott.com", "dash.row.aiv-cdn.net", "vod-adaptive-ak.vimeocdn.com", "vod-ak-aoc.tv.apple.com" })
+        {
+            check(!StreamingVideoPolicy.IsMediaHost("evil" + suffix) && !StreamingVideoPolicy.IsMediaHost(suffix + ".evil.test"),
+                "provider media rules require DNS label boundaries: " + suffix);
+            check(StreamingVideoPolicy.IsMediaHost(suffix.ToUpperInvariant()), "media hostname matching is case independent: " + suffix);
+        }
+        foreach (var host in mediaHosts)
+        foreach (var ipv6 in new[] { false, true })
+        foreach (var transport in new[] { "TLS", "QUIC-v1", "QUIC-v2" })
+        {
+            var mediaFlow = QosChecks.Flow(ipv6) with
+            { Protocol = transport == "TLS" ? TransportProtocol.Tcp : TransportProtocol.Udp, RemotePort = 443 };
+            var mediaOwner = DateTimeOffset.UtcNow.AddHours(-1);
+            var servicePolicy = new RealtimeQosPolicy(() => OwnershipSnapshot.Create([new(mediaFlow, 901, mediaOwner, "browser")]), () => 1);
+            var serviceHello = Hello(host);
+            using var servicePacket = QosChecks.Packet(mediaFlow, PacketDirection.Outbound,
+                transport == "TLS" ? Record(serviceHello) : Initial(serviceHello, transport == "QUIC-v2"));
+            check(servicePolicy.Classify(servicePacket) == PacketPriority.Video && QosPacketMarker.TryMark(servicePacket, PacketPriority.Video),
+                $"IPv{(ipv6 ? 6 : 4)} {transport} actual media hostname establishes AF41: {host}");
+        }
         foreach (var rfc in new[] { "9001", "9369" })
         {
             var vector = Convert.FromHexString(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "TestData", $"rfc{rfc}-client-initial.hex")).Trim());
@@ -61,6 +99,46 @@ internal static class StreamingChecks
         {
             SetSequence(part, 20);
             check(fragmented.Classify(part) == PacketPriority.Video, "bounded contiguous TCP ClientHello reassembly proves video");
+        }
+        foreach (var wrap in new[] { false, true })
+        {
+            var reordered = new RealtimeQosPolicy(() => source, () => time);
+            var startSequence = wrap ? uint.MaxValue - 19 : 100u;
+            using var prefix = QosChecks.Packet(tcp, PacketDirection.Outbound, record[..20]);
+            SetSequence(prefix, startSequence);
+            check(reordered.Classify(prefix) == PacketPriority.None, "reordered TLS waits for complete header");
+            using var tail = QosChecks.Packet(tcp, PacketDirection.Outbound, record[40..]);
+            SetSequence(tail, unchecked(startSequence + 40));
+            check(reordered.Classify(tail) == PacketPriority.None, "out-of-order TLS tail cannot prove missing prefix");
+            using var gap = QosChecks.Packet(tcp, PacketDirection.Outbound, record[20..40]);
+            SetSequence(gap, unchecked(startSequence + 20));
+            check(reordered.Classify(gap) == PacketPriority.Video, "TLS gap completion works without retransmitting tail; sequence wrap=" + wrap);
+        }
+        foreach (var conflicting in new[] { false, true })
+        {
+            var overlapPolicy = new RealtimeQosPolicy(() => source, () => time);
+            using var prefix = QosChecks.Packet(tcp, PacketDirection.Outbound, record[..30]);
+            overlapPolicy.Classify(prefix);
+            var tailBytes = record[20..];
+            if (conflicting) tailBytes[0] ^= 1;
+            using var tail = QosChecks.Packet(tcp, PacketDirection.Outbound, tailBytes);
+            SetSequence(tail, 20);
+            check(overlapPolicy.Classify(tail) == (conflicting ? PacketPriority.None : PacketPriority.Video),
+                "overlapping TLS bytes must agree; conflict=" + conflicting);
+            using var later = QosChecks.Packet(tcp, PacketDirection.Outbound, []);
+            check(overlapPolicy.Classify(later) == (conflicting ? PacketPriority.None : PacketPriority.Video),
+                "conflicting TLS metadata cannot leave a video claim");
+        }
+        {
+            var persistent = new StreamingVideoPolicy();
+            using var first = QosChecks.Packet(tcp, PacketDirection.Outbound, record);
+            var ip = first.Buffer.AsSpan(first.IpOffset, first.Length - first.IpOffset);
+            check(persistent.Observe(tcp, owner, PacketDirection.Outbound, ip, record, 40, 0), "long-running video begins with actual media evidence");
+            var stillVideo = true;
+            for (var seconds = 100; seconds <= 4000; seconds += 100)
+                stillVideo &= persistent.Observe(tcp, owner, PacketDirection.Outbound, ip, [], 40, seconds);
+            check(stillVideo, "continuously active owned video retains evidence beyond 30 minutes");
+            check(!persistent.Observe(tcp, owner, PacketDirection.Outbound, ip, [], 40, 4130), "idle timeout still revokes old video metadata");
         }
         var late = new RealtimeQosPolicy(() => source, () => time);
         source = OwnershipSnapshot.Create([]);

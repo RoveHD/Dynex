@@ -3,9 +3,11 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
-## Neu in 1.0.19
+## Neu in 1.0.20
 
-ELFIX kann verschlüsselte Videoverbindungen automatisch lokal melden, damit auch wechselnde Hoster AF41 erhalten. Dazu müssen DYNEX und ELFIX die neue Integration enthalten; eine manuelle Kopplung ist nicht nötig. Spiele und Sprache behalten Vorrang. Die allgemeine Priorisierung bleibt auch ohne laufendes Spiel aktiv. DYNEX begrenzt weiterhin keine Bandbreite. [Änderungen](docs/release-notes-1.0.19.md), [ELFIX-Integration](docs/elfix-integration.md).
+Die Videoerkennung umfasst bekannte Lieferhosts von YouTube, Netflix, Twitch Live, Disney+, Prime Video, Vimeo und Apple TV sowie beobachtbare Kamera-/Bildschirmübertragungen nativer Discord-/Teams-Clients. Kleine bestätigte Konferenz-Videopakete werden von Sprache getrennt; die Videozuordnung aktiver Streamingverbindungen bleibt auch nach 30 Minuten erhalten. Vertauschte TLS-Handshake-Segmente werden begrenzt zusammengesetzt. [Änderungen](docs/release-notes-1.0.20.md), [Abdeckung und Grenzen](docs/video-detection.md).
+
+Die automatische lokale [ELFIX-Medienmeldung](docs/elfix-integration.md) aus 1.0.19 bleibt erhalten. Spiele und Sprache behalten Vorrang; die allgemeine Priorisierung bleibt auch ohne laufendes Spiel aktiv. DYNEX begrenzt weiterhin keine Bandbreite. Eine vollständige Erkennung beliebig verschlüsselter Anbieterpfade wird nicht behauptet.
 
 ## Reine Priorisierung
 

@@ -1,5 +1,13 @@
 # DYNEX · Prüfstatus
 
+## Erweiterte Videoerkennung, 1.0.20 (21.10.2026)
+
+Die Shaper-Suite bestand **872 Prüfungen**, einschließlich echtem optionalem Node-Pipe-Client (`DYNEX_TEST_NODE_MEDIA=1`). Neu geprüft sind die konkreten Medienhostregeln für die zusätzlichen Streamingdienste über TLS und QUIC v1/v2, IPv4/IPv6, falsche Domain-Endungen und Nicht-Medienhosts, vertauschte/überlappende TCP-Handshake-Segmente sowie aktive Verbindungen über mehr als 30 Minuten mit weiterhin wirksamem Leerlaufablauf.
+
+Die Discord-/Teams-Prüfungen verwenden synthetische RTP-/Kontrollpakete und isolierte Prozesszuordnungen: getrennte Sprach-/Video-SSRCs und Payload-Types, Frame-Probation, Sequenz-/Zeitstempelüberlauf, Duplikate/Reordering, Prozesswechsel, fremde Programme, dokumentierte Teams-Quellportgrenzen, Cachegrenzen/Ablauf und 2.500 zufällige oder beschädigte Header. AF41, ECN und unveränderte verschlüsselte Transportbytes wurden am Klassifizierer-/Markierungspfad geprüft.
+
+Der Desktop-Release-Build bestand ohne Warnungen/Fehler, ebenso der Anti-Cheat-API-Guard. Die vollständige Runtime-Suite bestand **226 Prüfungen, 0 fehlgeschlagene Szenarien**, einschließlich Videoklassifizierung über den tatsächlichen Helfer-/Desktop-Statuspfad ohne Spiel und ohne Bandbreitenlimit. Protokolle: `artifacts/realtime-video-shaper-tests.log`, `artifacts/video-recognition-desktop-runtime.log`. Die tatsächlichen Lieferhostquellen und die verbleibenden Erkennungslücken sind unter [Videoerkennung](video-detection.md) dokumentiert. Keine echte Discord-/Teams-Konferenz, vollständige Abnahme sämtlicher Anbieter-CDNs, Kernel-/Routerlastprüfung oder Installation auf Nutzergeräten. CI-Abnahme und veröffentlichte Artefakte werden zusätzlich an den konkreten Release-Commit gebunden.
+
 ## ELFIX-Medienmeldung, 1.0.19 (21.10.2026)
 
 Die Shaper-Suite bestand 567 Prüfungen einschließlich 119 neuer Medienprüfungen und echtem optionalem Node-Pipe-Client (`DYNEX_TEST_NODE_MEDIA=1`). Die Prüfungen binden Medienhinweise an Benutzer, ELFIX-Programmdatei, tatsächliche Prozessstartzeit und den genauen Server-Endpunkt; ungültige Nachrichten, Überflutung, Ablauf, fremde Prozesse und Verbindungsabbruch geben keine Freigabe. Der Anti-Cheat-API-Guard bestand.

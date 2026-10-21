@@ -18,6 +18,7 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
     private readonly Dictionary<StreamKey, RtpState> _rtp = new();
     private readonly Dictionary<OwnerKey, VoiceBudget> _voice = new();
     private readonly StreamingVideoPolicy _video = new();
+    private readonly RealtimeVideoPolicy _realtimeVideo = new();
     internal Func<MediaEvidenceSnapshot>? MediaEvidence { get; init; }
     private double _lastCleanup;
 
@@ -51,6 +52,9 @@ public sealed class RealtimeQosPolicy(Func<OwnershipSnapshot> snapshot, Func<dou
         var now = _clock();
         var fallback = _video.Observe(flow, owner, packet.Direction, ip, ip.Slice(payloadOffset, payloadLength), payloadOffset, now)
             || MediaEvidence?.Invoke().Matches(owner, flow, now) == true ? PacketPriority.Video : PacketPriority.None;
+        var realtime = _realtimeVideo.Classify(flow, owner, packet.Direction, ip.Slice(payloadOffset, payloadLength), now, out var excludeVoice);
+        if (realtime == PacketPriority.Video) return PacketPriority.Video;
+        if (excludeVoice) return fallback;
         if (flow.Protocol != TransportProtocol.Udp || payloadLength is < 1 or > 600) return fallback;
         if (now - _lastCleanup > 5)
         {

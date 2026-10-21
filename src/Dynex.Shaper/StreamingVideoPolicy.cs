@@ -13,6 +13,17 @@ internal sealed class StreamingVideoPolicy
 {
     private const int MaximumFlows = 512;
     private const int MaximumHello = 32768;
+    // Only delivery hosts, never provider homepages, scripts, APIs or shared
+    // CDN suffixes. Keep the observed host rules and sources in docs/qos.md.
+    private static readonly string[] MediaHostSuffixes =
+    [
+        "googlevideo.com", "nflxvideo.net", "hls.ttvnw.net",
+        "media.dssott.com",
+        "dash.row.aiv-cdn.net", "videorolls.row.aiv-cdn.net",
+        "vod-adaptive-ak.vimeocdn.com", "skyfire.vimeocdn.com",
+        "rtmp.cloud.vimeo.com", "rtmp-global.cloud.vimeo.com",
+        "vod-ak-aoc.tv.apple.com"
+    ];
     private readonly Dictionary<Identity, StreamState> _streams = new();
     private double _lastCleanup;
 
@@ -22,7 +33,7 @@ internal sealed class StreamingVideoPolicy
         var owned = owner?.ProcessStartedAtUtc is not null;
         if (now - _lastCleanup > 5)
         {
-            foreach (var expired in _streams.Where(p => now - p.Value.LastAt > (p.Key.Pid == 0 ? 2 : 120) || now - p.Value.CreatedAt > 1800)
+            foreach (var expired in _streams.Where(p => now - p.Value.LastAt > (p.Key.Pid == 0 ? 2 : 120))
                          .Select(p => p.Key).ToArray()) _streams.Remove(expired);
             _lastCleanup = now;
         }
@@ -121,19 +132,19 @@ internal sealed class StreamingVideoPolicy
     private StreamState? Add(Identity key, double now)
     {
         if (_streams.Count >= MaximumFlows) return null;
-        var state = new StreamState { CreatedAt = now, LastAt = now };
+        var state = new StreamState { LastAt = now };
         _streams.Add(key, state);
         return state;
     }
 
     internal static bool IsMediaHost(string? host)
     {
-        if (host is null) return false;
-        // Media-specific CDN suffixes only. General youtube.com/netflix.com,
-        // shared cloud/CDN addresses and ELFIX's app name are not evidence.
-        return new[] { "googlevideo.com", "nflxvideo.net" }.Any(suffix =>
-            host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase));
+        if (host is null || host.Length is 0 or > 253) return false;
+        foreach (var suffix in MediaHostSuffixes)
+            if (host.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
+                host.Length > suffix.Length && host[host.Length - suffix.Length - 1] == '.' &&
+                host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     internal static bool IsHttpMedia(ReadOnlySpan<byte> payload)
@@ -184,9 +195,10 @@ internal sealed class StreamingVideoPolicy
     private readonly record struct Identity(SocketFlow Flow, int Pid, long Started);
     private sealed class StreamState
     {
-        internal double CreatedAt, LastAt;
+        internal double LastAt;
         internal bool Video, Rejected, Http;
         internal byte[] TcpBytes = [], CryptoBytes = [];
+        private bool[] _tcpPresent = [];
         private bool[] _cryptoPresent = [];
         internal byte[]? QuicId;
         internal int TcpLength, CryptoLength, QuicAttempts;
@@ -196,15 +208,20 @@ internal sealed class StreamingVideoPolicy
         {
             _tcpStart ??= sequence;
             var offset = unchecked((int)(sequence - _tcpStart.Value));
-            // Retransmitted/overlapping bytes must agree. Missing/out-of-order
-            // segments are conservatively left unclassified until retransmit.
-            if (offset < 0 || offset > TcpLength || payload.Length > MaximumHello - offset) return false;
-            if (TcpBytes.Length == 0) TcpBytes = new byte[MaximumHello];
-            var overlap = Math.Min(payload.Length, TcpLength - offset);
-            if (!payload[..overlap].SequenceEqual(TcpBytes.AsSpan(offset, overlap)))
-            { Rejected = true; ReleaseBuffers(); return false; }
-            payload.CopyTo(TcpBytes.AsSpan(offset));
-            TcpLength = Math.Max(TcpLength, offset + payload.Length);
+            // The OS may receive TCP segments out of order without requesting
+            // a retransmit. Retain bounded gaps, parse only the contiguous prefix,
+            // and reject conflicting retransmissions rather than guessing bytes.
+            if (offset < 0 || offset > MaximumHello || payload.Length > MaximumHello - offset) return false;
+            if (TcpBytes.Length == 0)
+            { TcpBytes = new byte[MaximumHello]; _tcpPresent = new bool[MaximumHello]; }
+            for (var i = 0; i < payload.Length; i++)
+            {
+                if (_tcpPresent[offset + i] && TcpBytes[offset + i] != payload[i])
+                { Rejected = true; ReleaseBuffers(); return false; }
+                TcpBytes[offset + i] = payload[i];
+                _tcpPresent[offset + i] = true;
+            }
+            while (TcpLength < MaximumHello && _tcpPresent[TcpLength]) TcpLength++;
             return true;
         }
 
@@ -226,7 +243,7 @@ internal sealed class StreamingVideoPolicy
 
         internal void ReleaseBuffers()
         {
-            TcpBytes = []; CryptoBytes = []; _cryptoPresent = [];
+            TcpBytes = []; _tcpPresent = []; CryptoBytes = []; _cryptoPresent = [];
             TcpLength = CryptoLength = 0; _tcpStart = null;
         }
     }
