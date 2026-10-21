@@ -54,7 +54,7 @@ internal static class RealtimeVideoChecks
         }
         flow = QosChecks.Flow(false);
         name = "Discord";
-        foreach (var invalid in new[] { "audio", "single-packet-frames", "no-marker", "constant-timestamp", "constant-sequence", "changing-ssrc", "burst", "malformed-extension", "truncated-csrc", "fixed-video-pt", "rtcp" })
+        foreach (var invalid in new[] { "audio", "wrong-clock-single-packet", "no-marker", "constant-timestamp", "constant-sequence", "changing-ssrc", "burst", "malformed-extension", "truncated-csrc", "fixed-video-pt", "rtcp" })
         {
             var policy = Policy();
             var safe = true;
@@ -63,9 +63,9 @@ internal static class RealtimeVideoChecks
                 if (invalid != "burst") now += .02;
                 var data = Rtp(invalid == "audio" ? (byte)120 : invalid == "fixed-video-pt" ? (byte)34 : (byte)101,
                     invalid == "constant-sequence" ? (ushort)1 : (ushort)i,
-                    invalid == "constant-timestamp" ? 90000 : 90000 + (uint)(invalid == "single-packet-frames" ? i : i / 2) * 3000,
+                    invalid == "constant-timestamp" ? 90000 : 90000 + (uint)(invalid == "wrong-clock-single-packet" ? i : i / 2) * 3000,
                     invalid == "changing-ssrc" ? (uint)i : 77,
-                    invalid != "no-marker" && (invalid == "single-packet-frames" || i % 2 == 1), 172);
+                    invalid != "no-marker" && (invalid == "wrong-clock-single-packet" || i % 2 == 1), 172);
                 if (invalid == "malformed-extension") { data[0] |= 16; data[14] = 255; data[15] = 255; }
                 if (invalid == "truncated-csrc") { data = data[..13]; data[0] |= 15; }
                 if (invalid == "rtcp") data[1] = 200;
@@ -73,6 +73,70 @@ internal static class RealtimeVideoChecks
                 safe &= invalid == "audio" ? priority == PacketPriority.Voice : priority == PacketPriority.None;
             }
             check(safe, "Discord video rejects " + invalid);
+        }
+        foreach (var fps in new[] { 15, 30, 60, 144 })
+        foreach (var direction in new[] { PacketDirection.Inbound, PacketDirection.Outbound })
+        {
+            var policy = Policy();
+            var seenVideo = false;
+            for (var frame = 0; frame < 40; frame++)
+            {
+                now += 1d / fps;
+                var data = Rtp(101, (ushort)frame, 90000 + (uint)(frame * 90000 / fps), 77, true, 120);
+                seenVideo |= Send(policy, data, direction) == PacketPriority.Video;
+            }
+            check(seenVideo, $"Discord {direction} {fps}fps small single-packet video frames establish the 90-kHz clock");
+        }
+        foreach (var clockRate in new[] { 8000, 16000, 48000, 150000 })
+        {
+            var policy = Policy();
+            var safe = true;
+            for (var frame = 0; frame < 40; frame++)
+            {
+                now += .02;
+                safe &= Send(policy, Rtp(111, (ushort)frame, 90000 + (uint)frame * (uint)clockRate / 50,
+                    77, true, 120)) == PacketPriority.None;
+            }
+            check(safe, "an unknown " + clockRate + "-Hz audio/invalid clock is not inferred as video from single-packet markers");
+        }
+        {
+            var policy = Policy();
+            var seenVideo = false;
+            for (var frame = 0; frame < 12; frame++)
+            for (var fragment = 0; fragment < 2; fragment++)
+            {
+                now += 1d / 60;
+                seenVideo |= Send(policy, Rtp(101, (ushort)(frame * 2 + fragment), 90000 + (uint)frame * 3000,
+                    77, fragment == 1 && frame % 2 == 0, 1200)) == PacketPriority.Video;
+            }
+            check(seenVideo, "lost Discord frame markers do not repeatedly discard all remaining video evidence");
+        }
+        {
+            var policy = Policy();
+            var seenVideo = false;
+            ushort sequence = 0;
+            for (var frame = 0; frame < 4; frame++)
+            for (var fragment = 0; fragment < 300; fragment++)
+            {
+                now += .001;
+                if (fragment == 100) sequence += 150;
+                seenVideo |= Send(policy, Rtp(101, sequence++, 90000 + (uint)frame * 27000,
+                    77, fragment == 299, 1200)) == PacketPriority.Video;
+            }
+            check(seenVideo, "large Discord keyframes and sequence gaps above 64 survive RTP dropout validation");
+        }
+        {
+            var policy = Policy();
+            var seenVideo = false;
+            for (var frame = 0; frame < 40; frame++)
+            {
+                now += 1d / 14;
+                var data = EncryptedExtension(Rtp(101, (ushort)frame, 90000 + (uint)(frame * 90000 / 14), 77, true, 120));
+                seenVideo |= Send(policy, data) == PacketPriority.Video;
+            }
+            check(seenVideo, "Discord RTP-size encrypted extension bytes are skipped without interpreting cipher data");
+            check(Send(policy, EncryptedExtension(Rtp(120, 40, 960, 88, false, 172))) == PacketPriority.Voice,
+                "Discord encrypted extensions do not turn Opus into video");
         }
         foreach (var unknownApp in new[] { "chrome", "msedge", "msedgewebview2", "notDiscord", "DiscordUpdater" })
         {
@@ -89,9 +153,9 @@ internal static class RealtimeVideoChecks
         {
             var policy = Policy();
             check(VideoFrames(policy), "Discord baseline before duplicate/reordering checks");
-            check(Send(policy, Rtp(101, 305, 96000, 77, true, 80)) == PacketPriority.None &&
-                Send(policy, Rtp(101, 303, 93000, 77, true, 80)) == PacketPriority.None,
-                "Discord duplicates/reordered video never fall back to EF voice");
+            check(Send(policy, Rtp(101, 305, 96000, 77, true, 80)) == PacketPriority.Video &&
+                Send(policy, Rtp(101, 303, 93000, 77, true, 80)) == PacketPriority.Video,
+                "confirmed Discord duplicates/reordered video retain AF41 instead of falling back to EF voice");
             using var packet = QosChecks.Packet(flow, PacketDirection.Outbound, Rtp(101, 306, 99000, 77, false, 1200));
             packet.Buffer[packet.IpOffset + 1] = 3;
             var transportBefore = packet.Buffer.AsSpan(packet.IpOffset + 20, packet.Length - packet.IpOffset - 20).ToArray();
@@ -100,6 +164,9 @@ internal static class RealtimeVideoChecks
                 packet.Buffer[packet.IpOffset + 1] >> 2 == 34 && (packet.Buffer[packet.IpOffset + 1] & 3) == 3 &&
                 packet.Buffer.AsSpan(packet.IpOffset + 20, packet.Length - packet.IpOffset - 20).SequenceEqual(transportBefore),
                 "confirmed Discord classification marks AF41 while preserving ECN and encrypted transport bytes");
+            now += 4;
+            check(Send(policy, Rtp(101, 305, 96000, 77, true, 80)) == PacketPriority.None,
+                "duplicates cannot keep a Discord video claim alive after expiry");
         }
         {
             var policy = Policy();
@@ -191,5 +258,16 @@ internal static class RealtimeVideoChecks
     private static byte[] Dtls()
     {
         var result = new byte[40]; result[0] = 22; result[1] = 254; result[2] = 253; return result;
+    }
+    private static byte[] EncryptedExtension(byte[] packet)
+    {
+        var result = new byte[packet.Length + 12];
+        packet.AsSpan(0, 12).CopyTo(result); result[0] |= 16;
+        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(12), 0xbede);
+        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(14), 2);
+        // These are deliberately not a valid plaintext extension-element map.
+        result.AsSpan(16, 8).Fill(255);
+        packet.AsSpan(12).CopyTo(result.AsSpan(24));
+        return result;
     }
 }

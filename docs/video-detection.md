@@ -31,7 +31,9 @@ Bei eindeutig zugeordneten nativen Discord-, DiscordCanary- und DiscordPTB-Proze
 
 Sprach-Opus mit dem von Discord dokumentierten Payload-Type 120 bleibt Sprache. Mehrere SSRCs und Payload-Types derselben Verbindung haben getrennte Zustände: Die Kamera macht dadurch nicht das parallel übertragene Mikrofon zum Video. Kleine Pakete einer bestätigten Videofolge erhalten AF41 und werden nicht pauschal als Sprache behandelt. Ungültige Header, STUN, DTLS und RTCP begründen keinen Videotreffer.
 
-Die konservative Frame-Prüfung braucht drei abgeschlossene Frames, darunter zwei über mehrere Pakete verteilte Frames. Sehr kleine Ein-Paket-Frames und separate RTX-Wiederholungsströme können deshalb unklassifiziert bleiben. Eine unbekannte verschlüsselte TCP-Weiterleitung oder Discord im Browser liefert diese native Appzuordnung nicht. Der Cache ist auf 1.024 RTP-Ströme begrenzt; die Evidenz verfällt nach drei Sekunden Leerlauf.
+Die Frame-Prüfung verwendet entweder drei abgeschlossene Frames, darunter zwei über mehrere Pakete verteilte Frames, oder mindestens vier abgeschlossene Frames mit einem zum 90-kHz-Videotakt passenden Verlauf über wenigstens 120 Millisekunden. Der zweite Nachweis erfasst auch kleine Kamera-/Bildschirmframes mit nur einem RTP-Paket; ein Payload-Type allein reicht weiterhin nicht. Verlorene Marker, große Keyframes und übliche RTP-Paketlücken setzen nicht jedes Mal den gesamten Nachweis zurück. Verspätete oder doppelte Pakete einer bestätigten Quelle behalten die Videoklasse, verlängern deren Ablauf aber nicht.
+
+Separate RTX-Wiederholungsströme ohne eigene ausreichende Evidenz können unklassifiziert bleiben. Eine unbekannte verschlüsselte TCP-Weiterleitung oder Discord im Browser liefert diese native Appzuordnung nicht. Der Cache ist auf 1.024 RTP-Ströme begrenzt; die Evidenz verfällt nach drei Sekunden Leerlauf. Die Unterstützung kleiner Ein-Paket-Frames und der tolerantere Umgang mit Paketverlust sind ab 1.0.21 enthalten.
 
 ## Teams: Kamera und Bildschirmfreigabe
 
@@ -47,5 +49,6 @@ Die lokalen Ports sind entscheidend, nicht ein zufällig gleich nummerierter Ser
 - [Vimeo: Netzwerkkonfiguration](https://help.vimeo.com/hc/en-us/articles/12426939452817-Recommended-network-configuration-for-live-events): RTMPS-Sendehosts und Abgrenzung von Website-Inhalten.
 - [Microsoft Teams: QoS](https://learn.microsoft.com/en-us/microsoftteams/qos-in-teams), [Windows-Clientregeln](https://learn.microsoft.com/en-us/microsoftteams/qos-in-teams-clients): Appidentität, lokale Standardportbereiche und Browsergrenzen.
 - [Discord: Voice-Verbindungen](https://docs.discord.com/developers/topics/voice-connections): RTP/SRTP und Opus-Payload-Type. Die konservative Video-Frame-Heuristik ist eine DYNEX-Regel, keine von Discord zugesicherte Codec-Zuordnung.
+- [RFC 7741](https://www.rfc-editor.org/rfc/rfc7741.html): Video-Frames dürfen in einem einzelnen RTP-Paket liegen; 90-kHz-Zeitstempel und Frame-Endmarker. [RFC 3550, Anhang A.1](https://www.rfc-editor.org/rfc/rfc3550.html#appendix-A.1): getrennte Behandlung von normalen Paketlücken, Vertauschungen und einem Quellenneustart.
 
 Die automatisierten Tests verwenden synthetische TLS-/QUIC-/RTP-Pakete, Protokoll-Testvektoren und isolierte Prozesszuordnungen. Sie prüfen Positivfälle, unabhängige Sprach-/Videoströme, fremde Apps, falsche Domains, TCP-Reihenfolge, Prozesswechsel, Ablauf und unveränderte Paketnutzdaten. Sie ersetzen keinen realen Videoanruf, alle Anbieterkonten oder einen Belastungstest mit dem Router.

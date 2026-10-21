@@ -5,8 +5,8 @@ namespace Dynex.Shaper;
 /// <summary>
 /// Native-client media evidence, never a whole-application exemption. Teams
 /// publishes separate local media port ranges. Discord does not publish fixed
-/// video payload types, so only coherent, multi-packet video frame sequences
-/// establish a claim; a dynamic RTP payload number alone is not evidence.
+/// video payload types, so only coherent video frame sequences establish a
+/// claim; a dynamic RTP payload number alone is not evidence.
 /// </summary>
 internal sealed class RealtimeVideoPolicy
 {
@@ -95,26 +95,36 @@ internal sealed class RealtimeVideoPolicy
 
     private sealed class FrameState
     {
+        // RFC3550 appendix A.1: tolerate ordinary dropout and reordering rather
+        // than repeatedly withdrawing an already established media identity.
+        private const int MaximumDropout = 3000;
+        private const int MaximumMisorder = 100;
+        private const int MaximumTimestampStep = 270000; // 3 s at 90 kHz
         internal double LastAt;
-        private double _firstAt;
+        private double _firstAt, _clockStartedAt;
         private ushort _sequence;
-        private uint _timestamp;
-        private int _packetsInFrame, _frames, _segmentedFrames;
-        private bool _ended, _confirmed;
+        private uint _timestamp, _clockTimestamp;
+        private int _packetsInFrame, _frames, _segmentedFrames, _clockFrames;
+        private bool _ended, _confirmed, _hasClock;
 
         internal bool Observe(RtpHeader header, double now)
         {
             var delta = (ushort)(header.Sequence - _sequence);
-            var timestampDelta = unchecked(header.Timestamp - _timestamp);
+            var timestampDelta = unchecked((int)(header.Timestamp - _timestamp));
             if (_packetsInFrame == 0 || now < LastAt || now - LastAt > 3)
                 Start(header, now);
-            else if (delta == 0 || delta > 32768)
-                return false; // duplicate/reordered packets establish no evidence
-            else if (delta > 64 || timestampDelta > 180000 ||
-                     timestampDelta == 0 && _ended || timestampDelta != 0 && (!_ended || timestampDelta < 450))
+            else if (delta == 0 || delta >= 65536 - MaximumMisorder)
+                // A duplicate/late packet may use an existing claim, but must
+                // neither establish one nor extend its expiry. Never make it EF.
+                return _confirmed && timestampDelta is >= -MaximumTimestampStep and <= 0;
+            else if (delta >= MaximumDropout || timestampDelta > MaximumTimestampStep)
                 Start(header, now);
+            else if (timestampDelta < 0 || timestampDelta == 0 && _ended)
+                return _confirmed && timestampDelta >= -MaximumTimestampStep;
             else
             {
+                // A lost marker is not a source restart. A newer timestamp
+                // starts a new frame; only observed final markers count below.
                 if (timestampDelta != 0) { _packetsInFrame = 0; _ended = false; }
                 _packetsInFrame = Math.Min(2, _packetsInFrame + 1);
                 _sequence = header.Sequence; _timestamp = header.Timestamp; LastAt = now;
@@ -124,6 +134,7 @@ internal sealed class RealtimeVideoPolicy
                     _frames = Math.Min(3, _frames + 1);
                     if (_packetsInFrame >= 2) _segmentedFrames = Math.Min(2, _segmentedFrames + 1);
                     _confirmed |= _frames >= 3 && _segmentedFrames >= 2 && now - _firstAt >= .03;
+                    ObserveClock(header.Timestamp, now);
                 }
             }
             return _confirmed;
@@ -133,7 +144,27 @@ internal sealed class RealtimeVideoPolicy
         {
             _sequence = header.Sequence; _timestamp = header.Timestamp; LastAt = _firstAt = now;
             _packetsInFrame = 1; _ended = header.Marker; _frames = header.Marker ? 1 : 0;
-            _segmentedFrames = 0; _confirmed = false;
+            _segmentedFrames = 0; _confirmed = _hasClock = false; _clockFrames = 0;
+            if (header.Marker) ObserveClock(header.Timestamp, now);
+        }
+
+        private void ObserveClock(uint timestamp, double now)
+        {
+            if (!_hasClock || now - _clockStartedAt > 10)
+            {
+                _hasClock = true; _clockStartedAt = now; _clockTimestamp = timestamp; _clockFrames = 1;
+                return;
+            }
+            _clockFrames = Math.Min(4, _clockFrames + 1);
+            var elapsed = now - _clockStartedAt;
+            var ticks = unchecked(timestamp - _clockTimestamp);
+            // VP8/H264/AV1 use a 90-kHz video clock. This also admits a small
+            // camera frame consisting of a SINGLE RTP packet (RFC7741 4.6.1),
+            // while unknown 48-kHz audio or an arbitrary PT remains unproven.
+            // Require several completed frames and a useful measurement span;
+            // tolerate delivery jitter, but not a zero-time buffered burst.
+            _confirmed |= _clockFrames >= 4 && elapsed >= .12 &&
+                ticks >= elapsed * 72000 && ticks <= elapsed * 112500;
         }
     }
 }

@@ -1,5 +1,13 @@
 # DYNEX · Prüfstatus
 
+## Discord-Korrektur, 1.0.21 (21.10.2026)
+
+Die neue Regression für kleine Videoframes mit nur einem RTP-Paket scheitert nachweisbar an der unveränderten 1.0.20-Regel (`artifacts/discord-repro-before-fix.log`). Nach der Korrektur bestehen **889 Shaper-Prüfungen**, einschließlich echtem optionalem Node-Pipe-Client. Die zusätzlichen Fälle prüfen kleine Frames in beiden Richtungen bei 15/30/60/144 fps, 14-fps-Frames mit verschlüsselten Header-Erweiterungsdaten, abweichende Audio-Zeitbasen, verlorene Marker, große Keyframes und Sequenzlücken. Nach Ablauf erhalten auch Duplikate keine alte Videofreigabe. Protokoll: `artifacts/discord-frame-fix-shaper-tests.log`.
+
+Zusätzlich wurde der laufende native Discord-PTB-Prozess über eine frische echte Windows-UDP-Sockettabelle zugeordnet. Künstliche kleine RTP-Videopakete ergaben je **12 Videotreffer pro Richtung** mit dieser tatsächlichen Prozessidentität; ausgehende Markierung, ECN und Transportbytes wurden geprüft. Dieser Test sendet keine Netzwerkpakete und öffnet keinen Kernel-Filter. Er ist kein Mitschnitt eines realen Videoanrufs. Protokoll: `artifacts/discord-owned-probe/result.log`. Der Anti-Cheat-API-Guard bestand.
+
+Der Desktop-Build bestand ohne Warnungen/Fehler. Die gezielte Runtime-Prüfung `--general-priority-only` bestand **10 Checks, 0 fehlgeschlagene Szenarien**, einschließlich Helfer-/Desktop-Videopaketzähler sowie Abschaltung und Wiederaufnahme. Protokoll: `artifacts/discord-fix-desktop-runtime.log`. CI-Abnahme und veröffentlichte Artefakte werden zusätzlich an den konkreten Release-Commit gebunden. Eine Veröffentlichung bestätigt keine Installation auf Nutzergeräten oder einen echten Videoanruf.
+
 ## Erweiterte Videoerkennung, 1.0.20 (21.10.2026)
 
 Die Shaper-Suite bestand **872 Prüfungen**, einschließlich echtem optionalem Node-Pipe-Client (`DYNEX_TEST_NODE_MEDIA=1`). Neu geprüft sind die konkreten Medienhostregeln für die zusätzlichen Streamingdienste über TLS und QUIC v1/v2, IPv4/IPv6, falsche Domain-Endungen und Nicht-Medienhosts, vertauschte/überlappende TCP-Handshake-Segmente sowie aktive Verbindungen über mehr als 30 Minuten mit weiterhin wirksamem Leerlaufablauf.

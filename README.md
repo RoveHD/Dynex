@@ -3,6 +3,10 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
+## Neu in 1.0.21
+
+Kleine Discord-Kamera-/Bildschirmframes können jetzt auch mit einem einzelnen RTP-Paket über ihren 90-kHz-Zeitverlauf erkannt werden. Paketverluste, große Keyframes und vertauschte Pakete setzen eine bestätigte Videozuordnung nicht mehr ständig zurück. Sprache bleibt getrennt. [Änderungen](docs/release-notes-1.0.21.md), [Erkennung und Grenzen](docs/video-detection.md).
+
 ## Neu in 1.0.20
 
 Die Videoerkennung umfasst bekannte Lieferhosts von YouTube, Netflix, Twitch Live, Disney+, Prime Video, Vimeo und Apple TV sowie beobachtbare Kamera-/Bildschirmübertragungen nativer Discord-/Teams-Clients. Kleine bestätigte Konferenz-Videopakete werden von Sprache getrennt; die Videozuordnung aktiver Streamingverbindungen bleibt auch nach 30 Minuten erhalten. Vertauschte TLS-Handshake-Segmente werden begrenzt zusammengesetzt. [Änderungen](docs/release-notes-1.0.20.md), [Abdeckung und Grenzen](docs/video-detection.md).
