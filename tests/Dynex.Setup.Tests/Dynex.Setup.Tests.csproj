@@ -10,6 +10,9 @@
     <Compile Include="../../src/Dynex.Desktop/InstallerPrerequisites.cs" Link="InstallerPrerequisites.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerFirewall.cs" Link="InstallerFirewall.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerSystem.cs" Link="InstallerSystem.cs" />
+    <Compile Include="../../src/Dynex.Desktop/PrioritizationServiceSetup.cs" Link="PrioritizationServiceSetup.cs" />
+    <Compile Include="../../src/Dynex.Desktop/PrioritizationPayload.cs" Link="PrioritizationPayload.cs" />
+    <Compile Include="../../src/Dynex.Desktop/Native/PrioritizationServiceClient.cs" Link="PrioritizationServiceClient.cs" />
     <Compile Include="../../src/Dynex.Desktop/InstallerUserCleanup.cs" Link="InstallerUserCleanup.cs" />
     <Compile Include="../../src/Dynex.Desktop/StartupObjects.cs" Link="StartupObjects.cs" />
   </ItemGroup>

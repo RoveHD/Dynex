@@ -74,11 +74,19 @@ jobs:
           $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
           $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
           ./tests/installer-update-smoke.ps1 -PayloadRoot "artifacts/publish-$version" -ExpectedVersion $version -NsisPath "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+      - name: Privileged service lifecycle smoke
+        shell: pwsh
+        run: |
+          $project = [xml](Get-Content src/Dynex.Desktop/Dynex.Desktop.csproj)
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          ./tests/service-lifecycle-smoke.ps1 -PublishDirectory "artifacts/publish-$version"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: dynex-unsigned-${{ github.sha }}
           path: |
             artifacts/DYNEX-Setup-*.exe
             artifacts/DYNEX-Cleanup-*.exe
             artifacts/*.sha256
+            artifacts/service-lifecycle-smoke/**
           retention-days: 14

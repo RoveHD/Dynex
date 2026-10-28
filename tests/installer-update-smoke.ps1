@@ -86,10 +86,13 @@ Section
   FileClose $0
   File /oname=DYNEX.exe "@DESKTOP@"
   SetOutPath "$INSTDIR\shaper"
-  File /oname=Dynex.Shaper.exe "@SHAPEREXE@"
-  File /oname=Dynex.Shaper.dll "@SHAPERDLL@"
+  File /r "@SHAPERROOT@\*"
   ${If} $TestMode == "missing-payload"
     Delete "$INSTDIR\shaper\Dynex.Shaper.dll"
+  ${ElseIf} $TestMode == "modified-payload"
+    FileOpen $0 "$INSTDIR\shaper\Dynex.Shaper.runtimeconfig.json" w
+    FileWrite $0 '{}'
+    FileClose $0
   ${ElseIf} $TestMode == "missing-app"
     Delete "$INSTDIR\DYNEX.exe"
   ${EndIf}
@@ -105,8 +108,7 @@ SectionEnd
 $template = $template.Replace('@HARNESS@', (Nsis-Path $harness)).Replace('@DESTINATION@', (Nsis-Path $destination)).
     Replace('@VERSION@', $ExpectedVersion).Replace('@ACQUIRE@', $acquire).Replace('@RELEASE@', $release).Replace('@SELFTEST@', $selfTest).
     Replace('@DESKTOP@', (Nsis-Path (Join-Path $PayloadRoot 'DYNEX.exe'))).
-    Replace('@SHAPEREXE@', (Nsis-Path (Join-Path $PayloadRoot 'shaper/Dynex.Shaper.exe'))).
-    Replace('@SHAPERDLL@', (Nsis-Path (Join-Path $PayloadRoot 'shaper/Dynex.Shaper.dll')))
+    Replace('@SHAPERROOT@', (Nsis-Path (Join-Path $PayloadRoot 'shaper')))
 $harnessSource = Join-Path $OutputDirectory 'installer-smoke.nsi'
 Set-Content -LiteralPath $harnessSource -Value $template -Encoding utf8
 
@@ -155,6 +157,7 @@ try {
     foreach ($scenario in @(
         @{ Name='healthy'; Arguments=@('/S'); Exit=0; Launch='0'; Child='0' },
         @{ Name='missing-payload'; Arguments=@('/S','/TESTMODE=missing-payload'); Exit=15; Launch='0'; Child='22' },
+        @{ Name='modified-payload'; Arguments=@('/S','/TESTMODE=modified-payload'); Exit=15; Launch='0'; Child='22' },
         @{ Name='missing-app'; Arguments=@('/S','/TESTMODE=missing-app'); Exit=15; Launch='1'; Child='unavailable' },
         @{ Name='healthy-after-failures'; Arguments=@('/S'); Exit=0; Launch='0'; Child='0' }
     )) {

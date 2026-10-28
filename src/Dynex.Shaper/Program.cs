@@ -22,6 +22,7 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (args is ["--service"]) return PrioritizationService.Run();
         Dynex.Native.ProcessEfficiency.UseLatencyCriticalMode();
         try { return await RunAsync(args); }
         catch (Exception e) { Console.Error.WriteLine(e.Message); return 1; }
@@ -29,7 +30,8 @@ internal static class Program
 
     private static async Task<int> RunAsync(string[] args)
     {
-        if (args.Length != 6 || args[0] != "--pipe" || args[2] != "--parent" || args[4] != "--parent-start" ||
+        var serviceWorker = args.Length == 10 && args[0] == "--service-worker" && args[6] == "--broker" && args[8] == "--stop-event";
+        if ((!serviceWorker && (args.Length != 6 || args[0] != "--pipe")) || args[2] != "--parent" || args[4] != "--parent-start" ||
             args[1].Length is < 1 or > 128 || args[1].Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-') ||
             !int.TryParse(args[3], out var parentId) || !long.TryParse(args[5], out var parentTicks))
             throw new ArgumentException("Aufruf: Dynex.Shaper --pipe NAME --parent PID --parent-start UTC_TICKS");
@@ -41,18 +43,22 @@ internal static class Program
         using var parent = Process.GetProcessById(parentId);
         if (parent.StartTime.ToUniversalTime().Ticks != parentTicks || parent.HasExited)
             throw new InvalidOperationException("Elternprozess stimmt nicht überein.");
-        var userSid = identity.User ?? throw new UnauthorizedAccessException("Benutzeridentität des Helfers fehlt.");
+        var workerSid = identity.User ?? throw new UnauthorizedAccessException("Benutzeridentität des Helfers fehlt.");
+        var parentIdentity = PrioritizationBroker.ReadParentIdentity(parent);
+        var userSid = parentIdentity.Sid;
         if (!OpenProcessToken(parent.SafeHandle, 0x0008 /* TOKEN_QUERY */, out var parentToken))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Benutzeridentität des Elternprozesses nicht lesbar.");
         using (parentToken)
-        using (var parentIdentity = new WindowsIdentity(parentToken.DangerousGetHandle()))
-            if (parentIdentity.User != userSid)
+        using (var checkedIdentity = new WindowsIdentity(parentToken.DangerousGetHandle()))
+            if (!serviceWorker && checkedIdentity.User != workerSid)
                 throw new UnauthorizedAccessException("Elternprozess und Helfer müssen zum gleichen Windows-Benutzer gehören.");
 
         using var stop = new CancellationTokenSource();
+        using var broker = serviceWorker ? ValidateBroker(args, workerSid) : null;
+        using var stopEvent = serviceWorker ? EventWaitHandle.OpenExisting(args[9]) : null;
         // CurrentUserOnly on a .NET client compares token Owner, which UAC changes
         // to Administrators. Validate the actual User SID explicitly instead;
-        // the server retains its CurrentUserOnly ACL and both ends verify PID.
+        // the server ACL allows its user and SYSTEM; both ends additionally verify PID.
         using var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut,
             PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
         await pipe.ConnectAsync(10000, stop.Token);
@@ -64,13 +70,27 @@ internal static class Program
             throw new UnauthorizedAccessException("Pipe gehört nicht dem Benutzer. DYNEX muss ohne Administratorrechte gestartet werden.");
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 1024, leaveOpen: true);
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true) { AutoFlush = true };
+        // A stopped/crashed broker cannot leave an orphan privileged capture running.
+        var brokerWatch = broker is null ? Task.CompletedTask : Task.Run(async () =>
+        {
+            try
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    if (stopEvent!.WaitOne(0) || broker.HasExited) { stop.Cancel(); return; }
+                    await Task.Delay(250, stop.Token);
+                }
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        });
         try
         {
-            return await RunConnectedAsync(parent, reader, writer, stop);
+            return await RunConnectedCoreAsync(parent, reader, writer, stop, null,
+                new MediaEvidenceReceiver(userSid: userSid, localAppData: parentIdentity.LocalAppData));
         }
         catch (Exception e)
         {
-            // UAC hides stderr. Report only a bounded, non-sensitive diagnostic
+            // Background workers have no console. Report only a bounded, non-sensitive diagnostic
             // after authenticating the server and after session cleanup completes.
             try
             {
@@ -89,10 +109,25 @@ internal static class Program
             catch (Exception reportError) when (reportError is IOException or OperationCanceledException or ObjectDisposedException) { }
             throw;
         }
+        finally { stop.Cancel(); await brokerWatch; }
     }
 
-    private static async Task<int> RunConnectedAsync(Process parent, StreamReader reader, StreamWriter writer, CancellationTokenSource stop,
+    private static Process ValidateBroker(string[] args, SecurityIdentifier workerSid)
+    {
+        if (!workerSid.IsWellKnown(WellKnownSidType.LocalSystemSid) || !int.TryParse(args[7], out var brokerId) || brokerId <= 0 ||
+            Dynex.Native.PrioritizationServiceClient.GetRunningServiceProcessId() != (uint)brokerId ||
+            !args[9].StartsWith(@"Global\DYNEX-WorkerStop-", StringComparison.Ordinal) ||
+            !Guid.TryParseExact(args[9][@"Global\DYNEX-WorkerStop-".Length..], "N", out _))
+            throw new UnauthorizedAccessException("Der Netzwerkhelfer wurde nicht vom installierten Dienst gestartet.");
+        return Process.GetProcessById(brokerId);
+    }
+
+    private static Task<int> RunConnectedAsync(Process parent, StreamReader reader, StreamWriter writer, CancellationTokenSource stop,
         Func<IPacketDevice>? createDevice = null)
+        => RunConnectedCoreAsync(parent, reader, writer, stop, createDevice, null);
+
+    private static async Task<int> RunConnectedCoreAsync(Process parent, StreamReader reader, StreamWriter writer, CancellationTokenSource stop,
+        Func<IPacketDevice>? createDevice, MediaEvidenceReceiver? suppliedMediaEvidence)
     {
         using var writeLock = new SemaphoreSlim(1);
         PacketPump? session = null;
@@ -108,7 +143,7 @@ internal static class Program
         using var ownership = new TrafficOwnership();
         var accounting = new TrafficAccounting();
         // Synthetic device sessions used by tests must never claim the user's production pipe.
-        var mediaEvidence = createDevice is null ? new MediaEvidenceReceiver() : null;
+        var mediaEvidence = createDevice is null ? suppliedMediaEvidence ?? new MediaEvidenceReceiver() : null;
         var mediaWorker = mediaEvidence is null ? Task.CompletedTask : Task.Run(() => mediaEvidence.RunAsync(stop.Token));
         var qosPolicy = new RealtimeQosPolicy(() => ownership.Snapshot, accounting: accounting)
         { MediaEvidence = mediaEvidence is null ? null : () => mediaEvidence.Snapshot };

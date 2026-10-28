@@ -18,6 +18,8 @@ AutoLAN verwendet pro Gerät ECDSA-Identität, ECDH-Schlüsselaustausch und AES-
 
 Der Helfer verwendet den separat installierten Windows Packet Filter (NDISRD), keinen eigenen Kerneltreiber. Benutzersitzung und Prozessidentitäten begrenzen die Pipe. Watchdog, Shutdown-ACK, Freigabefehler und begrenzte Wiederherstellung bleiben auch ohne Limits notwendig.
 
+Ein einmalig eingerichteter Windows-Dienst startet den Helfer aus einem administrativ geschützten, über Dateihashes geprüften Paket. Die Desktop-App startet keinen Prozess mehr mit `runas`. Der lokale Dienst authentifiziert SID, Prozess-ID, Startzeit und registrierten Anwendungspfad; ausführbarer Pfad und Argumentstruktur des Helfers sind fest. Die Sitzungspipe erlaubt nur dem ursprünglichen Benutzer und SYSTEM Zugriff und weist Netzwerkidentitäten ab. Der SYSTEM-Helfer verwendet für ELFIX-Hinweise ausdrücklich das Profil und die Identität des ursprünglichen Desktop-Benutzers. Desktop-Ende, Heartbeat-Ausfall, Netzwechsel und Dienstende lösen die geprüfte Freigabe aus.
+
 ## Plattformen
 
 Android verbindet sich im WLAN weiter mit PCs, steuert aber keine Bandbreite und startet dafür keinen VPN-Tunnel. Ein schon in AdGuard konfigurierter lokaler SOCKS-Proxy bleibt unbegrenzt erreichbar. Ohne passenden Messpfad meldet Android unbekannten Verbrauch.

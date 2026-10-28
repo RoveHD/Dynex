@@ -744,7 +744,7 @@ public partial class MainWindow : Window
         PriorityDetailText.Text = s.QosActive
             ? $"Spiel: {s.GamePriorityPackets:N0} · Sprache: {s.VoicePriorityPackets:N0} · Video: {s.VideoPriorityPackets:N0}"
             : "DYNEX markiert erkannte Pakete; Router-QoS/SQM steuert deren Behandlung im Heimnetz.";
-        var installed = PacketFilterSetup.IsInstalled;
+        var installed = PacketFilterSetup.IsInstalled && PrioritizationServiceSetup.IsConfigured();
         var observingWithoutGameTraffic = s.ObservingGameTraffic && !s.IsGaming && !s.QosActive;
         DriverText.Text = s.QosActive ? "PRIORITÄT AKTIV" : observingWithoutGameTraffic ? "BEOBACHTET" : !s.DriverAvailable ? "PAKET UNVOLLSTÄNDIG" : !installed ? "EINMAL EINRICHTEN" : !_runtime.Settings.DriverEnabled ? "AUS" : s.ProtectionIdle ? "INAKTIV" : "NICHT BESTÄTIGT";
         DriverDetail.Text = s.QosActive ? "Spiel-, Sprach- und erkannte Videopakete werden für QoS markiert." : observingWithoutGameTraffic ? "Spielverkehr wird beobachtet; noch keine priorisierten Pakete bestätigt." : s.DriverAvailable ? s.DriverState : "DYNEX bitte vollständig installieren.";
@@ -783,7 +783,7 @@ public partial class MainWindow : Window
         SetupButton.IsEnabled = s.DriverAvailable && !_settingUp;
         if (!_settingUp) SetupHint.Text = !s.DriverAvailable ? "Die Netzwerkkomponente fehlt. DYNEX bitte vollständig installieren." : installed
             ? "DYNEX markiert bestätigten Spiel- und Sprachverkehr. Router-QoS entscheidet über die weitere Behandlung."
-            : "Einmalige Einrichtung für private Nutzung. Windows fragt nach einer Bestätigung; die Netzwerkverbindung kann kurz unterbrochen werden.";
+            : "Einmal einrichten und die Windows-Rückfrage bestätigen. Danach startet die Priorisierung ohne weitere Rückfragen; die Verbindung kann bei der Einrichtung kurz unterbrochen werden.";
         SetPing(s.Router, RouterPing, RouterStats, RouterTarget); SetPing(s.External, ExternalPing, ExternalStats, ExternalTarget);
         RenderAnalysis(s);
         _deviceSnapshot = s.Devices;

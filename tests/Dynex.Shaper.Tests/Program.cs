@@ -441,6 +441,7 @@ StreamingChecks.Run(Check);
 await MediaEvidenceChecks.Run(Check);
 await GameTrafficChecks.Run(Check);
 await HelperRecoveryChecks.Run(Check);
+await PrioritizationServiceChecks.Run(Check);
 Console.WriteLine($"{passed} checks passed; no kernel filter opened.");
 
 static async Task WaitUntil(Func<bool> condition, TimeSpan timeout)

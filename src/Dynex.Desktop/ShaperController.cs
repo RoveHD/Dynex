@@ -6,6 +6,8 @@ using System.Text.Json;
 using Dynex.Desktop.Games;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
+using System.Security.Principal;
+using Dynex.Native;
 
 namespace Dynex.Desktop;
 
@@ -63,7 +65,7 @@ internal sealed class ShaperController : IAsyncDisposable
     public async Task StartAsync()
     {
         lock (sync) if (releaseFailure is not null) { Set(new(false, null, releaseFailure)); return; }
-        // One attempt per explicit enable/app lifecycle. A refused UAC prompt or
+        // One attempt per explicit enable/app lifecycle. A missing setup or
         // failed helper must not be retried by every monitoring heartbeat.
         lock (sync) { if (startAttempted) return; startAttempted = true; terminationReason = null; }
         if (pipe != null) return;
@@ -86,20 +88,20 @@ internal sealed class ShaperController : IAsyncDisposable
             connectionEnded = false; terminationReason = null; recoveryAvailable = false;
         }
         Volatile.Write(ref stopping, 0);
-        pipe = new(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var identity = WindowsIdentity.GetCurrent();
+        var userSid = identity.User ?? throw new UnauthorizedAccessException("Windows-Benutzeridentität fehlt.");
+        pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 1024, 1024, PrioritizationServiceClient.SessionSecurity(userSid));
         cancellation = new CancellationTokenSource();
         try
         {
-            using var current = Process.GetCurrentProcess();
-            process = Process.Start(new ProcessStartInfo(helperPath)
-            {
-                UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden,
-                Arguments = $"--pipe {pipeName} --parent {Environment.ProcessId} --parent-start {current.StartTime.ToUniversalTime().Ticks}"
-            });
-            if (process == null) throw new IOException("Helfer konnte nicht gestartet werden.");
+            process = await PrioritizationServiceClient.LaunchAsync(pipeName, cancellation.Token);
             await pipe.WaitForConnectionAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(30));
             if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var clientPid) || clientPid != process.Id)
                 throw new UnauthorizedAccessException("Die Helferverbindung stammt nicht vom gestarteten DYNEX-Modul.");
+            using var connectedWorker = Process.GetProcessById((int)clientPid);
+            if (connectedWorker.HasExited || connectedWorker.StartTime.ToUniversalTime().Ticks != process.StartTime.ToUniversalTime().Ticks)
+                throw new UnauthorizedAccessException("Die Identität des Netzwerkhelfers hat sich während der Verbindung geändert.");
             writer = new(pipe, new UTF8Encoding(false), 1024, true) { AutoFlush = true };
             Set(new(false, null, "Paketpriorisierung bereit."));
             reader = ReadStatusAsync(pipe, cancellation.Token);
@@ -145,7 +147,7 @@ internal sealed class ShaperController : IAsyncDisposable
             }
         }
         if (wantsCapture && !StartAttempted) await StartAsync();
-        // UAC/connection setup can take seconds. Recheck live foreground/peer
+        // Service/connection setup can take seconds. Recheck live foreground/peer
         // state before activating capture instead of using the pre-prompt state.
         if ((mbps.HasValue || qosEnabled || uploadMbps.HasValue) && protectionStillNeeded?.Invoke() == false)
         { mbps = null; qosEnabled = false; uploadMbps = null; }

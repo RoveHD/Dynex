@@ -10,6 +10,7 @@
     <InternalsVisibleTo Include="Dynex.Shaper.Tests" />
     <Compile Include="../Dynex.Desktop/Native/ProcessTable.cs" Link="Native/ProcessTable.cs" />
     <Compile Include="../Dynex.Desktop/Native/ProcessEfficiency.cs" Link="Native/ProcessEfficiency.cs" />
+    <Compile Include="../Dynex.Desktop/Native/PrioritizationServiceClient.cs" Link="Native/PrioritizationServiceClient.cs" />
     <None Update="native/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

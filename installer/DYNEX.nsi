@@ -289,7 +289,8 @@ Section "DYNEX Anwendung" SEC_MAIN
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "NoRepair" 1
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   ; The desktop's dedicated CLI does not start normal application workers or
-  ; read settings. Only missing system prerequisites request one UAC elevation.
+  ; read settings. Missing prerequisites or a new protected service payload request
+  ; one UAC elevation; ordinary app/worker starts no longer request elevation.
   ; The official MSI is fetched directly from its publisher, never redistributed.
   DetailPrint "Paketpriorisierung und private Heimnetzverbindung einrichten ..."
   Delete "$INSTDIR\setup-result.txt"

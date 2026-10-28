@@ -30,6 +30,8 @@ internal interface IInstallerSystem
     Task<int> RemoveFilterAsync();
     void EnsureFirewall(string application);
     void RemoveFirewall(string application);
+    Task EnsurePrioritizationAsync(string application);
+    Task RemovePrioritizationAsync(string application);
 }
 
 internal static class InstallerSystem
@@ -74,6 +76,7 @@ internal static class InstallerSystem
             system.WriteOwnership(ownership);
             restart = installed.ExitCode == 3010;
         }
+        await system.EnsurePrioritizationAsync(application);
         return restart ? 3010 : 0;
     }
 
@@ -89,6 +92,7 @@ internal static class InstallerSystem
                 ownership = pending.Ownership;
                 if (!pending.RestartConfirmed)
                 {
+                    await system.RemovePrioritizationAsync(application);
                     system.RemoveFirewall(application);
                     system.WriteOwnership(ownership with { Applications = ownership.Applications.Where(path => !string.Equals(path, application, StringComparison.OrdinalIgnoreCase)).ToArray() });
                     return new(3010, PendingRestartMessage(ownership, pending.BootAvailable));
@@ -101,12 +105,14 @@ internal static class InstallerSystem
             var remaining = ownership?.Applications.Where(path => !string.Equals(path, application, StringComparison.OrdinalIgnoreCase)).ToArray() ?? [];
             if (remaining.Length > 0)
             {
+                await system.RemovePrioritizationAsync(application);
                 system.RemoveFirewall(application);
                 system.WriteOwnership(ownership! with { Applications = remaining });
                 return new(0, "Die Systemeinträge dieser DYNEX-Installation wurden entfernt. Der gemeinsame Netzwerkfilter bleibt für andere registrierte DYNEX-Installationen erhalten.");
             }
             if (ownership?.FilterOrigin == SetupOwnership.Preexisting)
             {
+                await system.RemovePrioritizationAsync(application);
                 system.RemoveFirewall(application);
                 system.WriteOwnership(null);
                 return new(0, "Die DYNEX-Systemeinträge wurden entfernt. Der bereits vor DYNEX vorhandene Netzwerkfilter wurde erhalten.");
@@ -119,6 +125,9 @@ internal static class InstallerSystem
                 }
                 if (ownership?.FilterOrigin != SetupOwnership.Owned && !confirmLegacy)
                     return new(LegacyConfirmationRequired, "Ein älteres DYNEX-Setup hat keinen Besitznachweis gespeichert. Installiert ist Windows Packet Filter x64 3.6.2.1. Soll dieses gemeinsame Netzwerkfilter-Paket ebenfalls entfernt werden? Andere Programme, die diesen Filter verwenden, können ihn danach nicht mehr nutzen. Die Netzwerkverbindung kann kurz unterbrochen werden.");
+                // Stop the broker and wait for every worker to release capture
+                // before the shared kernel filter can be removed.
+                await system.RemovePrioritizationAsync(application);
                 var removalBoot = system.BootIdentity;
                 var code = await system.RemoveFilterAsync();
                 if (code == 1602) return new(1602, "Die Entfernung des Netzwerkfilters wurde abgebrochen. DYNEX und sein Besitznachweis bleiben für einen erneuten Versuch erhalten.");
@@ -133,6 +142,7 @@ internal static class InstallerSystem
                 if (code == 3010)
                     return new(3010, "Die DYNEX-Systemeinträge und das Netzwerkfilter-Paket wurden entfernt. Windows muss neu gestartet werden, damit die Filterentfernung vollständig wirksam ist.");
             }
+            await system.RemovePrioritizationAsync(application);
             system.RemoveFirewall(application);
             system.WriteOwnership(null);
             return new(0, "Die DYNEX-Systemeinträge und der von DYNEX eingerichtete Netzwerkfilter wurden vollständig entfernt.");
@@ -238,6 +248,8 @@ internal sealed class WindowsInstallerSystem : IInstallerSystem
     }
     public void EnsureFirewall(string application) => InstallerFirewall.EnsureConfigured(application);
     public void RemoveFirewall(string application) => InstallerFirewall.RemoveConfigured(application);
+    public Task EnsurePrioritizationAsync(string application) => PrioritizationServiceSetup.EnsureAsync(application);
+    public Task RemovePrioritizationAsync(string application) => PrioritizationServiceSetup.RemoveAsync(application);
 
     internal static string? ReadBootIdentity()
     {

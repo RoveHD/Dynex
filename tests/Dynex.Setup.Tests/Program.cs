@@ -221,6 +221,7 @@ catch (System.Runtime.InteropServices.COMException) { unrelated = true; }
 Check(unrelated, "unrelated COM lookup error cannot masquerade as a missing rule");
 
 await UninstallChecks.RunAsync(Check);
+await PrioritizationSetupChecks.RunAsync(Check);
 FirewallRulesChecks.Run(Check);
 Console.WriteLine($"PASS: {checks} setup checks; no download, elevation, driver installation or firewall mutation performed.");
 

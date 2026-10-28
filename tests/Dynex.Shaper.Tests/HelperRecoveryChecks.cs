@@ -16,6 +16,7 @@ internal static class HelperRecoveryChecks
         await WatchdogRelease(check);
         await InvalidCommandRelease(check);
         await RearmAfterIdle(check);
+        await ExternalServiceStop(check);
     }
 
     private static async Task CommandAcknowledgement(Action<bool, string> check)
@@ -114,6 +115,27 @@ internal static class HelperRecoveryChecks
         check(await fixture.Helper.WaitAsync(fixture.Timeout.Token) == 1, "helper error returns a failure exit code even with successful release");
     }
 
+    private static async Task ExternalServiceStop(Action<bool, string> check)
+    {
+        foreach (var cleanupError in new string?[] { null, "injected service-stop reset failure" })
+        {
+            var device = new FakeDevice(_ => { }) { CleanupError = cleanupError };
+            using var fixture = await HelperPipe.CreateAsync(() => device);
+            await fixture.Input.ReadLineAsync(fixture.Timeout.Token);
+            await fixture.Output.WriteLineAsync("{\"mbps\":null,\"qosEnabled\":true,\"commandId\":1}");
+            using (var active = JsonDocument.Parse((await fixture.Input.ReadLineAsync(fixture.Timeout.Token))!))
+                check(active.RootElement.GetProperty("commandId").GetInt64() == 1 && !device.Disposed,
+                    "service cancellation fixture first starts an acknowledged capture");
+            fixture.CancelFromService();
+            using var final = JsonDocument.Parse((await fixture.Input.ReadLineAsync(fixture.Timeout.Token))!);
+            check(device.Disposed && final.RootElement.GetProperty("stopped").GetBoolean() &&
+                final.RootElement.GetProperty("captureReleased").GetBoolean() == (cleanupError is null),
+                "service cancellation drains capture and retains actual release status: " + (cleanupError is null));
+            check(await fixture.Helper.WaitAsync(fixture.Timeout.Token) == (cleanupError is null ? 0 : 1),
+                "service cancellation cannot report successful worker exit after a native cleanup failure: " + (cleanupError is null));
+        }
+    }
+
     private static async Task RearmAfterIdle(Action<bool, string> check)
     {
         var created = 0;
@@ -196,6 +218,7 @@ internal static class HelperRecoveryChecks
         public StreamReader Input { get; private set; } = null!;
         public StreamWriter Output { get; private set; } = null!;
         public Task<int> Helper { get; private set; } = null!;
+        public void CancelFromService() => stop.Cancel();
         private HelperPipe(string name)
         {
             server = new(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);

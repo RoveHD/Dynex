@@ -1,7 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace Dynex.Desktop;
 
@@ -11,18 +14,21 @@ internal static class InstallerPrerequisites
     internal sealed record Result(int ExitCode, string Message);
 
     internal static async Task<Result> RunAsync(Func<bool>? isInstalled = null,
-        Func<bool>? firewallConfigured = null, Func<Task<int>>? install = null, Func<bool>? installationRegistered = null, bool legacyInstallation = false)
+        Func<bool>? firewallConfigured = null, Func<Task<int>>? install = null, Func<bool>? installationRegistered = null, bool legacyInstallation = false,
+        Func<bool>? prioritizationConfigured = null)
     {
+        var injectedSetup = install is not null;
         isInstalled ??= () => PacketFilterSetup.IsInstalled;
         firewallConfigured ??= InstallerFirewall.IsConfigured;
         install ??= () => InstallMachineAsync(legacyInstallation);
         installationRegistered ??= () => new WindowsInstallerSystem().ReadOwnership()?.Applications.Contains(InstallerFirewall.ApplicationPath, StringComparer.OrdinalIgnoreCase) == true;
+        prioritizationConfigured ??= injectedSetup ? () => true : () => PrioritizationServiceSetup.IsConfigured();
         try
         {
             // Check conflicting Windows block rules before any filter download
             // or elevation, including on a PC without the filter yet installed.
             var firewallReady = firewallConfigured();
-            if (isInstalled() && firewallReady && installationRegistered()) return new(0, "Paketpriorisierung und private Heimnetzverbindung sind bereits eingerichtet.");
+            if (isInstalled() && firewallReady && installationRegistered() && prioritizationConfigured()) return new(0, "Paketpriorisierung und private Heimnetzverbindung sind bereits eingerichtet.");
             var code = await install();
             if (code == 1602) return Failure(1602, "Die Windows-Rückfrage oder Einrichtung wurde abgebrochen.");
             if (code is not (0 or 3010))
@@ -32,7 +38,7 @@ internal static class InstallerPrerequisites
                 if (code == 1) _ = firewallConfigured();
                 return Failure(code, $"Windows meldet bei der Einrichtung Fehler {code}.");
             }
-            if (!isInstalled() || !firewallConfigured()) return Failure(1, "Windows hat die benötigten Komponenten noch nicht bestätigt.");
+            if (!isInstalled() || !firewallConfigured() || !prioritizationConfigured()) return Failure(1, "Windows hat die benötigten Komponenten noch nicht bestätigt.");
             return code == 3010
                 ? new(3010, "Die Einrichtung wurde abgeschlossen. Windows muss zum Aktivieren der Paketpriorisierung neu gestartet werden; DYNEX startet den PC nicht automatisch neu.")
                 : new(0, "Paketpriorisierung und private Heimnetzverbindung wurden eingerichtet.");
@@ -198,15 +204,16 @@ internal static class InstallerPrerequisites
 
     private static bool RunningInstallationStillExists(string application, bool includeApplication = true)
     {
+        var brokerPid = Dynex.Native.PrioritizationServiceClient.GetServiceProcessId();
         foreach (var name in includeApplication ? new[] { "DYNEX", "Dynex.Shaper" } : ["Dynex.Shaper"])
         foreach (var process in Process.GetProcessesByName(name))
         {
             using (process)
             {
-                if (process.Id == Environment.ProcessId) continue;
+                if (process.Id == Environment.ProcessId || process.Id == brokerPid) continue;
                 try
                 {
-                    var running = process.MainModule?.FileName;
+                    var running = ReadProcessPath(process.Id);
                     if (running is null) throw new IOException("Der Pfad eines laufenden DYNEX-Prozesses konnte nicht geprüft werden.");
                     if (MatchesInstallationProcess(application, running, includeApplication)) return true;
                 }
@@ -219,6 +226,29 @@ internal static class InstallerPrerequisites
     internal static bool MatchesInstallationProcess(string application, string running, bool includeApplication = true) =>
         includeApplication && string.Equals(running, application, StringComparison.OrdinalIgnoreCase) ||
         string.Equals(running, Path.Combine(Path.GetDirectoryName(application)!, "shaper", "Dynex.Shaper.exe"), StringComparison.OrdinalIgnoreCase);
+
+    private const uint QueryLimitedInformation = 0x1000;
+    private static string? ReadProcessPath(int pid)
+    {
+        // Service workers grant the owning desktop query/synchronize access,
+        // never VM-read access. MainModule would fail for those SYSTEM workers.
+        using var handle = OpenProcess(QueryLimitedInformation, false, pid);
+        if (handle.IsInvalid)
+        {
+            var code = Marshal.GetLastWin32Error();
+            if (code == 87) return null; // The process exited during inventory.
+            throw new Win32Exception(code);
+        }
+        var path = new StringBuilder(32768);
+        var length = path.Capacity;
+        return QueryFullProcessImageName(handle, 0, path, ref length) ? path.ToString() : throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, int pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageName(SafeProcessHandle process, uint flags, StringBuilder path, ref int size);
 
     internal static bool MatchesCleanupApplication(string protectedProfileApplication, string localApplicationData) =>
         !string.IsNullOrWhiteSpace(localApplicationData) && Path.IsPathFullyQualified(localApplicationData) &&

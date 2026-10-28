@@ -10,6 +10,7 @@ internal static class UninstallChecks
         check(await InstallerSystem.InstallAsync(system, app, "verified.msi") == 0 && system.Installs == 1 &&
               system.Ownership is { FilterOrigin: SetupOwnership.Owned } && system.JournalBeforeInstall,
             "first setup journals absence before MSI and records exact successful filter ownership");
+        check(system.ServiceEnsures == 1, "first setup provisions broker inside the existing elevated setup transaction");
         await InstallerSystem.InstallAsync(system, app.ToUpperInvariant(), null);
         check(system.Installs == 1 && system.Ownership!.Applications.Length == 1,
             "updates and path casing retain original ownership without duplicate references");
@@ -20,8 +21,22 @@ internal static class UninstallChecks
         result = await InstallerSystem.RemoveAsync(system, second, false);
         check(result.ExitCode == 0 && system.Removes == 1 && system.Ownership is null && !system.FilterPresent,
             "last registered installation removes the exact DYNEX-owned filter and receipt");
+        check(system.BrokerRemovedBeforeFilter, "uninstall confirms broker/worker shutdown before removing kernel filter");
         result = await InstallerSystem.RemoveAsync(system, second, false);
         check(result.ExitCode == 0 && system.Removes == 1, "repeated removal after success is idempotent");
+
+        system = Owned(app);
+        system.ServiceRemoveError = new IOException("release not confirmed");
+        result = await InstallerSystem.RemoveAsync(system, app, false);
+        check(result.ExitCode != 0 && system.Removes == 0 && system.FirewallRemoves == 0 && system.Ownership!.Applications.Contains(app),
+            "unconfirmed broker shutdown preserves filter, firewall and ownership for recovery");
+        system = Owned(app);
+        system.ServiceEnsureError = new IOException("broker setup failed");
+        var brokerSetupFailed = false;
+        try { await InstallerSystem.InstallAsync(system, app, null); }
+        catch (IOException error) { brokerSetupFailed = error.Message == "broker setup failed"; }
+        check(brokerSetupFailed && system.FilterPresent && system.Ownership!.Applications.Contains(app),
+            "failed broker provisioning is not successful setup and retains ownership journal");
 
         system = new() { FilterPresent = true, KnownProductPresent = true };
         await InstallerSystem.InstallAsync(system, app, null);
@@ -203,9 +218,10 @@ internal static class UninstallChecks
         public bool KnownProductPresent { get; set; }
         public string? BootIdentity { get; set; } = "boot-one";
         public SetupOwnership? Ownership { get; set; }
-        internal int Installs, Removes, FirewallRemoves, FirewallEnsures, InstallCode, RemoveCode;
+        internal int Installs, Removes, FirewallRemoves, FirewallEnsures, InstallCode, RemoveCode, ServiceEnsures, ServiceRemoves;
+        internal bool BrokerRemovedBeforeFilter;
         internal bool JournalBeforeInstall, ConcurrentInstall, LeaveFilter;
-        internal Exception? RemoveError, FirewallRemoveError, FirewallEnsureError;
+        internal Exception? RemoveError, FirewallRemoveError, FirewallEnsureError, ServiceRemoveError, ServiceEnsureError;
         public SetupOwnership? ReadOwnership() => Ownership;
         public void WriteOwnership(SetupOwnership? ownership) => Ownership = ownership;
         public Task<PacketFilterSetup.InstallResult> InstallFilterAsync(string package)
@@ -218,11 +234,14 @@ internal static class UninstallChecks
         public Task<int> RemoveFilterAsync()
         {
             Removes++;
+            BrokerRemovedBeforeFilter = ServiceRemoves > 0;
             if (RemoveError is not null) throw RemoveError;
             if (RemoveCode is 0 or 3010 or 1605 && !LeaveFilter) FilterPresent = KnownProductPresent = false;
             return Task.FromResult(RemoveCode);
         }
         public void EnsureFirewall(string application) { if (FirewallEnsureError is not null) throw FirewallEnsureError; FirewallEnsures++; }
         public void RemoveFirewall(string application) { if (FirewallRemoveError is not null) throw FirewallRemoveError; FirewallRemoves++; }
+        public Task EnsurePrioritizationAsync(string application) { if (ServiceEnsureError is not null) throw ServiceEnsureError; ServiceEnsures++; return Task.CompletedTask; }
+        public Task RemovePrioritizationAsync(string application) { if (ServiceRemoveError is not null) throw ServiceRemoveError; ServiceRemoves++; return Task.CompletedTask; }
     }
 }

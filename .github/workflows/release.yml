@@ -89,6 +89,9 @@ jobs:
       - name: Installer start and exclusion checks
         shell: pwsh
         run: ./tests/installer-update-smoke.ps1 -PayloadRoot "artifacts/publish-${{ steps.version.outputs.value }}" -ExpectedVersion "${{ steps.version.outputs.value }}" -NsisPath "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+      - name: Privileged service lifecycle smoke
+        shell: pwsh
+        run: ./tests/service-lifecycle-smoke.ps1 -PublishDirectory "artifacts/publish-${{ steps.version.outputs.value }}"
       - name: Remove certificate
         if: always()
         shell: pwsh
@@ -104,7 +107,9 @@ jobs:
           # Notes go through a file: quotes inside a native argument get split on Windows.
           # Single quotes only: PowerShell treats typographic quotes („ “) as string delimiters.
           $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          Set-Content -LiteralPath $notesFile -Encoding utf8 -Value ('Änderungen: siehe README, Abschnitt "Neu in ' + $v + '". ' + $signed)
+          $versionNotes = "docs/release-notes-$v.md"
+          $notes = if (Test-Path -LiteralPath $versionNotes) { Get-Content -LiteralPath $versionNotes -Raw } else { 'Änderungen: siehe README, Abschnitt "Neu in ' + $v + '".' }
+          Set-Content -LiteralPath $notesFile -Encoding utf8 -Value ($notes + "`n`n" + $signed)
           $assets = @("artifacts/DYNEX-Setup-$v.exe", "artifacts/DYNEX-Setup-$v.exe.sha256", "artifacts/DYNEX-Cleanup-$v.exe", "artifacts/DYNEX-Cleanup-$v.exe.sha256")
           # --target creates the tag on the tested commit when it does not exist yet (manual start).
           # @(...) keeps an array: splatting a plain string would pass it character by character.

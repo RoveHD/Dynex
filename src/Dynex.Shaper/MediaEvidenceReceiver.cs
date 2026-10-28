@@ -13,13 +13,16 @@ internal sealed class MediaEvidenceReceiver
 {
     private readonly string _pipeName;
     private readonly Func<int, MediaEvidenceProcess?> _resolve;
+    private readonly SecurityIdentifier? _userSid;
     private MediaEvidenceSnapshot _snapshot = MediaEvidenceSnapshot.Empty;
     internal MediaEvidenceSnapshot Snapshot => Volatile.Read(ref _snapshot);
     internal Exception? Failure { get; private set; }
 
-    internal MediaEvidenceReceiver(string? pipeName = null, Func<int, MediaEvidenceProcess?>? resolve = null)
+    internal MediaEvidenceReceiver(string? pipeName = null, Func<int, MediaEvidenceProcess?>? resolve = null,
+        SecurityIdentifier? userSid = null, string? localAppData = null)
     {
-        _pipeName = pipeName ?? MediaEvidenceProtocol.PipeName(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        _pipeName = pipeName ?? MediaEvidenceProtocol.PipeName(localAppData ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        _userSid = userSid;
         _resolve = resolve ?? ResolveProcess;
     }
 
@@ -32,9 +35,8 @@ internal sealed class MediaEvidenceReceiver
                 // FirstPipeInstance prevents quietly joining a pipe namespace already owned by another server.
                 // Node's net client opens duplex handles even though evidence only travels toward DYNEX.
                 using var pipe = NamedPipeServerStreamAcl.Create(_pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance,
-                    0, 0, null, HandleInheritability.None, PipeAccessRights.ChangePermissions | PipeAccessRights.TakeOwnership);
-                RestrictToCurrentUser(pipe);
+                    PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance,
+                    0, 0, CreatePipeSecurity());
                 await pipe.WaitForConnectionAsync(stop);
                 try
                 {
@@ -69,20 +71,25 @@ internal sealed class MediaEvidenceReceiver
 
     private const uint QueryLimitedInformation = 0x1000;
 
-    private static void RestrictToCurrentUser(NamedPipeServerStream pipe)
+    private PipeSecurity CreatePipeSecurity()
     {
         // .NET's CurrentUserOnly ACL uses token Owner, which becomes Administrators
         // under UAC. Bind explicitly to User so a normal Electron client can connect.
         using var identity = WindowsIdentity.GetCurrent();
-        var sid = identity.User ?? throw new UnauthorizedAccessException("Missing media pipe user.");
+        var sid = _userSid ?? identity.User ?? throw new UnauthorizedAccessException("Missing media pipe user.");
         var security = new PipeSecurity();
         security.SetAccessRuleProtection(true, false);
-        security.SetOwner(sid);
-        security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.FullControl, AccessControlType.Allow));
-        pipe.SetAccessControl(security);
+        // SYSTEM owns service-created pipes; only the authenticated desktop user's SID receives client access.
+        security.SetOwner(identity.User!);
+        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
+        security.AddAccessRule(new PipeAccessRule(identity.User!, PipeAccessRights.FullControl, AccessControlType.Allow));
+        // Node opens GENERIC_WRITE (includes FILE_CREATE_PIPE_INSTANCE). This endpoint is only
+        // the user's own media hints, with one server instance; it never starts privileged work.
+        security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
+        return security;
     }
 
-    private static MediaEvidenceProcess? ResolveProcess(int pid)
+    private MediaEvidenceProcess? ResolveProcess(int pid)
     {
         // Read the system table first: never open handles to games or unrelated applications.
         if (!ProcessTable.Snapshot().TryGetValue(pid, out var identity) || !string.Equals(identity.Name, "ELFIX", StringComparison.OrdinalIgnoreCase)) return null;
@@ -92,7 +99,7 @@ internal sealed class MediaEvidenceReceiver
         using (token)
         using (var clientIdentity = new WindowsIdentity(token.DangerousGetHandle()))
         using (var serverIdentity = WindowsIdentity.GetCurrent())
-            if (clientIdentity.User is null || clientIdentity.User != serverIdentity.User) return null;
+            if (clientIdentity.User is null || clientIdentity.User != (_userSid ?? serverIdentity.User)) return null;
         var path = new StringBuilder(32768);
         var size = path.Capacity;
         if (!QueryFullProcessImageName(process, 0, path, ref size) || !GetProcessTimes(process, out var created, out var exited, out _, out _) || exited != 0) return null;

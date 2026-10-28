@@ -18,6 +18,11 @@ internal static class UpdateSelfTest
             var shaper = Path.Combine(AppContext.BaseDirectory, "shaper");
             if (!File.Exists(Path.Combine(shaper, "Dynex.Shaper.exe")) || !File.Exists(Path.Combine(shaper, "Dynex.Shaper.dll")))
                 return MissingPayload;
+            // A distributable build must carry its own helper manifest. Validate
+            // every loader input before the installer asks for system privileges.
+            try { PrioritizationPayload.Load().VerifyDirectory(shaper, allowReceipt: false); }
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+            { return MissingPayload; }
             // Settings written by the previous version must still load.
             new SettingsStore().Load();
             return Healthy;

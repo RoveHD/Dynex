@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.21',
+    [string]$Version = '1.0.22',
     # Authenticode signing. Either a certificate in the Windows certificate store
     # (thumbprint; works with hardware tokens/EV certificates) or a PFX file whose
     # password is read only from DYNEX_SIGN_PFX_PASSWORD, never from the command line.
@@ -79,16 +79,13 @@ if (Test-Path -LiteralPath $existingExe) {
 $desktopOut = Join-Path $publishRoot '.desktop-publish'
 $shaperOut = Join-Path $publishRoot 'shaper'
 $docsOut = Join-Path $publishRoot 'docs'
-$cleanPaths = @($desktopOut, $shaperOut, $docsOut, (Join-Path $publishRoot 'DYNEX.exe'), (Join-Path $publishRoot 'install-files.nsh'), (Join-Path $publishRoot 'uninstall-files.nsh'))
+$payloadManifest = Join-Path $publishRoot '.helper-manifest.json'
+$cleanPaths = @($desktopOut, $shaperOut, $docsOut, $payloadManifest, (Join-Path $publishRoot 'DYNEX.exe'), (Join-Path $publishRoot 'install-files.nsh'), (Join-Path $publishRoot 'uninstall-files.nsh'))
 foreach ($path in $cleanPaths) {
     Assert-ArtifactPath $path
     Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
 }
 New-Item -ItemType Directory -Force -Path $desktopOut, $shaperOut, $docsOut | Out-Null
-
-Write-Host 'Veröffentliche DYNEX Desktop (self-contained win-x64)...'
-& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:Version=$Version -o $desktopOut
-if ($LASTEXITCODE -ne 0) { throw "Desktop-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
 
 Write-Host 'Veröffentliche DYNEX Shaper (self-contained win-x64)...'
 & dotnet publish $shaperProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:Version=$Version -o $shaperOut
@@ -97,16 +94,30 @@ if ($LASTEXITCODE -ne 0) { throw "Shaper-Publish fehlgeschlagen (Exitcode $LASTE
 $desktopExe = Join-Path $desktopOut 'DYNEX.exe'
 $shaperExe = Join-Path $shaperOut 'Dynex.Shaper.exe'
 $shaperAssembly = Join-Path $shaperOut 'Dynex.Shaper.dll'
-if (-not (Test-Path $desktopExe)) { throw "Publish hat $desktopExe nicht erzeugt." }
 if (-not (Test-Path $shaperExe)) { throw "Publish hat $shaperExe nicht erzeugt." }
 if (-not (Test-Path $shaperAssembly)) { throw "Der erforderliche Shaper-Enginecode fehlt: $shaperAssembly" }
 $forbiddenPayloads = @('WinDivert.dll', 'WinDivert64.sys', 'ndisapi.dll', 'Windows.Packet.Filter.3.6.2.1.x64.msi')
 $unexpectedPayload = Get-ChildItem -LiteralPath $shaperOut -File -Recurse | Where-Object { $_.Name -in $forbiddenPayloads } | Select-Object -First 1
 if ($unexpectedPayload) { throw "Der Shaper-Publish enthält einen nicht erlaubten Treiber-/MSI-Bestandteil: $($unexpectedPayload.FullName)" }
 # Sign our own binaries before NSIS packs them. Runtime DLLs are already signed by Microsoft.
-Invoke-Sign $desktopExe
 Invoke-Sign $shaperExe
 Invoke-Sign $shaperAssembly
+# The elevated setup never installs mutable helper files on trust. The desktop
+# embeds the exact digests of the already signed self-contained helper payload.
+$helperFiles = @(Get-ChildItem -LiteralPath $shaperOut -File -Recurse | Sort-Object FullName | ForEach-Object {
+    [ordered]@{
+        Name = [System.IO.Path]::GetRelativePath($shaperOut, $_.FullName).Replace('\', '/')
+        Length = $_.Length
+        Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    }
+})
+$manifestJson = [ordered]@{ Schema = 1; Files = $helperFiles } | ConvertTo-Json -Depth 5 -Compress
+[System.IO.File]::WriteAllText($payloadManifest, $manifestJson, [System.Text.UTF8Encoding]::new($false))
+Write-Host 'Veröffentliche DYNEX Desktop mit geprüftem Netzwerkhelfer (self-contained win-x64)...'
+& dotnet publish $desktopProject -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true -p:Version=$Version "-p:PrioritizationPayloadManifest=$payloadManifest" -o $desktopOut
+if ($LASTEXITCODE -ne 0) { throw "Desktop-Publish fehlgeschlagen (Exitcode $LASTEXITCODE)." }
+if (-not (Test-Path $desktopExe)) { throw "Publish hat $desktopExe nicht erzeugt." }
+Invoke-Sign $desktopExe
 Copy-Item -LiteralPath $desktopExe -Destination (Join-Path $publishRoot 'DYNEX.exe') -Force
 Remove-Item -LiteralPath $desktopOut -Recurse -Force
 
@@ -116,7 +127,7 @@ Remove-Item -LiteralPath $desktopOut -Recurse -Force
 # Never bundle that MSI, a kernel driver, WinDivert files, or native engine DLLs.
 
 # Ship the available project documentation alongside the application.
-$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md', 'docs/video-detection.md', 'docs/updates.md', 'docs/desktop-features.md', 'docs/peer-devices.md', 'docs/elfix-integration.md', 'docs/release-notes-1.0.19.md', 'docs/release-notes-1.0.20.md', 'docs/release-notes-1.0.21.md')
+$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md', 'docs/video-detection.md', 'docs/updates.md', 'docs/desktop-features.md', 'docs/peer-devices.md', 'docs/elfix-integration.md', 'docs/release-notes-1.0.19.md', 'docs/release-notes-1.0.20.md', 'docs/release-notes-1.0.21.md', 'docs/release-notes-1.0.22.md')
 foreach ($relativePath in $documentation) {
     $source = Join-Path $repoRoot $relativePath
     if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $docsOut (Split-Path $relativePath -Leaf)) -Force }
