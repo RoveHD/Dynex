@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Diagnostics;
+using System.Reflection;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -70,6 +72,27 @@ internal static class PrioritizationServiceChecks
         server.RunAsClient(() => { using var caller = WindowsIdentity.GetCurrent(); authenticated = caller.User; });
         check(authenticated == sid, "broker identification-level handshake binds the consumed request to its actual Windows SID");
         await BrokerAclHandshake(check, sid);
+        await WorkerLifetime(check);
+    }
+
+    private static async Task WorkerLifetime(Action<bool, string> check)
+    {
+        for (var cycle = 1; cycle <= 3; cycle++)
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath!)
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true };
+            if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(Assembly.GetEntryAssembly()!.Location);
+            start.ArgumentList.Add("--process-lifetime-child");
+            using var launched = Process.Start(start)!;
+            using var tracked = PrioritizationBroker.TrackWorker(launched.Id);
+            // Explicit IPC releases the harmless child only after tracking has been established.
+            await launched.StandardInput.WriteLineAsync("exit");
+            await launched.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            launched.Dispose(); // Mirrors closing the original CreateProcess handle in the broker.
+            check(tracked.HasExited && tracked.ExitCode == 0,
+                $"broker retains actual worker exit code after the child and original process handle are gone, cycle {cycle}");
+        }
     }
 
     private static async Task BrokerAclHandshake(Action<bool, string> check, SecurityIdentifier sid)

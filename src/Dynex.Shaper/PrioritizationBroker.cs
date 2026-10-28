@@ -158,9 +158,24 @@ internal sealed class PrioritizationBroker : IDisposable
                 AppContext.BaseDirectory, ref startup, out var information)) throw new Win32Exception(Marshal.GetLastWin32Error());
             using var processHandle = new SafeProcessHandle(information.Process, true);
             using var threadHandle = new SafeWaitHandle(information.Thread, true);
-            return Process.GetProcessById(information.ProcessId);
+            return TrackWorker(information.ProcessId);
         }
         finally { Marshal.FreeHGlobal(securityPointer); }
+    }
+
+    internal static Process TrackWorker(int processId)
+    {
+        var process = Process.GetProcessById(processId);
+        try
+        {
+            // GetProcessById alone does not retain a native process handle. After the child
+            // exits and the CreateProcess handle closes, ExitCode can no longer be queried.
+            // Pin the broker-owned child's handle before releasing the original handle.
+            // Only the SYSTEM broker calls this for its own worker, never for a game.
+            _ = process.SafeHandle;
+            return process;
+        }
+        catch { process.Dispose(); throw; }
     }
 
     public void Dispose() { worker?.Dispose(); workerStop?.Dispose(); }

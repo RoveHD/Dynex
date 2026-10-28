@@ -11,6 +11,12 @@ using Dynex.Desktop;
 using System.Text;
 using System.Text.Json;
 
+if (args is ["--process-lifetime-child"])
+{
+    await Console.In.ReadLineAsync();
+    return;
+}
+
 var passed = 0;
 void Check(bool condition, string name)
 {
