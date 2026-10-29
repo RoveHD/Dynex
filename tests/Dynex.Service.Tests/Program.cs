@@ -121,6 +121,9 @@ internal static class ServiceLifecycleChecks
         using var pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 4096, 4096, PrioritizationServiceClient.SessionSecurity(identity.User!));
         using var worker = await PrioritizationServiceClient.LaunchAsync(pipeName, timeout.Token);
+        // The elevated fixture queries ExitCode after shutdown. Retain the process
+        // handle while it is alive so the result survives broker cleanup/PID reuse.
+        _ = worker.SafeHandle;
         await pipe.WaitForConnectionAsync(timeout.Token);
         Check(Native.ClientPid(pipe.SafePipeHandle) == worker.Id && Native.ProcessIsSystem(worker.Id) &&
             string.Equals(Native.ProcessImage(worker.Id), executable, StringComparison.OrdinalIgnoreCase),
