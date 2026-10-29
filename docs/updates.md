@@ -32,6 +32,8 @@ Die Funktion ist für die Installation unter `%LOCALAPPDATA%\Programs\DYNEX`
 verfügbar. Entwicklungsstarts, kopierte EXEs und isolierte Prüfungen starten keinen
 Updater. Der Cache liegt unter `%LOCALAPPDATA%\DYNEX\updates`.
 
+**Korrektur ab 1.0.27:** Der Desktop wartet auf den geschützten SYSTEM-Helfer mit dessen eingeschränkten Beobachtungsrechten. Die bisher verwendete .NET-Wartefunktion verlangte zusätzliche Prozessrechte und konnte vor dem Installerstart mit „Zugriff verweigert“ abbrechen. Die authentifizierte Freigabebestätigung und das tatsächliche Prozessende bleiben erforderlich. Ist eine ältere Installation bereits betroffen, das aktuelle Setup einmal direkt von GitHub starten; danach steht der korrigierte automatische Updatepfad zur Verfügung.
+
 ## Prüfung und Grenzen
 
 Die App akzeptiert ausschließlich stabile Versionen mit dem Tag `vMAJOR.MINOR.PATCH`

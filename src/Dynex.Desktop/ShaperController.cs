@@ -23,7 +23,7 @@ internal sealed class ShaperController : IAsyncDisposable
     private static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint processId);
     private NamedPipeServerStream? pipe;
     private StreamWriter? writer;
-    private Process? process;
+    private PrioritizationServiceClient.WorkerProcess? process;
     private CancellationTokenSource? cancellation;
     private Task? reader;
     private readonly object sync = new();
@@ -99,8 +99,9 @@ internal sealed class ShaperController : IAsyncDisposable
             await pipe.WaitForConnectionAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(30));
             if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var clientPid) || clientPid != process.Id)
                 throw new UnauthorizedAccessException("Die Helferverbindung stammt nicht vom gestarteten DYNEX-Modul.");
-            using var connectedWorker = Process.GetProcessById((int)clientPid);
-            if (connectedWorker.HasExited || connectedWorker.StartTime.ToUniversalTime().Ticks != process.StartTime.ToUniversalTime().Ticks)
+            // LaunchAsync retained and verified this exact process object before acknowledging
+            // the broker. Matching its live PID cannot authenticate a replacement process.
+            if (process.HasExited)
                 throw new UnauthorizedAccessException("Die Identität des Netzwerkhelfers hat sich während der Verbindung geändert.");
             writer = new(pipe, new UTF8Encoding(false), 1024, true) { AutoFlush = true };
             Set(new(false, null, "Paketpriorisierung bereit."));
@@ -373,9 +374,9 @@ internal sealed class ShaperController : IAsyncDisposable
             var exited = true;
             if (process != null)
             {
-                try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(9)); }
-                catch (TimeoutException) { exited = false; }
-                catch (InvalidOperationException) { }
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(9));
+                try { await process.WaitForExitAsync(timeout.Token); }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested) { exited = false; }
             }
             if (reader != null)
             {

@@ -11,6 +11,13 @@ using System.IO.Pipes;
 using System.Text;
 using Dynex.Shaper;
 
+if (args is ["--helper-exit-child", var childExitCode])
+{
+    await Console.In.ReadLineAsync();
+    Environment.ExitCode = int.Parse(childExitCode);
+    return;
+}
+
 var checks = 0;
 var failures = new List<string>();
 void Check(bool condition, string name)
@@ -31,6 +38,15 @@ async Task Scenario(string name, Func<Task> run)
     }
 }
 var timeout = TimeSpan.FromSeconds(8);
+
+await Scenario("standard-user protected helper exit and shutdown acknowledgements", () => HelperExitChecks.RunAsync(Check));
+if (args.Contains("--helper-exit-only"))
+{
+    Console.WriteLine($"Helper exit checks: {checks} passed, {failures.Count} failed; isolated restricted-token child processes and real local IPC only.");
+    foreach (var failure in failures) Console.Error.WriteLine(failure);
+    Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+    return;
+}
 
 await Scenario("priority-only migration, controller IPC and lifecycle", () => PriorityOnlyChecks.RunAsync(Check));
 if (args.Contains("--priority-only"))

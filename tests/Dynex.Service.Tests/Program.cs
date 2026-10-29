@@ -25,6 +25,7 @@ internal static class ServiceLifecycleChecks
         var attemptedSetup = false;
         var removed = false;
         var workerRuns = 0;
+        var standardUserWorkerRuns = 0;
         string? error = null, cleanupError = null, workerSkip = null;
         string? report = null;
         var application = Environment.ProcessPath ?? "";
@@ -57,6 +58,7 @@ internal static class ServiceLifecycleChecks
             Check(PrioritizationServiceClient.GetRunningServiceProcessId() == firstPid, "repeated setup reuses the running service without a second host");
 
             using var current = Process.GetCurrentProcess();
+            using var fixtureIdentity = WindowsIdentity.GetCurrent();
             if (current.SessionId == 0)
             {
                 workerSkip = "Runner is in Session 0; production broker correctly requires an interactive session. Authenticated worker lifecycle was not exercised.";
@@ -66,7 +68,14 @@ internal static class ServiceLifecycleChecks
             {
                 for (var cycle = 1; cycle <= 2; cycle++)
                 {
-                    await IdleWorkerAsync(protectedExecutable, cycle);
+                    if (cycle == 1) await IdleWorkerAsync(protectedExecutable, cycle);
+                    else
+                    {
+                        using var standard = Native.StandardToken();
+                        await WindowsIdentity.RunImpersonatedAsync(standard, () => IdleWorkerAsync(protectedExecutable, cycle,
+                            ownerVerificationToken: fixtureIdentity.AccessToken));
+                        standardUserWorkerRuns++;
+                    }
                     workerRuns++;
                 }
             }
@@ -77,8 +86,11 @@ internal static class ServiceLifecycleChecks
             Check(restartedPid != 0 && Native.ProcessIsSystem((int)restartedPid), "production StartAsync restarts the real protected SYSTEM service");
             if (workerSkip is null)
             {
-                await IdleWorkerAsync(protectedExecutable, 3);
+                using var standard = Native.StandardToken();
+                await WindowsIdentity.RunImpersonatedAsync(standard, () => IdleWorkerAsync(protectedExecutable, 3,
+                    ownerVerificationToken: fixtureIdentity.AccessToken));
                 workerRuns++;
+                standardUserWorkerRuns++;
             }
             await PrioritizationServiceSetup.RemoveAsync(application);
             removed = true;
@@ -103,31 +115,47 @@ internal static class ServiceLifecycleChecks
                 await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new
                 {
                     success = error is null && cleanupError is null,
-                    checks = Checks, workerRuns, workerSkip,
+                    checks = Checks, workerRuns, standardUserWorkerRuns, workerSkip,
                     kernelFilterOpened = false, driverInstalled = false, firewallChanged = false,
                     removed, error, cleanupError
                 }, new JsonSerializerOptions { WriteIndented = true }));
             }
         }
-        Console.WriteLine($"Service lifecycle checks: {Checks.Count}; authenticated idle worker runs: {workerRuns}; removed: {removed}.");
+        Console.WriteLine($"Service lifecycle checks: {Checks.Count}; authenticated idle worker runs: {workerRuns}; standard-user worker runs: {standardUserWorkerRuns}; removed: {removed}.");
         return error is null && cleanupError is null ? 0 : 1;
     }
 
-    private static async Task IdleWorkerAsync(string executable, int cycle)
+    private static async Task IdleWorkerAsync(string executable, int cycle, SafeAccessTokenHandle? ownerVerificationToken = null)
     {
         using var identity = WindowsIdentity.GetCurrent();
+        var standardUser = ownerVerificationToken is not null;
+        if (standardUser)
+            Check(!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator),
+                $"cycle {cycle}: effective client token has no enabled administrator group or administrative privileges");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var pipeName = "DYNEX-" + Guid.NewGuid().ToString("N");
         using var pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 4096, 4096, PrioritizationServiceClient.SessionSecurity(identity.User!));
         using var worker = await PrioritizationServiceClient.LaunchAsync(pipeName, timeout.Token);
-        // The elevated fixture queries ExitCode after shutdown. Retain the process
-        // handle while it is alive so the result survives broker cleanup/PID reuse.
-        _ = worker.SafeHandle;
         await pipe.WaitForConnectionAsync(timeout.Token);
-        Check(Native.ClientPid(pipe.SafePipeHandle) == worker.Id && Native.ProcessIsSystem(worker.Id) &&
+        // The token of a SYSTEM process is not readable by its standard client. Preserve
+        // that independent assertion with the fixture's original token, only for this read.
+        // Launch, process access probes, protocol and the exit wait retain the standard token.
+        var systemWorker = ownerVerificationToken is null ? Native.ProcessIsSystem(worker.Id) :
+            WindowsIdentity.RunImpersonated(ownerVerificationToken, () => Native.ProcessIsSystem(worker.Id));
+        Check(Native.ClientPid(pipe.SafePipeHandle) == worker.Id && systemWorker &&
             string.Equals(Native.ProcessImage(worker.Id), executable, StringComparison.OrdinalIgnoreCase),
             $"cycle {cycle}: authenticated worker is the protected SYSTEM child, not a per-user executable");
+        if (standardUser)
+        {
+            Check(Native.AccessDenied(worker.Id, 0x400) && Native.AccessDenied(worker.Id, 1) && Native.AccessDenied(worker.Id, 0x20),
+                $"cycle {cycle}: actual SYSTEM worker denies excess query, termination and injection rights to its desktop client");
+            using var legacy = Process.GetProcessById(worker.Id);
+            var denied = false;
+            try { await legacy.WaitForExitAsync(timeout.Token); }
+            catch (Win32Exception exception) when (exception.NativeErrorCode == 5) { denied = true; }
+            Check(denied, $"cycle {cycle}: old .NET exit waiter reproduces access denied under the real worker ACL");
+        }
         using var reader = new StreamReader(pipe, new UTF8Encoding(false, true), false, 4096, true);
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
         using (var initial = await StatusAsync(reader, timeout.Token)) AssertIdle(initial.RootElement);
@@ -188,6 +216,32 @@ internal static class ServiceLifecycleChecks
 
     private static class Native
     {
+        internal static bool AccessDenied(int pid, uint access)
+        {
+            using var process = OpenProcess(access, false, pid);
+            return process.IsInvalid && Marshal.GetLastWin32Error() == 5;
+        }
+        internal static SafeAccessTokenHandle StandardToken()
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var sid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var bytes = new byte[sid.BinaryLength]; sid.GetBinaryForm(bytes, 0);
+            var memory = Marshal.AllocHGlobal(bytes.Length);
+            try
+            {
+                Marshal.Copy(bytes, 0, memory, bytes.Length);
+                if (!CreateRestrictedToken(identity.AccessToken, 1, 1, [new SidAndAttributes { Sid = memory }],
+                    0, IntPtr.Zero, 0, IntPtr.Zero, out var token)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return token;
+            }
+            finally { Marshal.FreeHGlobal(memory); }
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SidAndAttributes { internal IntPtr Sid; internal uint Attributes; }
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreateRestrictedToken(SafeAccessTokenHandle existing, uint flags, uint disabledCount,
+            SidAndAttributes[] disabled, uint deletedCount, IntPtr deleted, uint restrictedCount, IntPtr restricted, out SafeAccessTokenHandle token);
         internal static bool ProcessIsSystem(int pid)
         {
             using var process = OpenProcess(0x1000, false, pid);

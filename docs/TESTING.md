@@ -1,5 +1,11 @@
 # DYNEX · Prüfstatus
 
+## Updateübergabe unter Standardbenutzerrechten, 1.0.27 (29.10.2026)
+
+Die vollständige lokale Runtime-Suite bestand mit **255 Prüfungen ohne Szenarienfehler** (`artifacts/helper-exit-runtime.log`). Darin reproduzieren 16 neue Prüfungen den alten Fehler 5 mit effektivem Standardbenutzertoken und produktiver Worker-DACL. Sie prüfen den neuen Wartepfad, verweigerte Zusatzrechte, Prozess-ID/Startzeit-Bindung, Abbruch, tatsächliches Prozessende einschließlich Exitcode 259 sowie fehlenden Freigabe-ACK und fehlendes Prozessende als getrennte Sperrgründe. Die Kindprozesse und Pipe-Verbindungen sind isoliert; kein Kernel-Filter wird geöffnet.
+
+Zusätzlich bestanden **925 Shaper-Prüfungen** (`artifacts/helper-exit-shaper.log`), **14 Update-Lifecycle-Prüfungen** (`artifacts/update-access-lifecycle.log`), der Service-Testbuild ohne Warnungen/Fehler und der Anti-Cheat-Guard. Die erweiterte Service-Fixture führt zwei ihrer drei echten SYSTEM-Worker-Zyklen mit eingeschränktem Standardbenutzertoken aus; SYSTEM-Identität, alte Fehlerreproduktion, abschließender Freigabe-ACK und tatsächliches Ende werden dabei unabhängig geprüft. Dieser privilegierte Test wird ausschließlich auf einem verfügbaren GitHub-Windows-Testrechner ausgeführt und ist Teil der Release-Abnahme. Lokal wurden keine produktiven Dienste, Firewallregeln oder Treiber verändert.
+
 ## Automatische Spielerkennung und vereinfachte Oberfläche, 1.0.26 (29.10.2026)
 
 Die vollständige lokale Runtime-Suite bestand mit **238 Prüfungen ohne Szenarienfehler**. Der abschließende fokussierte Lauf bestand mit **37 Prüfungen** einschließlich der zusätzlich ergänzten Validierung ungültiger Alt-Modi. Geprüft werden Hintergrundspiele mit exaktem PID-/Startzeit-Paketnachweis, fehlende und abgelaufene Nachweise, fremde beziehungsweise verwaiste Identitäten sowie Freigabe beim globalen Abschalten. Protokolle: `artifacts/runtime-automatic-games.log` und `artifacts/runtime-automatic-games-focused.log`.

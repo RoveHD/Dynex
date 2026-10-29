@@ -38,7 +38,7 @@ internal static class PrioritizationServiceClient
         return security;
     }
 
-    internal static async Task<Process> LaunchAsync(string pipeName, CancellationToken cancellation)
+    internal static async Task<WorkerProcess> LaunchAsync(string pipeName, CancellationToken cancellation)
     {
         if (!IsSessionPipeName(pipeName)) throw new ArgumentException("Ungültige DYNEX-Verbindung.", nameof(pipeName));
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -63,15 +63,77 @@ internal static class PrioritizationServiceClient
             throw new IOException(reply.Error);
         }
         if (reply.ProcessId <= 0 || reply.StartedAtUtcTicks <= 0) throw new IOException("Ungültige Startbestätigung des Netzwerkdiensts.");
-        var worker = Process.GetProcessById(reply.ProcessId);
+        var worker = WorkerProcess.Open(reply.ProcessId, reply.StartedAtUtcTicks);
         try
         {
-            if (worker.HasExited || worker.StartTime.ToUniversalTime().Ticks != reply.StartedAtUtcTicks)
-                throw new IOException("Der Netzwerkhelfer wurde vor der Verbindung beendet.");
             await writer.WriteLineAsync("received".AsMemory(), timeout.Token);
             return worker;
         }
         catch { worker.Dispose(); throw; }
+    }
+
+    /// <summary>A pinned worker identity with only the query/wait rights granted by the broker.</summary>
+    internal sealed class WorkerProcess : IDisposable
+    {
+        private const uint QueryLimitedInformation = 0x1000, Synchronize = 0x100000;
+        private readonly ProcessExitWaitHandle exit;
+        internal int Id { get; }
+        internal long StartedAtUtcTicks { get; }
+        internal bool HasExited => exit.WaitOne(0);
+        internal int ExitCode
+        {
+            get
+            {
+                if (!HasExited) throw new InvalidOperationException("Der Netzwerkhelfer läuft noch.");
+                if (!GetExitCodeProcess(exit.SafeWaitHandle, out var code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return unchecked((int)code);
+            }
+        }
+
+        private WorkerProcess(int id, long started, ProcessExitWaitHandle exit)
+        { Id = id; StartedAtUtcTicks = started; this.exit = exit; }
+
+        internal static WorkerProcess Open(int id, long expectedStartedAtUtcTicks)
+        {
+            // Process.WaitForExitAsync also requests PROCESS_QUERY_INFORMATION (0x400),
+            // which the SYSTEM worker deliberately does not grant to desktop users.
+            // Retain the exact process object with QUERY_LIMITED_INFORMATION | SYNCHRONIZE.
+            var handle = OpenProcess(QueryLimitedInformation | Synchronize, false, id);
+            if (handle.IsInvalid) { var error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new Win32Exception(error); }
+            var wait = new ProcessExitWaitHandle(handle);
+            try
+            {
+                if (!GetProcessTimes(handle, out var created, out _, out _, out _)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                var started = DateTime.FromFileTimeUtc(created).Ticks;
+                if (started != expectedStartedAtUtcTicks || wait.WaitOne(0))
+                    throw new IOException("Die Identität des Netzwerkhelfers hat sich geändert oder der Helfer wurde bereits beendet.");
+                return new(id, started, wait);
+            }
+            catch { wait.Dispose(); throw; }
+        }
+
+        internal async Task WaitForExitAsync(CancellationToken cancellation = default)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var registration = ThreadPool.RegisterWaitForSingleObject(exit, static (state, _) =>
+                ((TaskCompletionSource)state!).TrySetResult(), completion, Timeout.Infinite, executeOnlyOnce: true);
+            try { await completion.Task.WaitAsync(cancellation).ConfigureAwait(false); }
+            finally { registration.Unregister(null); }
+        }
+
+        public void Dispose() => exit.Dispose();
+        private sealed class ProcessExitWaitHandle : WaitHandle
+        { internal ProcessExitWaitHandle(SafeWaitHandle handle) => SafeWaitHandle = handle; }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeWaitHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, int processId);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessTimes(SafeWaitHandle process, out long created, out long exited, out long kernel, out long user);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetExitCodeProcess(SafeWaitHandle process, out uint code);
     }
 
     internal static async Task<string> ReadFrameAsync(StreamReader reader, CancellationToken token)
