@@ -3,6 +3,10 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
+## Neu in 1.0.23
+
+Upgrades ersetzen das Helferpaket jetzt vollständig, statt neue Dateien über alte zu kopieren. Damit führen übrig gebliebene Runtime-DLLs früherer Versionen nicht mehr zum Starttest-Fehler 22 und zur Rückkehr auf 1.0.21. Bei einem fehlgeschlagenen Update wird der gesamte bisherige Helferordner wiederhergestellt. [Änderungen](docs/release-notes-1.0.23.md).
+
 ## Neu in 1.0.22
 
 Die Windows-Priorisierung startet ihren Netzwerkhelfer jetzt über einen einmalig eingerichteten, geschützten Dienst. Normale Starts und Verbindungswechsel lösen keine wiederholten Administratorabfragen mehr aus. Die Einrichtung und Änderungen am Dienstpaket verlangen weiterhin eine Windows-Bestätigung. Fehlende oder veränderte Helferdateien werden vor der Einrichtung erkannt. [Änderungen](docs/release-notes-1.0.22.md), [Installation](docs/installation.md).

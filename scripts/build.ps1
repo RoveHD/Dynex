@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.22',
+    [string]$Version = '1.0.23',
     # Authenticode signing. Either a certificate in the Windows certificate store
     # (thumbprint; works with hardware tokens/EV certificates) or a PFX file whose
     # password is read only from DYNEX_SIGN_PFX_PASSWORD, never from the command line.
@@ -127,7 +127,7 @@ Remove-Item -LiteralPath $desktopOut -Recurse -Force
 # Never bundle that MSI, a kernel driver, WinDivert files, or native engine DLLs.
 
 # Ship the available project documentation alongside the application.
-$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md', 'docs/video-detection.md', 'docs/updates.md', 'docs/desktop-features.md', 'docs/peer-devices.md', 'docs/elfix-integration.md', 'docs/release-notes-1.0.19.md', 'docs/release-notes-1.0.20.md', 'docs/release-notes-1.0.21.md', 'docs/release-notes-1.0.22.md')
+$documentation = @('README.md', 'docs/architecture.md', 'docs/protocol.md', 'docs/shaping.md', 'docs/installation.md', 'docs/TESTING.md', 'docs/adaptive.md', 'docs/game-detection.md', 'docs/ndis-backend.md', 'docs/qos.md', 'docs/video-detection.md', 'docs/updates.md', 'docs/desktop-features.md', 'docs/peer-devices.md', 'docs/elfix-integration.md', 'docs/release-notes-1.0.19.md', 'docs/release-notes-1.0.20.md', 'docs/release-notes-1.0.21.md', 'docs/release-notes-1.0.22.md', 'docs/release-notes-1.0.23.md')
 foreach ($relativePath in $documentation) {
     $source = Join-Path $repoRoot $relativePath
     if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $docsOut (Split-Path $relativePath -Leaf)) -Force }

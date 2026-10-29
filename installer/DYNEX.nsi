@@ -60,6 +60,8 @@ Var CleanupDeleteFailed
 Var UpgradeLegacy
 Var RollbackReady
 Var PreviousVersion
+Var PreviousAppPresent
+Var PreviousShaperPresent
 Var SelfTestExit
 Var SelfTestLaunchError
 Var UpdateResultHandle
@@ -133,27 +135,40 @@ Function .onInstFailed
   Call RestartAfterUpdate
 FunctionEnd
 
-; Copies the installed program before an upgrade overwrites it. Settings, pairing and
-; identity live in %LOCALAPPDATA%\DYNEX and are never touched by the rollback.
+; Stage the entire old helper tree outside the loader directory. Overlaying the new
+; package would retain obsolete runtime DLLs and fail its exact manifest check.
+; Settings, pairing and identity live outside the program directory.
 Function BackupForRollback
   StrCpy $RollbackReady 0
   StrCpy $PreviousVersion ""
-  IfFileExists "$INSTDIR\DYNEX.exe" 0 backup_done
-  RMDir /r "$INSTDIR\rollback"
-  CreateDirectory "$INSTDIR\rollback\shaper"
+  StrCpy $PreviousAppPresent 0
+  StrCpy $PreviousShaperPresent 0
+  ; An incomplete earlier recovery must remain available for manual recovery.
+  IfFileExists "$INSTDIR\rollback\*.*" backup_unavailable
   ClearErrors
+  CreateDirectory "$INSTDIR\rollback"
+  IfErrors backup_failed
+  IfFileExists "$INSTDIR\DYNEX.exe" 0 backup_shaper
   CopyFiles /SILENT "$INSTDIR\DYNEX.exe" "$INSTDIR\rollback\DYNEX.exe"
-  IfFileExists "$INSTDIR\shaper\*.*" 0 +2
-    CopyFiles /SILENT "$INSTDIR\shaper\*.*" "$INSTDIR\rollback\shaper"
   IfErrors backup_failed
   IfFileExists "$INSTDIR\rollback\DYNEX.exe" 0 backup_failed
+  StrCpy $PreviousAppPresent 1
   ReadRegStr $PreviousVersion HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "DisplayVersion"
+  backup_shaper:
+  ClearErrors
+  IfFileExists "$INSTDIR\shaper\*.*" 0 backup_done
+  ; Same-volume rename preserves every file/subdirectory and fails before the
+  ; application is replaced if a running helper still holds the directory open.
+  Rename "$INSTDIR\shaper" "$INSTDIR\rollback\shaper"
+  IfErrors backup_failed
+  StrCpy $PreviousShaperPresent 1
+  backup_done:
   StrCpy $RollbackReady 1
-  Goto backup_done
+  Return
   backup_failed:
     RMDir /r "$INSTDIR\rollback"
+  backup_unavailable:
     StrCpy $RollbackReady -1
-  backup_done:
 FunctionEnd
 
 Function RestoreRollback
@@ -161,19 +176,24 @@ Function RestoreRollback
     DetailPrint "Update fehlgeschlagen. Vorherige DYNEX-Version wird wiederhergestellt ..."
     ClearErrors
     Delete "$INSTDIR\DYNEX.exe"
-    CopyFiles /SILENT "$INSTDIR\rollback\DYNEX.exe" "$INSTDIR\DYNEX.exe"
+    ${If} $PreviousAppPresent == 1
+      CopyFiles /SILENT "$INSTDIR\rollback\DYNEX.exe" "$INSTDIR\DYNEX.exe"
+    ${EndIf}
     RMDir /r "$INSTDIR\shaper"
-    CreateDirectory "$INSTDIR\shaper"
-    CopyFiles /SILENT "$INSTDIR\rollback\shaper\*.*" "$INSTDIR\shaper"
+    ${If} $PreviousShaperPresent == 1
+      Rename "$INSTDIR\rollback\shaper" "$INSTDIR\shaper"
+    ${EndIf}
     ${IfNot} ${Errors}
       ${If} $PreviousVersion != ""
         WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DYNEX" "DisplayVersion" "$PreviousVersion"
       ${EndIf}
-      ; Tells the app not to download this version again automatically.
-      CreateDirectory "$LOCALAPPDATA\DYNEX\updates"
-      FileOpen $PrerequisiteLog "$LOCALAPPDATA\DYNEX\updates\rolled-back.txt" w
-      FileWrite $PrerequisiteLog "${APP_VERSION}"
-      FileClose $PrerequisiteLog
+      ${If} $PreviousAppPresent == 1
+        ; Tells the restored app not to download this version again automatically.
+        CreateDirectory "$LOCALAPPDATA\DYNEX\updates"
+        FileOpen $PrerequisiteLog "$LOCALAPPDATA\DYNEX\updates\rolled-back.txt" w
+        FileWrite $PrerequisiteLog "${APP_VERSION}"
+        FileClose $PrerequisiteLog
+      ${EndIf}
       RMDir /r "$INSTDIR\rollback"
       DetailPrint "Vorherige Version $PreviousVersion wiederhergestellt."
     ${Else}
@@ -182,6 +202,15 @@ Function RestoreRollback
     StrCpy $RollbackReady 2
   ${EndIf}
 FunctionEnd
+
+; Shared with the isolated installer smoke test so upgrade tests exercise the
+; production copy operations after staging the previous helper directory.
+!macro InstallApplicationPayload
+  SetOutPath "$INSTDIR"
+  File "${PUBLISH_ROOT}\DYNEX.exe"
+  SetOutPath "$INSTDIR\shaper"
+  File /r "${PUBLISH_ROOT}\shaper\*"
+!macroend
 
 Function .onGUIEnd
   Call ReleaseUpdateGate
@@ -263,10 +292,7 @@ Section "DYNEX Anwendung" SEC_MAIN
     SetErrorLevel 14
     Abort
   ${EndIf}
-  SetOutPath "$INSTDIR"
-  File "${PUBLISH_ROOT}\DYNEX.exe"
-  SetOutPath "$INSTDIR\shaper"
-  File /r "${PUBLISH_ROOT}\shaper\*"
+  !insertmacro InstallApplicationPayload
   !insertmacro InstallDocumentation
   ; Prove the new binary starts and its payload is complete before anything else changes.
   Call RunPackageSelfTest
