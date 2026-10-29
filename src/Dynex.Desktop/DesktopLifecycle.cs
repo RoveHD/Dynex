@@ -346,6 +346,14 @@ internal static class DesktopLifecycle
                 Capture(window, Path.Combine(directory, $"settings-{section}-{width}x{height}.png"));
                 AssertPageFits(window, "SettingsPage", controls);
                 AssertButtonsFit((FrameworkElement)window.FindName("SettingsPage"));
+                var settingsPage = (System.Windows.Controls.Grid)window.FindName("SettingsPage");
+                foreach (var name in new[] { "SettingsHeading", "SettingsDescription" })
+                {
+                    var text = (FrameworkElement)window.FindName(name);
+                    var bounds = text.TransformToAncestor(settingsPage).TransformBounds(new Rect(text.RenderSize));
+                    if (!text.IsVisible || bounds.Top < -1 || bounds.Bottom > settingsPage.RowDefinitions[0].ActualHeight - 8)
+                        throw new Exception($"Einstellungskopf {name} überlappt bei {width}x{height} den Inhalt: {bounds}, Kopfzeile {settingsPage.RowDefinitions[0].ActualHeight:0.##}.");
+                }
                 if (window.IsOverviewVisible || ((FrameworkElement)window.FindName("OverviewPage")).IsVisible)
                     throw new Exception("Beim Öffnen der Einstellungen bleibt die Übersicht sichtbar.");
                 AssertVisibleControl(window, "SettingsPage", "SettingsSaveButton");

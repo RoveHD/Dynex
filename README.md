@@ -3,9 +3,9 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
-## Neu in 1.0.25
+## Neu in 1.0.26
 
-Die Oberfläche konzentriert sich auf automatische Paketpriorisierung, Geräte und Messwerte. In den Einstellungen bleiben Allgemein, Darstellung und Updates. Erkannte laufende Spiele werden auch im Hintergrund auf echten Spielverkehr geprüft; Fokus- und Prozessnamen-Felder entfallen. Geräteübersicht, Verbrauch und Ping bleiben erhalten. [Änderungen](docs/release-notes-1.0.25.md).
+Die Oberfläche konzentriert sich auf automatische Paketpriorisierung, Geräte und Messwerte. In den Einstellungen bleiben Allgemein, Darstellung und Updates. Erkannte laufende Spiele werden auch im Hintergrund auf echten Spielverkehr geprüft; Fokus- und Prozessnamen-Felder entfallen. Geräteübersicht, Verbrauch und Ping bleiben erhalten. [Änderungen](docs/release-notes-1.0.26.md).
 
 ## Neu in 1.0.24
 

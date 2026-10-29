@@ -435,7 +435,7 @@
       </Grid>
       <Grid x:Name="SettingsPage" Visibility="Collapsed">
         <Grid.RowDefinitions>
-          <RowDefinition Height="66" />
+          <RowDefinition Height="Auto" />
           <RowDefinition Height="*" />
           <RowDefinition Height="48" />
         </Grid.RowDefinitions>
@@ -563,7 +563,7 @@
           <Button Grid.Column="2" Content="Neu laden" Click="ReloadSettings_Click" Style="{StaticResource CompactButton}" ToolTip="Eingaben durch die aktuell gespeicherten Einstellungen ersetzen"/>
           <TextBlock x:Name="StatusRefreshText" Grid.Column="3" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="4,0,0,0" MaxHeight="38" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
         </Grid>
-        <StackPanel Grid.Row="0">
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
           <TextBlock x:Name="SettingsHeading" Text="Einstellungen" FontSize="{DynamicResource UiHeroFontSize}" FontWeight="SemiBold" />
           <TextBlock x:Name="SettingsDescription" Text="DYNEX passend zu deinem Alltag." Style="{StaticResource Caption}" Margin="0,4,0,0" />
         </StackPanel>

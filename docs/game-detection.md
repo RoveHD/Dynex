@@ -2,7 +2,7 @@
 
 > **Aktueller Betrieb: reine Priorisierung.** Budget-, Limit- und automatische Speedtest-Beschreibungen in diesem historischen Dokument gelten nur für ältere Versionen. Es werden keine Download-/Uploadlimits mehr ausgeführt; alte Einstellungen werden neutralisiert. Der manuelle Speedtest bleibt Diagnose. Aktuelle Abläufe: [README](../README.md), [Paketpriorisierung](qos.md), [Architektur](architecture.md).
 
-Seit 1.0.25 läuft die Spielerkennung automatisch. Die bisherige Spiele-Seite mit Fokuswahl, Prozessnamen-Feldern und manueller Programmliste entfällt. Bereits gespeicherte zusätzliche Prozessnamen bleiben wirksam und werden beim normalen Speichern oder Importieren nicht gelöscht. Der globale Schalter **Paketpriorisierung aktivieren** steuert weiterhin die Paketverarbeitung.
+Seit 1.0.26 läuft die Spielerkennung automatisch. Die bisherige Spiele-Seite mit Fokuswahl, Prozessnamen-Feldern und manueller Programmliste entfällt. Bereits gespeicherte zusätzliche Prozessnamen bleiben wirksam und werden beim normalen Speichern oder Importieren nicht gelöscht. Der globale Schalter **Paketpriorisierung aktivieren** steuert weiterhin die Paketverarbeitung.
 
 `Dynex.Desktop.Games.GameDetector.Scan(additionalNames)` durchsucht die laufenden Prozesse lesend nach einer passenden ausführbaren Datei. `additionalNames` akzeptiert Prozess-/EXE-Basennamen, getrennt durch Semikolon, Komma oder Zeilenumbruch. Der Scanner führt keine Spielprozesse aus, öffnet keine Spieldateien zum Schreiben und greift weder in Anti-Cheat-Systeme noch in den Spielspeicher ein.
 

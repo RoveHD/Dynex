@@ -1,4 +1,4 @@
-# DYNEX 1.0.25
+# DYNEX 1.0.26
 
 Die Oberfläche konzentriert sich auf automatische Paketpriorisierung, Geräte und Messwerte.
 
@@ -12,4 +12,4 @@ Es gibt weiterhin keine Download- oder Uploadlimits. DYNEX markiert erkannte Spi
 
 Die Windows-Oberfläche wurde mit isolierten Daten in sieben Fenstergrößen sowie mit Geräte- und Verbrauchsszenarien geprüft. Laufzeittests kontrollieren Hintergrundspiele, fehlenden beziehungsweise veralteten Paketnachweis und das Abschalten der Paketverarbeitung. Diese Tests ersetzen keinen Belastungstest mit echtem Router und Spiel.
 
-Windows und Android erhalten Version 1.0.25. Die Android-App verwendet ihren bisherigen Update-Schlüssel.
+Windows und Android erhalten Version 1.0.26. Die Android-App verwendet ihren bisherigen Update-Schlüssel.
