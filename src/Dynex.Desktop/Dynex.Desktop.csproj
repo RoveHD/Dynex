@@ -7,7 +7,7 @@
     <!-- WPF owns startup and per-monitor DPI; WinForms is used only for the tray icon. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <AssemblyName>DYNEX</AssemblyName>
-    <Version>1.0.27</Version>
+    <Version>1.0.28</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/dynex.ico</ApplicationIcon>
     <!-- Background tray app: no extra background GC thread, smaller heap. -->

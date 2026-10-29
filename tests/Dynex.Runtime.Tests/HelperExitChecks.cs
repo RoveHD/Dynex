@@ -14,14 +14,18 @@ internal static class HelperExitChecks
 {
     internal static async Task RunAsync(Action<bool, string> check)
     {
+        using var fixtureIdentity = WindowsIdentity.GetCurrent();
+        // Process.Start creates redirected anonymous pipes using the process token's
+        // default DACL. Stage fixture resources before impersonation: an elevated
+        // runner's default DACL need not grant its restricted thread token access.
+        using var child = StartChild(fixtureIdentity.User!, 259);
+        var started = child.StartTime.ToUniversalTime().Ticks;
         using var standard = StandardToken();
         await WindowsIdentity.RunImpersonatedAsync(standard, async () =>
         {
             using var identity = WindowsIdentity.GetCurrent();
             check(!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator),
                 "helper exit regression runs with an effective standard-user token, including on elevated CI");
-            using var child = StartChild(identity.User!, 259);
-            var started = child.StartTime.ToUniversalTime().Ticks;
             foreach (var rights in new uint[] { 0x400, 1, 0x20 })
             {
                 using var denied = OpenProcess(rights, false, child.Id);
@@ -59,50 +63,60 @@ internal static class HelperExitChecks
                 "retained handle proves exit and preserves even exit code 259 after the original handle closes");
             await worker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(1));
             check(true, "waiting again on an exited retained worker needs no PID lookup or stronger process rights");
-
-            await ControllerShutdownAsync(identity.User!, finalAcknowledgement: true, check);
-            await ControllerShutdownAsync(identity.User!, finalAcknowledgement: false, check);
         });
+        await ControllerShutdownAsync(fixtureIdentity.User!, standard, finalAcknowledgement: true, check);
+        await ControllerShutdownAsync(fixtureIdentity.User!, standard, finalAcknowledgement: false, check);
     }
 
-    private static async Task ControllerShutdownAsync(SecurityIdentifier sid, bool finalAcknowledgement, Action<bool, string> check)
+    private static async Task ControllerShutdownAsync(SecurityIdentifier sid, SafeAccessTokenHandle standard,
+        bool finalAcknowledgement, Action<bool, string> check)
     {
+        // Provision only fixture resources with the original token. All production
+        // process opens, pipe connection, IPC and StopAsync run with the restricted token.
         using var child = StartChild(sid, 0);
-        using var worker = PrioritizationServiceClient.WorkerProcess.Open(child.Id, child.StartTime.ToUniversalTime().Ticks);
+        var started = child.StartTime.ToUniversalTime().Ticks;
         var name = "dynex-exit-regression-" + Guid.NewGuid().ToString("N");
-        using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
-        await Task.WhenAll(pipe.WaitForConnectionAsync(), client.ConnectAsync(5000));
-        using var lifetime = new CancellationTokenSource();
-        var controller = new ShaperController();
-        void Set(string field, object value) => typeof(ShaperController).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(controller, value);
-        Set("process", worker); Set("pipe", pipe); Set("cancellation", lifetime); Set("captureRequested", true);
-        Set("writer", new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true });
-        Set("reader", (Task)typeof(ShaperController).GetMethod("ReadStatusAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(controller, [pipe, lifetime.Token])!);
-        using var input = new StreamReader(client, leaveOpen: true);
-        var output = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
-        var shutdown = controller.StopAsync(requireExit: true);
-        var command = await input.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3));
-        check(command?.Contains("\"shutdown\":true", StringComparison.Ordinal) == true,
-            "controller requests cooperative shutdown before waiting on the protected process");
-        await output.WriteLineAsync("{\"active\":false,\"qosActive\":false,\"mbps\":null,\"captureReleased\":true,\"releaseError\":null,\"stopped\":" +
-            (finalAcknowledgement ? "true" : "false") + "}");
-        if (finalAcknowledgement)
+        using var pipe = NamedPipeServerStreamAcl.Create(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance, 1024, 1024, PrioritizationServiceClient.SessionSecurity(sid));
+        await WindowsIdentity.RunImpersonatedAsync(standard, async () =>
         {
-            using var ready = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            while (!controller.CaptureReleased) await Task.Delay(10, ready.Token);
-            check(!shutdown.IsCompleted, "authenticated final release frame alone cannot permit an update while the worker remains alive");
-        }
-        output.Dispose();
-        client.Dispose();
-        await child.StandardInput.WriteLineAsync("exit");
-        var rejected = false;
-        try { await shutdown.WaitAsync(TimeSpan.FromSeconds(5)); }
-        catch (InvalidOperationException) when (!finalAcknowledgement) { rejected = true; }
-        check(finalAcknowledgement ? !rejected && controller.CaptureReleased : rejected && !controller.CaptureReleased,
-            finalAcknowledgement ? "standard-user controller shutdown confirms BOTH the final release frame and real worker exit" :
-            "worker exit without its authenticated final release frame still blocks the update");
+            using var identity = WindowsIdentity.GetCurrent();
+            check(!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator),
+                "controller exit regression uses the standard-user token after privileged fixture provisioning");
+            using var worker = PrioritizationServiceClient.WorkerProcess.Open(child.Id, started);
+            using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await Task.WhenAll(pipe.WaitForConnectionAsync(), client.ConnectAsync(5000));
+            using var lifetime = new CancellationTokenSource();
+            var controller = new ShaperController();
+            void Set(string field, object value) => typeof(ShaperController).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(controller, value);
+            Set("process", worker); Set("pipe", pipe); Set("cancellation", lifetime); Set("captureRequested", true);
+            Set("writer", new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true });
+            Set("reader", (Task)typeof(ShaperController).GetMethod("ReadStatusAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(controller, [pipe, lifetime.Token])!);
+            using var input = new StreamReader(client, leaveOpen: true);
+            var output = new StreamWriter(client, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+            var shutdown = controller.StopAsync(requireExit: true);
+            var command = await input.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            check(command?.Contains("\"shutdown\":true", StringComparison.Ordinal) == true,
+                "controller requests cooperative shutdown before waiting on the protected process");
+            await output.WriteLineAsync("{\"active\":false,\"qosActive\":false,\"mbps\":null,\"captureReleased\":true,\"releaseError\":null,\"stopped\":" +
+                (finalAcknowledgement ? "true" : "false") + "}");
+            if (finalAcknowledgement)
+            {
+                using var ready = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                while (!controller.CaptureReleased) await Task.Delay(10, ready.Token);
+                check(!shutdown.IsCompleted, "authenticated final release frame alone cannot permit an update while the worker remains alive");
+            }
+            output.Dispose();
+            client.Dispose();
+            await child.StandardInput.WriteLineAsync("exit");
+            var rejected = false;
+            try { await shutdown.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (InvalidOperationException) when (!finalAcknowledgement) { rejected = true; }
+            check(finalAcknowledgement ? !rejected && controller.CaptureReleased : rejected && !controller.CaptureReleased,
+                finalAcknowledgement ? "standard-user controller shutdown confirms BOTH the final release frame and real worker exit" :
+                "worker exit without its authenticated final release frame still blocks the update");
+        });
     }
 
     private static Process StartChild(SecurityIdentifier sid, int exitCode)

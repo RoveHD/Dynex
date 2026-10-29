@@ -3,9 +3,9 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
-## Neu in 1.0.27
+## Neu in 1.0.28
 
-Behebt „Zugriff verweigert“ beim Beenden des geschützten Helfers vor einem Update. Der Desktop benötigt dafür keine zusätzlichen Prozessrechte; Freigabe und Prozessende werden weiterhin geprüft. Bei bereits blockiertem Update das Setup einmal direkt starten. [Änderungen](docs/release-notes-1.0.27.md).
+Behebt „Zugriff verweigert“ beim Beenden des geschützten Helfers vor einem Update. Der Desktop benötigt dafür keine zusätzlichen Prozessrechte; Freigabe und Prozessende werden weiterhin geprüft. Bei bereits blockiertem Update das Setup einmal direkt starten. [Änderungen](docs/release-notes-1.0.28.md).
 
 ## Neu in 1.0.26
 
