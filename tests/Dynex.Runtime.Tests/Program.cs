@@ -719,7 +719,7 @@ await Scenario("newly recognized configured game cancels active measurement imme
     var prior = runtime.Settings;
     await runtime.SaveSettingsAsync(prior with { Mode = GamingMode.On, GameProcesses = "testgame" }).WaitAsync(timeout);
     await measurement.WaitAsync(timeout);
-    Check(request.Token.IsCancellationRequested && runtime.Settings.Mode == GamingMode.On && runtime.Settings.GameProcesses == "testgame" &&
+    Check(request.Token.IsCancellationRequested && runtime.Settings.Mode == GamingMode.Auto && runtime.Settings.GameProcesses == "testgame" &&
         runtime.Settings.CapacityMeasuredAtUtc == prior.CapacityMeasuredAtUtc && runtime.Settings.CapacityMbps == prior.CapacityMbps,
         "recognizing an open game through settings while measuring cancels load and preserves the last successful capacity");
 });
@@ -869,7 +869,7 @@ await Scenario("startup without diagnostic writes survives locked settings", asy
 
 await Scenario("actual game packet activity controls prioritization", () => GameTrafficChecks.Run(Check));
 
-await Scenario("foreground focus controls gaming status without manual or always-on limits", async () =>
+await Scenario("running games retain packet-based gaming across foreground changes", async () =>
 {
     using var profile = new TestProfile(measured: true);
     var service = new ControlledSpeedTest();
@@ -886,8 +886,8 @@ await Scenario("foreground focus controls gaming status without manual or always
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On, ManualLimitMbps = 25 });
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot?.Devices.Count == 1);
-    Check(runtime.Snapshot is { IsGaming: false, GamingCount: 0 } && runtime.PlannedDownloadLimitMbps is null,
-        "legacy Mode.On and a manual maximum cannot limit downloads while games are only in the background");
+    Check(runtime.Snapshot is { IsGaming: true, GamingCount: 1, Game: "First game" } && runtime.PlannedDownloadLimitMbps is null,
+        "recognized background games with matching packet evidence publish Gaming without limiting downloads");
     var change = Stopwatch.StartNew();
     Volatile.Write(ref foreground, new(202, "secondgame", started.AddMinutes(1)));
     await Until(() => runtime.Snapshot is { IsGaming: true, Game: "Second game" } && runtime.PlannedDownloadLimitMbps is null);
@@ -896,10 +896,10 @@ await Scenario("foreground focus controls gaming status without manual or always
         "actual runtime publishes the correctly focused second game without any planned cap");
     change.Restart();
     Volatile.Write(ref foreground, new(999, "Discord", started));
-    await Until(() => runtime.Snapshot?.IsGaming == false && runtime.PlannedDownloadLimitMbps is null);
+    await Until(() => runtime.Snapshot is { IsGaming: true, Game: "First game" } && runtime.PlannedDownloadLimitMbps is null);
     Console.WriteLine($"Foreground loss observed after {change.Elapsed.TotalMilliseconds:F0} ms (existing 2-second monitor).");
-    Check(!PublishedGaming(runtime) && PublishedGame(runtime) == "First game" && runtime.Snapshot!.GamingCount == 0,
-        "Alt-Tab releases the actual planned limit and publishes idle gaming while retaining the open game for speedtest safety");
+    Check(PublishedGaming(runtime) && PublishedGame(runtime) == "First game" && runtime.Snapshot!.GamingCount == 1,
+        "Alt-Tab retains packet-confirmed gaming while general prioritization remains free of caps");
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
     Check(service.Calls == 0 && runtime.SpeedTestMessage.Contains("nicht gestartet"),
         "a game left open in the background still blocks manual speedtest load");
@@ -907,8 +907,10 @@ await Scenario("foreground focus controls gaming status without manual or always
     await Until(() => runtime.Snapshot is { IsGaming: true, Game: "First game" } && runtime.PlannedDownloadLimitMbps is null);
     Check(PublishedGaming(runtime), "returning focus to another running game restores gaming status without a download budget");
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
-    await Until(() => runtime.Snapshot?.IsGaming == false && runtime.PlannedDownloadLimitMbps is null);
-    Check(!PublishedGaming(runtime), "Mode.Off removes the local focus contribution even while the foreground game remains open");
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot?.IsGaming == true && runtime.PlannedDownloadLimitMbps is null);
+    Check(PublishedGaming(runtime) && runtime.Settings.Mode == GamingMode.Auto,
+        "retired Mode.Off no longer disables automatic packet-confirmed game detection");
     Volatile.Write(ref games, []);
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.On });
     await Until(() => runtime.Snapshot is { IsGaming: false, Game: "" });
@@ -916,14 +918,15 @@ await Scenario("foreground focus controls gaming status without manual or always
         "legacy Mode.On cannot invent a focused game after all games close");
 });
 
-await Scenario("remote focus survives local Alt-Tab without creating any caps", async () =>
+await Scenario("local and remote gaming remain independent without any caps", async () =>
 {
     using var profile = new TestProfile(measured: true);
     var service = new ControlledSpeedTest();
     var started = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
     ForegroundProcess? foreground = new(101, "localgame", started);
+    GameDetectionResult[] games = [new("Local game", "localgame", 101, started, true, "test")];
     await using var runtime = new DynexRuntime(profile.Path, service,
-        _ => [new("Local game", "localgame", 101, started, true, "test")], () => Volatile.Read(ref foreground),
+        _ => Volatile.Read(ref games), () => Volatile.Read(ref foreground),
         readGameTraffic: () => [new(101, started.UtcTicks)]);
     await runtime.SaveSettingsAsync(runtime.Settings with { ManualLimitMbps = 20 });
     var remoteSettings = CoreConfiguration(runtime) with
@@ -937,22 +940,26 @@ await Scenario("remote focus survives local Alt-Tab without creating any caps", 
     await runtime.StartAsync().WaitAsync(timeout);
     await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 2 } && runtime.PlannedDownloadLimitMbps is null);
     Volatile.Write(ref foreground, null);
-    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps is null);
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 2 } && runtime.PlannedDownloadLimitMbps is null);
     Check(runtime.Snapshot!.Devices.Single(p => p.Name == "Focused remote test PC").Gaming,
-        "local Alt-Tab keeps the gaming indication while an actual connected UDP peer is focused gaming without capping downloads");
+        "local Alt-Tab preserves independent local and authenticated peer gaming without capping downloads");
     await runtime.SaveSettingsAsync(runtime.Settings with { Mode = GamingMode.Off });
-    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps is null);
-    Check(runtime.PlannedDownloadLimitMbps is null,
-        "Mode.Off disables only the local focus contribution and still protects a focused peer");
+    await runtime.RefreshStatusAsync().WaitAsync(timeout);
+    await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 2 } && runtime.PlannedDownloadLimitMbps is null);
+    Check(runtime.Settings.Mode == GamingMode.Auto,
+        "legacy Mode.Off preserves automatic local detection and authenticated peer state");
     remote.Publish(false, game: "Remote background game");
-    await Until(() => runtime.Snapshot is { GamingCount: 0 } && runtime.PlannedDownloadLimitMbps is null);
-    Check(runtime.Snapshot!.SharedDownloadBudgetMbps is null && !PublishedGaming(runtime),
-        "remote Alt-Tab clears active gaming without introducing any automatic or manual caps");
+    await Until(() => runtime.Snapshot is { IsGaming: true, GamingCount: 1 } && runtime.PlannedDownloadLimitMbps is null);
+    Check(runtime.Snapshot!.SharedDownloadBudgetMbps is null && PublishedGaming(runtime),
+        "a peer clearing its gaming state does not revoke a local game with packet evidence");
     await runtime.MeasureCapacityAsync().WaitAsync(timeout);
     Check(service.Calls == 0, "background local and remote games retain the separate speedtest safety lock");
+    Volatile.Write(ref games, []);
+    await Until(() => runtime.Snapshot is { IsGaming: false, GamingCount: 0 });
     remote.Publish(true, game: "Remote focused game");
     await Until(() => runtime.Snapshot?.GamingCount == 1 && runtime.PlannedDownloadLimitMbps is null);
-    Check(!runtime.Snapshot!.IsGaming, "remote focus regain restores gaming indication while the local PC stays unfocused");
+    Check(!runtime.Snapshot!.IsGaming, "remote gaming cannot invent a local game after the local process closes");
 });
 
 await Scenario("focused unmeasured gaming does not introduce a bandwidth cap", async () =>

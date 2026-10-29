@@ -3,6 +3,10 @@
 
 DYNEX ist eine native Windows-App für Spiel-, Sprach- und Videopaketpriorisierung im privaten Heimnetz. Geräteübersicht, aktuelle Download-/Uploadwerte, Verbrauchsverlauf, Ping-Verlauf und Verbindungsdiagnose bleiben erhalten.
 
+## Neu in 1.0.25
+
+Die Oberfläche konzentriert sich auf automatische Paketpriorisierung, Geräte und Messwerte. In den Einstellungen bleiben Allgemein, Darstellung und Updates. Erkannte laufende Spiele werden auch im Hintergrund auf echten Spielverkehr geprüft; Fokus- und Prozessnamen-Felder entfallen. Geräteübersicht, Verbrauch und Ping bleiben erhalten. [Änderungen](docs/release-notes-1.0.25.md).
+
 ## Neu in 1.0.24
 
 Upgrades ersetzen das Helferpaket jetzt vollständig, statt neue Dateien über alte zu kopieren. Damit führen übrig gebliebene Runtime-DLLs früherer Versionen nicht mehr zum Starttest-Fehler 22 und zur Rückkehr auf 1.0.21. Bei einem fehlgeschlagenen Update wird der gesamte bisherige Helferordner wiederhergestellt. [Änderungen](docs/release-notes-1.0.24.md).
@@ -31,11 +35,11 @@ Die automatische lokale [ELFIX-Medienmeldung](docs/elfix-integration.md) aus 1.0
 
 ## Start und bestehende Installationen
 
-Installiere DYNEX auf jedem Windows-PC, auf dem du lokale Spielpakete markieren möchtest. Im privaten LAN werden andere DYNEX-Geräte automatisch erkannt; optional kann eine private gemeinsame Gruppe verwendet werden. Der signierte Windows Packet Filter und die gezielte private LAN-Firewallfreigabe bleiben für Paketverarbeitung und Geräteverbindung erforderlich. Die Einrichtung kann eine Windows-Bestätigung verlangen; die normale Oberfläche läuft ohne Erhöhung.
+Installiere DYNEX auf jedem Windows-PC, auf dem du lokale Spielpakete markieren möchtest. Im privaten LAN werden andere DYNEX-Geräte automatisch erkannt. Bestehende private Gruppen bleiben erhalten. Der signierte Windows Packet Filter und die gezielte private LAN-Firewallfreigabe bleiben für Paketverarbeitung und Geräteverbindung erforderlich. Die Einrichtung kann eine Windows-Bestätigung verlangen; die normale Oberfläche läuft ohne Erhöhung.
 
 Bestehende Einstellungen, importierte Sicherungen und gespeicherte Netzwerkprofile werden auf den Betrieb ohne Limits migriert. Geräte, Aliasnamen, Kopplungen, Spiele und Messhistorien bleiben erhalten. Ältere DYNEX-Versionen auf anderen Geräten können ihre eigenen Limits weiterhin anwenden; aktualisiere alle beteiligten Geräte.
 
-Ein geeignetes Spiel muss tatsächlichen Netzwerkverkehr haben. Ohne passenden Spielverkehr bleibt die Spielbeobachtung passiv; die allgemeine Priorisierung für Sprache und erkannte Videos bleibt bei eingeschaltetem Priorisierungsschalter aktiv. Abschalten, Diagnose-Speedtest und Beenden geben die Capture-Sitzung frei. Über **Auch ab Spielstart priorisieren** lassen sich Spiele unabhängig vom Fokus beobachten. Unbekannte oder mehrdeutige Prozesszuordnung führt nicht zu einer Markierung. [Spielerkennung](docs/game-detection.md), [Priorisierung](docs/qos.md).
+Ein geeignetes Spiel muss tatsächlichen Netzwerkverkehr haben. Ohne passenden Spielverkehr bleibt die Spielbeobachtung passiv; die allgemeine Priorisierung für Sprache und erkannte Videos bleibt bei eingeschaltetem Priorisierungsschalter aktiv. Abschalten, Diagnose-Speedtest und Beenden geben die Capture-Sitzung frei. Erkannte laufende Spiele werden automatisch auch im Hintergrund beobachtet; der Fokus bestimmt nur die angezeigte Spielauswahl. Unbekannte oder mehrdeutige Prozesszuordnung führt nicht zu einer Markierung. [Spielerkennung](docs/game-detection.md), [Priorisierung](docs/qos.md).
 
 ## Android
 
@@ -45,7 +49,7 @@ Ein bereits in AdGuard eingetragener DYNEX-Proxy bleibt als **unbegrenzte Durchl
 
 ## Ansichten und Daten
 
-Die Übersicht zeigt bestätigte lokale Priorisierung, Spiel-/Sprach-/Videopaketzähler, aktuelle Datenraten und Router-/Internetping. Geräteansicht, Aliasverwaltung, Zwei-Geräte-Test, Analyse, Netzwerkprofile und Verbrauchsverlauf bleiben erhalten. Unbekannte Messwerte erscheinen als **—**, gemessener Leerlauf als **0,0 Mbps**. Netzwerkprofile speichern Messwerte und Verbindungseinstellungen; alte Limitfelder sind wirkungslos. [Desktop-Funktionen](docs/desktop-features.md).
+Die Übersicht zeigt bestätigte lokale Priorisierung, Spiel-/Sprach-/Videopaketzähler, aktuelle Datenraten und Router-/Internetping. Geräteansicht, Aliasverwaltung, Analyse und Verbrauchsverlauf bleiben erhalten. Netzwerkprofile werden im Hintergrund weiter verwendet. Unbekannte Messwerte erscheinen als **—**, gemessener Leerlauf als **0,0 Mbps**. Netzwerkprofile speichern Messwerte und Verbindungseinstellungen; alte Limitfelder sind wirkungslos. [Desktop-Funktionen](docs/desktop-features.md).
 
 Optionale Hintergrundupdates, Einstellungen sichern/wiederherstellen und Windows-Autostart bleiben verfügbar. Der Updater lädt sein eigenes Installationspaket weiterhin schonend herunter; daraus entsteht kein Limit für andere Programme. [Updates](docs/updates.md).
 

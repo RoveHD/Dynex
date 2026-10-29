@@ -1,5 +1,13 @@
 # DYNEX · Prüfstatus
 
+## Automatische Spielerkennung und vereinfachte Oberfläche, 1.0.25 (29.10.2026)
+
+Die vollständige lokale Runtime-Suite bestand mit **238 Prüfungen ohne Szenarienfehler**. Der abschließende fokussierte Lauf bestand mit **37 Prüfungen** einschließlich der zusätzlich ergänzten Validierung ungültiger Alt-Modi. Geprüft werden Hintergrundspiele mit exaktem PID-/Startzeit-Paketnachweis, fehlende und abgelaufene Nachweise, fremde beziehungsweise verwaiste Identitäten sowie Freigabe beim globalen Abschalten. Protokolle: `artifacts/runtime-automatic-games.log` und `artifacts/runtime-automatic-games-focused.log`.
+
+Desktop-Publish, vollständiger unsichtbarer WPF-Smoke und FeatureChecks bestanden. Die Prüfungen umfassen sieben Fenstergrößen, die drei verbleibenden Einstellungsbereiche, tatsächlich entfernte Expertenfelder, Erhalt ungespeicherter Eingaben und versteckter gespeicherter Werte, Geräte-Refresh mit Busy-/Fehler-/Erholungszuständen, ausdrücklichen LAN-Opt-in bei bestehenden privaten Gruppen, Paging, verschlüsselte Loopback-Telemetrie und Ping-Hover. Eine zusätzliche allgemeine Button-Geometrieprüfung reproduzierte eine abgeschnittene Diagnosezeile bei 900×650; nach der Layoutkorrektur besteht sie. Allgemein, Geräte und Übersicht wurden in der kleinsten Größe zusätzlich visuell geprüft.
+
+Ergebnisse: `artifacts/qa-simplified-ui-final/` und `artifacts/qa-simplified-feature-ui-final/`. Alle Profile und Netzdaten waren isoliert; es wurden keine produktiven Einstellungen, Firewallregeln oder Treiber verändert. Ein echter Router-/Spiel-Belastungstest ist dadurch nicht ersetzt. Frühere Abschnitte können inzwischen entfernte Bedienfelder beschreiben.
+
 ## Discord-Korrektur, 1.0.21 (21.10.2026)
 
 Die neue Regression für kleine Videoframes mit nur einem RTP-Paket scheitert nachweisbar an der unveränderten 1.0.20-Regel (`artifacts/discord-repro-before-fix.log`). Nach der Korrektur bestehen **889 Shaper-Prüfungen**, einschließlich echtem optionalem Node-Pipe-Client. Die zusätzlichen Fälle prüfen kleine Frames in beiden Richtungen bei 15/30/60/144 fps, 14-fps-Frames mit verschlüsselten Header-Erweiterungsdaten, abweichende Audio-Zeitbasen, verlorene Marker, große Keyframes und Sequenzlücken. Nach Ablauf erhalten auch Duplikate keine alte Videofreigabe. Protokoll: `artifacts/discord-frame-fix-shaper-tests.log`.

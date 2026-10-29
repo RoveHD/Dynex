@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -9,7 +8,6 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
-using Dynex.Desktop.Games;
 using Dynex.Desktop.Updates;
 using Forms = System.Windows.Forms;
 using Control = System.Windows.Controls.Control;
@@ -27,15 +25,8 @@ public partial class MainWindow : Window
     private readonly Stream? _trayIconStream;
     private readonly bool _ownsTrayIcon;
     private bool _allowClose;
-    private bool _revealed;
     private bool _loading = true;
-    private string? _settingsNetworkProfileId;
     private bool _settingUp;
-    private bool _refreshingProcesses;
-    private bool _processesLoaded;
-    private string? _processLoadError;
-    private IReadOnlyList<string> _runningProcessNames = Array.Empty<string>();
-    private readonly ObservableCollection<string> _configuredProcesses = [];
     private bool _savingAutoUpdate;
     private bool _checkingNetwork;
     private bool _savingConnectionMode;
@@ -62,12 +53,6 @@ public partial class MainWindow : Window
         _runtime = runtime;
         _updates = updates;
         _feedback = new UiFeedback(this, silent: DesktopLifecycle.ProfilePath is not null);
-        ConfiguredProcessesList.ItemsSource = _configuredProcesses;
-        _configuredProcesses.CollectionChanged += (_, _) =>
-        {
-            NoConfiguredProcessesText.Visibility = _configuredProcesses.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            NotifyUpdateRestartSafety();
-        };
         Icon trayIcon;
         Stream? iconStream = null;
         var ownsTrayIcon = false;
@@ -169,9 +154,6 @@ public partial class MainWindow : Window
     // Charts, device lists and texts are rendered once when the window becomes visible again.
     private void Runtime_Updated(RuntimeSnapshot snapshot) => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
     {
-        NetworkProfileText.Text = _runtime.NetworkProfileStatus;
-        if (_settingsNetworkProfileId != _runtime.Settings.ActiveNetworkProfileId)
-            ErrorText.Text = "Netzwerk gewechselt: " + _runtime.ActiveNetworkName + ". Gespeicherte Netzwerkeinstellungen sind aktiv; vor dem Speichern die Einstellungen neu laden.";
         if (IsVisible && WindowState != WindowState.Minimized) { _pendingSnapshot = null; RenderSnapshot(snapshot); }
         else { _pendingSnapshot = snapshot; UpdateTray(snapshot); }
         if (_updates?.Status.UpdateReady == true) NotifyUpdateRestartSafety();
@@ -185,23 +167,17 @@ public partial class MainWindow : Window
     private void LoadSettings(UserSettings s)
     {
         _loading = true;
-        _settingsNetworkProfileId = s.ActiveNetworkProfileId;
-        NetworkProfileText.Text = _runtime.NetworkProfileStatus;
         RenderCapacity();
-        AutoConnectCheck.IsChecked = s.AutoConnectLan; AutoStartCheck.IsChecked = s.AutoStart;
+        AutoStartCheck.IsChecked = s.AutoStart;
         NotificationsCheck.IsChecked = s.Notifications;
         UiSoundsCheck.IsChecked = s.UiSounds;
         UiAnimationsCheck.IsChecked = s.UiAnimations;
         ApplyFeedbackPreferences();
         PingAlarmCheck.IsChecked = s.PingAlarm;
-        EarlyGamesBox.Text = s.EarlyLimitGames;
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         BetaUpdatesCheck.IsChecked = s.BetaUpdates;
-        DriverCheck.IsChecked = s.DriverEnabled; PeersBox.Text = s.DirectPeers;
-        _configuredProcesses.Clear();
-        foreach (var process in SettingsStore.Split(s.GameProcesses)) _configuredProcesses.Add(process);
-        RouterBox.Text = s.RouterTarget; ExternalBox.Text = s.ExternalTarget;
-        ModeCombo.SelectedIndex = s.Mode == GamingMode.Off ? 1 : 0;
+        DriverCheck.IsChecked = s.DriverEnabled;
+        RenderDiscoveryMode();
         _loading = false;
         _updates?.SetEnabled(s.AutoUpdate);
     }
@@ -213,17 +189,12 @@ public partial class MainWindow : Window
             var current = _runtime.Settings;
             var next = current with
             {
-                ActiveNetworkProfileId = _settingsNetworkProfileId,
-                AutoConnectLan = AutoConnectCheck.IsChecked == true,
                 AutoUpdate = AutoUpdateCheck.IsChecked == true,
                 AutoStart = AutoStartCheck.IsChecked == true, DriverEnabled = DriverCheck.IsChecked == true,
                 Notifications = NotificationsCheck.IsChecked == true,
                 UiSounds = UiSoundsCheck.IsChecked == true,
                 UiAnimations = UiAnimationsCheck.IsChecked == true,
-                PingAlarm = PingAlarmCheck.IsChecked == true,
-                EarlyLimitGames = EarlyGamesBox.Text.Trim(),
-                GameProcesses = ConfiguredProcessesText, DirectPeers = PeersBox.Text.Trim(),
-                RouterTarget = RouterBox.Text.Trim(), ExternalTarget = ExternalBox.Text.Trim()
+                PingAlarm = PingAlarmCheck.IsChecked == true
             };
             await _runtime.SaveSettingsAsync(next);
             _updates?.SetEnabled(next.AutoUpdate);
@@ -233,9 +204,7 @@ public partial class MainWindow : Window
 
     private void DeviceManager_Click(object sender, RoutedEventArgs e) => new DeviceManagerWindow(_runtime) { Owner = this }.ShowDialog();
     private void ReloadSettings_Click(object sender, RoutedEventArgs e) { LoadSettings(_runtime.Settings); ErrorText.Text = "Gespeicherte Einstellungen geladen."; }
-    private void PeerConnectionTest_Click(object sender, RoutedEventArgs e) => new ConnectionTestWindow(_runtime) { Owner = this }.ShowDialog();
     private void UsageHistory_Click(object sender, RoutedEventArgs e) => _runtime.ShowUsageHistory(this);
-    private void NetworkProfiles_Click(object sender, RoutedEventArgs e) => new NetworkProfilesWindow(_runtime) { Owner = this }.ShowDialog();
 
     private async void BetaUpdatesCheck_Changed(object sender, RoutedEventArgs e)
     {
@@ -253,31 +222,29 @@ public partial class MainWindow : Window
         _loading = false;
         NotifyUpdateRestartSafety();
     }
-    private async void AutoConnectCheck_Click(object sender, RoutedEventArgs e)
+    private async void EnableAutomaticDiscovery_Click(object sender, RoutedEventArgs e)
     {
-        if (_loading || _savingConnectionMode) return;
-        var enabled = AutoConnectCheck.IsChecked == true;
+        if (_loading || _savingConnectionMode || _checkingNetwork || _updateRestartInProgress || _allowClose) return;
         _savingConnectionMode = true;
-        ConnectionModeControls.IsEnabled = false;
+        EnableAutomaticDiscoveryButton.IsEnabled = CheckConnectionButton.IsEnabled = false;
         try
         {
             await RunUiAction(async () =>
             {
-                EnsureNetworkEditContext();
-                await _runtime.SaveNetworkSettingsAsync(autoConnectLan: enabled);
-                ErrorText.Text = enabled
-                    ? "Automatische Erkennung gespeichert. DYNEX sucht und verbindet PCs im privaten Heimnetz."
-                    : "Manuelle Gruppe gespeichert. Verbunden werden PCs mit demselben Gruppencode.";
+                // Changing a private group to LAN discovery remains an explicit user action.
+                await _runtime.SaveNetworkSettingsAsync(autoConnectLan: true);
+                RenderDiscoveryMode();
+                ErrorText.Text = "Automatische Gerätesuche aktiviert. Dein bisheriger Gruppenschlüssel bleibt gespeichert.";
             });
         }
         finally
         {
-            AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
-            ConnectionModeControls.IsEnabled = true;
             _savingConnectionMode = false;
+            EnableAutomaticDiscoveryButton.IsEnabled = CheckConnectionButton.IsEnabled = true;
             NotifyUpdateRestartSafety();
         }
     }
+
     private async void ExportSettings_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
         var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "dynex-einstellungen.json", Filter = "JSON-Datei (*.json)|*.json" };
@@ -362,7 +329,7 @@ public partial class MainWindow : Window
     }
 
     public bool IsUpdateRestartSafe => !_allowClose && !_loading && !_savingAutoUpdate && !_settingUp &&
-        !_checkingNetwork && !_refreshingStatus && !_updateRestartInProgress && _pendingUiActions == 0 &&
+        !_checkingNetwork && !_savingConnectionMode && !_refreshingStatus && !_updateRestartInProgress && _pendingUiActions == 0 &&
         !_runtime.IsSpeedTestRunning && _runtime.Settings.AutoUpdate && AutoUpdateCheck.IsChecked == true && !HasUnsavedSettings;
 
     private bool HasUnsavedSettings
@@ -370,16 +337,12 @@ public partial class MainWindow : Window
         get
         {
             var saved = _runtime.Settings;
-            return AutoConnectCheck.IsChecked != saved.AutoConnectLan || AutoStartCheck.IsChecked != saved.AutoStart ||
+            return AutoStartCheck.IsChecked != saved.AutoStart ||
                 DriverCheck.IsChecked != saved.DriverEnabled || NotificationsCheck.IsChecked != saved.Notifications ||
                 PingAlarmCheck.IsChecked != saved.PingAlarm ||
                 UiSoundsCheck.IsChecked != saved.UiSounds || UiAnimationsCheck.IsChecked != saved.UiAnimations ||
                 AutoUpdateCheck.IsChecked != saved.AutoUpdate ||
-                BetaUpdatesCheck.IsChecked != saved.BetaUpdates ||
-                EarlyGamesBox.Text.Trim() != saved.EarlyLimitGames ||
-                !_configuredProcesses.SequenceEqual(SettingsStore.Split(saved.GameProcesses)) ||
-                PeersBox.Text.Trim() != saved.DirectPeers || RouterBox.Text.Trim() != saved.RouterTarget ||
-                ExternalBox.Text.Trim() != saved.ExternalTarget;
+                BetaUpdatesCheck.IsChecked != saved.BetaUpdates;
         }
     }
 
@@ -388,89 +351,6 @@ public partial class MainWindow : Window
         if (_loading) return;
         RenderUpdateStatus();
         UpdateRestartSafetyChanged?.Invoke();
-    }
-
-    private async void RunningProcesses_DropDownOpened(object sender, EventArgs e) => await RefreshRunningProcessesAsync();
-    private async void RefreshProcesses_Click(object sender, RoutedEventArgs e) => await RefreshRunningProcessesAsync();
-    private async void ProcessSearch_GotKeyboardFocus(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
-    {
-        if (!_processesLoaded) await RefreshRunningProcessesAsync();
-    }
-    private void ProcessSearch_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (!_loading && RunningProcessesBox is not null) ApplyRunningProcessFilter();
-    }
-    private void ApplyRunningProcessFilter(string? selected = null)
-    {
-        selected ??= RunningProcessesBox.SelectedItem as string;
-        var query = ProcessSearchBox.Text.Trim();
-        var matches = _runningProcessNames.Where(name => name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToArray();
-        RunningProcessesBox.ItemsSource = matches;
-        RunningProcessesBox.SelectedItem = matches.FirstOrDefault(name => string.Equals(name, selected, StringComparison.OrdinalIgnoreCase));
-        AddProcessButton.IsEnabled = !_refreshingProcesses && RunningProcessesBox.SelectedItem is string;
-        ProcessPickerHint.Text = _processLoadError is { } error ? "Programmliste konnte nicht geladen werden: " + error
-            : _refreshingProcesses ? "Laufende Programme werden geladen …"
-            : !_processesLoaded ? "Suche oder Auswahl öffnen, um laufende Programme zu laden."
-            : _runningProcessNames.Count == 0 ? "Keine auswählbaren Programme gefunden. Spiel starten und Liste aktualisieren."
-            : matches.Length == 0 ? "Kein laufendes Programm passt zur Suche. Suchbegriff ändern oder Liste aktualisieren."
-            : query.Length > 0 ? $"{matches.Length} von {_runningProcessNames.Count} Programmen · auswählen und hinzufügen."
-            : $"{matches.Length} laufende Programme · auswählen und hinzufügen. Bekannte Launcher und Hilfsprozesse sind ausgeblendet.";
-    }
-    internal async Task RefreshRunningProcessesAsync()
-    {
-        if (_refreshingProcesses) return;
-        _refreshingProcesses = true;
-        AddProcessButton.IsEnabled = false;
-        RefreshProcessesButton.IsEnabled = false;
-        ProcessPickerHint.Text = "Laufende Programme werden geladen …";
-        var selected = RunningProcessesBox.SelectedItem as string;
-        try
-        {
-            var names = await Task.Run(GameDetector.GetRunningProcessNames);
-            if (_allowClose) return;
-            _runningProcessNames = names;
-            _processesLoaded = true;
-            _processLoadError = null;
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            _runningProcessNames = Array.Empty<string>();
-            _processesLoaded = false;
-            _processLoadError = ex.Message;
-        }
-        finally
-        {
-            _refreshingProcesses = false;
-            RefreshProcessesButton.IsEnabled = true;
-            if (!_allowClose) ApplyRunningProcessFilter(selected);
-        }
-    }
-    private void RunningProcesses_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (AddProcessButton is not null)
-            AddProcessButton.IsEnabled = !_refreshingProcesses && RunningProcessesBox.SelectedItem is string;
-    }
-    private void AddProcess_Click(object sender, RoutedEventArgs e)
-    {
-        if (_refreshingProcesses || RunningProcessesBox.SelectedItem is not string selected) return;
-        try
-        {
-            var existing = ConfiguredProcessesText;
-            var updated = GameDetector.AppendConfiguredProcess(existing, selected);
-            var added = updated != existing;
-            if (added) _configuredProcesses.Add(SettingsStore.Split(updated)[^1]);
-            ProcessPickerHint.Text = added
-                ? $"{selected} hinzugefügt. Mit „Einstellungen speichern“ übernehmen."
-                : $"{selected} ist bereits eingetragen.";
-        }
-        catch (ArgumentException ex) { ProcessPickerHint.Text = ex.Message; }
-    }
-
-    private string ConfiguredProcessesText => string.Join("; ", _configuredProcesses);
-    private void RemoveProcess_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is System.Windows.Controls.Button { Tag: string name } && _configuredProcesses.Remove(name))
-            ProcessPickerHint.Text = $"{name} entfernt. Mit „Einstellungen speichern“ übernehmen.";
     }
 
     private async void SpeedTest_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
@@ -497,7 +377,6 @@ public partial class MainWindow : Window
             : snapshot?.ParticipantCount > 1 ? "Konservative gemeinsame Leitung aus den Kapazitäten verbundener PCs."
             : "Eigene erfolgreiche Speedtest-Messung";
         CapacityBox.Opacity = capacity.HasValue ? 1 : 0.6;
-        CapacityMeasurementText.Text = capacity.HasValue ? $"{capacity:0.##} Mbit/s" : "Noch nicht gemessen";
         SpeedTestButton.IsEnabled = !running && (!waiting || _runtime.SpeedTestWaitingFor == SpeedTestWaitReason.Network);
         SpeedTestButton.Content = running ? "Messung läuft …" : waiting ? _runtime.SpeedTestWaitingFor switch
         {
@@ -534,18 +413,12 @@ public partial class MainWindow : Window
     {
         if (!_guideAllowed || _runtime.Settings.SetupGuideDone) { GuidePanel.Visibility = Visibility.Collapsed; return; }
         GuidePanel.Visibility = Visibility.Visible;
-        var privateOk = s.NetworkProblem is null &&
-            s.Connection?.Kind is not (Dynex.Core.ConnectionProblemKind.NoPrivateNetwork or Dynex.Core.ConnectionProblemKind.FirewallMissing);
-        var peersOk = s.Devices.Count > 1;
-        GuideNetworkText.Text = privateOk ? "✓ 1 · Heimnetz ist privat und freigegeben." : "✗ 1 · " + (s.NetworkProblem ?? s.Connection?.ToString() ?? "Netzwerk prüfen.");
-        GuidePeerText.Text = peersOk ? $"✓ 2 · {s.Devices.Count - 1} weitere(r) PC verbunden." : "… 2 · Noch kein anderer PC gefunden. DYNEX auf dem zweiten PC starten (bei nur einem PC überspringen).";
-        GuideSpeedText.Text = "✓ 3 · Speedtest ist optional und dient nur der Diagnose.";
-        GuideDoneButton.Content = privateOk ? "Fertig" : "Später";
-    }
-    private async void ModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || ModeCombo.SelectedItem is not ComboBoxItem item || Enum.TryParse<GamingMode>(item.Tag?.ToString(), out var mode) is false) return;
-        await RunUiAction(async () => await _runtime.SaveSettingsAsync(_runtime.Settings with { Mode = mode }));
+        GuideNetworkText.Text = _runtime.Settings.DriverEnabled
+            ? "Paketpriorisierung ist eingeschaltet. Die Erkennung läuft automatisch."
+            : "Paketpriorisierung lässt sich unter Einstellungen einschalten.";
+        GuidePeerText.Text = "Geräte, aktuelle Datenraten und Ping findest du in der Übersicht.";
+        GuideSpeedText.Text = "Ein Speedtest ist eine optionale Diagnose und steuert keine Priorisierung.";
+        GuideDoneButton.Content = "Los geht’s";
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
@@ -602,7 +475,7 @@ public partial class MainWindow : Window
                 if (result.ExitCode != 0) throw new InvalidOperationException(result.Message);
                 await _runtime.SaveSettingsAsync(_runtime.Settings with { DriverEnabled = true });
                 DriverCheck.IsChecked = true;
-                ErrorText.Text = "Einrichtung abgeschlossen. DYNEX aktiviert den Netzwerkschutz automatisch beim Spielen.";
+                ErrorText.Text = "Einrichtung abgeschlossen. DYNEX priorisiert erkannte Spiel-, Sprach- und Videopakete automatisch.";
             });
         }
         finally
@@ -613,42 +486,6 @@ public partial class MainWindow : Window
             NotifyUpdateRestartSafety();
         }
     }
-    private async void RevealCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        if (!_revealed)
-        {
-            PairingBox.Text = await _runtime.ActivatePairingCodeAsync();
-            AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
-            ErrorText.Text = "Manuelle Gruppe aktiviert. Diesen Code auf dem anderen PC importieren.";
-        }
-        else PairingBox.Clear();
-        _revealed = !_revealed; ((System.Windows.Controls.Button)sender).Content = _revealed ? "Verbergen" : "Anzeigen";
-    });
-    private async void CopyCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        var code = await _runtime.ActivatePairingCodeAsync();
-        AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
-        Forms.Clipboard.SetText(code); ErrorText.Text = "Manuelle Gruppe aktiviert und Code kopiert. Auf dem anderen PC importieren.";
-        if (_revealed) PairingBox.Text = code;
-    });
-    private async void PasteCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        if (!Forms.Clipboard.ContainsText()) throw new InvalidOperationException("Die Zwischenablage enthält keinen Text.");
-        PairingBox.Text = Forms.Clipboard.GetText(); _revealed = true;
-        await Task.CompletedTask;
-    });
-    private async void ImportCode_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
-    {
-        EnsureNetworkEditContext();
-        if (string.IsNullOrWhiteSpace(PairingBox.Text)) throw new InvalidOperationException("Bitte zuerst einen Gruppencode einfügen.");
-        await _runtime.ImportPairingCodeAsync(PairingBox.Text.Trim());
-        PairingBox.Clear(); _revealed = false;
-        AutoConnectCheck.IsChecked = _runtime.Settings.AutoConnectLan;
-        PeersBox.Text = _runtime.Settings.DirectPeers;
-        ErrorText.Text = "Manuelle Gruppe aktiviert. DYNEX sucht jetzt die PCs mit demselben Code.";
-    });
     private async void Diagnostics_Click(object sender, RoutedEventArgs e) => await RunUiAction(async () =>
     {
         var report = await _runtime.ExportDiagnosticsAsync();
@@ -665,20 +502,14 @@ public partial class MainWindow : Window
         finally { _pendingUiActions--; NotifyUpdateRestartSafety(); }
     }
 
-    private void EnsureNetworkEditContext()
+    private async void RefreshDevices_Click(object sender, RoutedEventArgs e)
     {
-        if (_settingsNetworkProfileId != _runtime.Settings.ActiveNetworkProfileId)
-            throw new InvalidOperationException("Das Netzwerk hat gewechselt. Mit ‚Neu laden‘ die passenden Einstellungen laden, bevor du sie änderst.");
-    }
-
-    private async void NetworkHelp_Click(object sender, RoutedEventArgs e)
-    {
-        ShowSettings("network");
+        ShowDevices();
         if (_checkingNetwork || _savingConnectionMode || _updateRestartInProgress || _allowClose) return;
         _checkingNetwork = true;
-        CheckConnectionButton.IsEnabled = NetworkHelpButton.IsEnabled = false;
-        CheckConnectionButton.Content = "Prüfung läuft …";
-        NetworkCheckStatusText.Text = "Heimnetz, Firewallfreigabe und PC-Verbindung werden geprüft …";
+        CheckConnectionButton.IsEnabled = EnableAutomaticDiscoveryButton.IsEnabled = false;
+        CheckConnectionButton.Content = "Gerätesuche läuft …";
+        NetworkCheckStatusText.Text = "Geräte werden gesucht …";
         NetworkCheckStatusText.Visibility = Visibility.Visible;
         try
         {
@@ -687,18 +518,19 @@ public partial class MainWindow : Window
                 try
                 {
                     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                EnsureNetworkEditContext();
-                await _runtime.SaveNetworkSettingsAsync(directPeers: PeersBox.Text.Trim());
-                    var result = await _runtime.CheckNetworkAsync(deadline.Token, requestDiscovery: true);
+                    await _runtime.CheckNetworkAsync(deadline.Token, requestDiscovery: true);
                     var snapshot = await _runtime.RefreshStatusAsync(deadline.Token);
                     RenderSnapshot(snapshot);
-                    NetworkCheckStatusText.Text = $"Geprüft um {DateTime.Now:HH:mm:ss} Uhr. {result.Summary}";
+                    var others = Math.Max(0, snapshot.Devices.Count - 1);
+                    NetworkCheckStatusText.Text = others == 0
+                        ? "Suche abgeschlossen. Noch kein weiteres DYNEX-Gerät verbunden."
+                        : $"Suche abgeschlossen. {others} weitere{(others == 1 ? "s Gerät" : " Geräte")} verbunden.";
                 }
                 catch (Exception ex)
                 {
                     NetworkCheckStatusText.Text = ex is OperationCanceledException
-                        ? "Verbindungsprüfung unterbrochen oder Zeitlimit erreicht. Bitte erneut prüfen."
-                        : $"Verbindungsprüfung fehlgeschlagen: {ex.Message}";
+                        ? "Gerätesuche unterbrochen oder Zeitlimit erreicht. Bitte erneut versuchen."
+                        : $"Gerätesuche fehlgeschlagen: {ex.Message}";
                     throw;
                 }
             });
@@ -706,16 +538,20 @@ public partial class MainWindow : Window
         finally
         {
             _checkingNetwork = false;
-            CheckConnectionButton.IsEnabled = NetworkHelpButton.IsEnabled = true;
-            CheckConnectionButton.Content = "Verbindung prüfen";
+            CheckConnectionButton.IsEnabled = EnableAutomaticDiscoveryButton.IsEnabled = true;
+            CheckConnectionButton.Content = "Gerätesuche aktualisieren";
             NotifyUpdateRestartSafety();
         }
     }
-    private async void WindowsNetwork_Click(object sender, RoutedEventArgs e) => await RunUiAction(() =>
+
+    private void RenderDiscoveryMode()
     {
-        Process.Start(new ProcessStartInfo("ms-settings:network-status") { UseShellExecute = true });
-        return Task.CompletedTask;
-    });
+        var automatic = _runtime.Settings.AutoConnectLan;
+        EnableAutomaticDiscoveryButton.Visibility = automatic ? Visibility.Collapsed : Visibility.Visible;
+        CoordinationText.Text = automatic
+            ? "Andere DYNEX-Geräte im privaten Netzwerk erscheinen automatisch. Die Werte werden laufend aktualisiert."
+            : "Deine bestehende private Gruppe bleibt aktiv. Die Gerätedaten werden laufend aktualisiert.";
+    }
 
     private void RenderSnapshot(RuntimeSnapshot s)
     {
@@ -725,7 +561,6 @@ public partial class MainWindow : Window
         GameText.Text = s.WaitingForGameTraffic && s.ObservingGameTraffic ? $"Kein Spielverkehr · {s.Game}"
             : s.WaitingForGameTraffic ? $"Spielverkehr wird geprüft · {s.Game}"
             : s.IsGaming ? $"Spiel nutzt Netzwerk · {s.Game}"
-            : _runtime.Settings.Mode == GamingMode.Off ? "Fokus-Erkennung ausgeschaltet"
             : !string.IsNullOrEmpty(s.Game) ? $"Im Hintergrund · {s.Game}" : "Kein Spiel erkannt";
         DownText.Text = s.DownloadMbps is { } down ? $"{down:0.0} Mbps" : "— Mbps";
         UpText.Text = s.UploadMbps is { } up ? $"{up:0.0} Mbps" : "— Mbps";
@@ -791,32 +626,16 @@ public partial class MainWindow : Window
         OverviewDeviceGrid.ItemsSource = _deviceSnapshot;
         OverviewDeviceCount.Text = $"{s.Devices.Count} {(s.Devices.Count == 1 ? "GERÄT" : "GERÄTE")}";
         OverviewDevicesEmpty.Visibility = s.Devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        DeviceCount.Text = $"{s.Devices.Count} GERÄTE"; NetworkStatus.Text = s.NetworkStatus;
+        DeviceCount.Text = $"{s.Devices.Count} {(s.Devices.Count == 1 ? "GERÄT" : "GERÄTE")}";
+        NetworkStatus.Text = s.Devices.Count > 1
+            ? $"{s.Devices.Count - 1} weitere{(s.Devices.Count == 2 ? "s Gerät" : " Geräte")} verbunden"
+            : "Lokale Paketpriorisierung · Geräteübersicht";
         var otherDevices = Math.Max(0, s.Devices.Count - 1);
         DashboardPeersText.Text = otherDevices == 0
             ? "Hier siehst du dein Gerät. Weitere verbundene Geräte erscheinen direkt in dieser Übersicht."
             : $"{otherDevices} weitere {(otherDevices == 1 ? "Gerät ist" : "Geräte sind")} hier live sichtbar. Details findest du in der Geräteansicht.";
         NetworkStatus.ToolTip = s.NetworkStatus;
-        NetworkHelpButton.Visibility = s.NetworkProblem is not null || s.Devices.Count < 2 || s.Connection is { IsProblem: true } ? Visibility.Visible : Visibility.Collapsed;
-        NetworkHelpText.Text = (s.NetworkProblem is { } problem && s.Connection is { IsProblem: true } step ? $"{problem} Nächster Schritt: {step.NextStep}" : s.NetworkProblem)
-            ?? s.Connection?.ToString() ?? s.NetworkDiagnostics?.Hint ?? (s.Devices.Count < 2
-            ? "Noch kein weiteres Gerät verbunden. DYNEX muss auf den beteiligten Geräten laufen und Windows-Netzwerke auf Privat stehen. Die DYNEX-Firewallfreigabe richtet das Setup ein."
-            : $"{s.Devices.Count} Geräte verbunden. Die Verbindung wird automatisch überwacht.");
-        NetworkHelpText.ToolTip = s.NetworkDiagnostics is { } network
-            ? $"{NetworkHelpText.Text}\nModus: {network.Mode}\nLokale Adressen: {string.Join(", ", network.LocalAddresses)}\nGesendet: {network.SentDatagrams} · Empfangen: {network.ReceivedDatagrams} (davon eigene: {network.SelfDatagrams}) · Bestätigte Statuspakete: {network.AcceptedStatusDatagrams}\nVollständige Werte: Diagnose exportieren."
-            : NetworkHelpText.Text;
-        DevicePriorityText.Text = s.QosActive
-            ? "DYNEX bestätigt QoS-Markierungen auf diesem PC."
-            : "DYNEX markiert lokal erkannte Spiel-, Sprach- und Videopakete für QoS.";
-        CoordinationText.Text = "DYNEX markiert Pakete auf PCs, auf denen es läuft. Router-QoS oder SQM bestimmt die Behandlung im gesamten Anschluss.";
-        PairFingerprint.Text = string.IsNullOrWhiteSpace(s.PairingFingerprint) ? "Noch keine Gruppe gekoppelt" : $"Gruppe · {s.PairingFingerprint}";
-        if (s.NetworkProblem is not null)
-        {
-            CoordinationText.Text += " Geräteverbindung: " + s.NetworkProblem;
-        }
-        // A lone PC without any observed partner is normal; surface only causes DYNEX actually observed.
-        else if (s.Connection is { IsProblem: true, Kind: not Dynex.Core.ConnectionProblemKind.NoResponse } advice)
-            CoordinationText.Text += " Geräteverbindung: " + advice;
+        RenderDiscoveryMode();
         DrawHistory(s.History);
         HistoryCompare.Text = "Pingmessungen der letzten Minuten.";
         HistoryCompare.ToolTip = "Pingmessungen am Router und im Internet. Die Anzeige belegt keine Priorität durch deinen Router.";
@@ -828,6 +647,7 @@ public partial class MainWindow : Window
         var pageCount = Math.Max(1, (int)Math.Ceiling(_deviceSnapshot.Count / (double)pageSize));
         _devicePage = Math.Clamp(_devicePage, 0, pageCount - 1);
         DeviceGrid.ItemsSource = _deviceSnapshot.Skip(_devicePage * pageSize).Take(pageSize).ToArray();
+        DevicesPagingControls.Visibility = pageCount > 1 ? Visibility.Visible : Visibility.Collapsed;
         DevicesPageText.Text = $"Seite {_devicePage + 1} / {pageCount}";
         PreviousDevicesButton.IsEnabled = _devicePage > 0;
         NextDevicesButton.IsEnabled = _devicePage + 1 < pageCount;
@@ -865,6 +685,7 @@ public partial class MainWindow : Window
         DevicesPage.Visibility = Visibility.Visible;
         UpdateNavigation("devices");
         PageTitle.Text = "Verbundene Geräte";
+        RenderDiscoveryMode();
         RenderDevicePage();
         if (changed && IsLoaded) _feedback.Transition(DevicesPage);
     }
@@ -903,7 +724,9 @@ public partial class MainWindow : Window
     internal void ShowSettings(string section = "general")
     {
         section = section.Trim().ToLowerInvariant();
-        if (section is not ("general" or "games" or "network" or "analysis" or "updates" or "appearance"))
+        if (section == "network") { ShowDevices(); return; }
+        if (section == "games") section = "general";
+        if (section is not ("general" or "analysis" or "updates" or "appearance"))
             throw new ArgumentException("Unbekannter Einstellungsbereich.", nameof(section));
         var changed = SettingsPage.Visibility != Visibility.Visible || !Equals(SettingsPage.Tag, section);
         SettingsPage.Tag = section;
@@ -913,8 +736,6 @@ public partial class MainWindow : Window
         SettingsPage.Visibility = Visibility.Visible;
         UpdateNavigation(section == "analysis" ? "analysis" : "settings");
         GeneralSettingsSection.Visibility = Visibility.Collapsed;
-        GamesSettingsSection.Visibility = Visibility.Collapsed;
-        NetworkSettingsSection.Visibility = Visibility.Collapsed;
         UpdatesSettingsSection.Visibility = Visibility.Collapsed;
         AnalysisSettingsSection.Visibility = Visibility.Collapsed;
         AppearanceSettingsSection.Visibility = Visibility.Collapsed;
@@ -923,8 +744,6 @@ public partial class MainWindow : Window
         switch (section)
         {
             case "general": GeneralSettingsSection.Visibility = Visibility.Visible; break;
-            case "games": GamesSettingsSection.Visibility = Visibility.Visible; break;
-            case "network": NetworkSettingsSection.Visibility = Visibility.Visible; break;
             case "updates": UpdatesSettingsSection.Visibility = Visibility.Visible; break;
             case "analysis": AnalysisSettingsSection.Visibility = Visibility.Visible; RenderAnalysis(_runtime.Snapshot); break;
             case "appearance": AppearanceSettingsSection.Visibility = Visibility.Visible; break;
@@ -932,12 +751,10 @@ public partial class MainWindow : Window
         }
         (SettingsHeading.Text, SettingsDescription.Text) = section switch
         {
-            "games" => ("Spiele", "Erkennung, laufende Programme und Netzwerkverkehr."),
-            "network" => ("Netzwerk", "Deine PCs verbinden und die Verbindung prüfen."),
             "analysis" => ("Analyse", "Verlauf, Störungen und Hinweise zu deinem Router."),
             "updates" => ("Updates", "Installierte Version und automatische Aktualisierungen."),
             "appearance" => ("Darstellung", "Klick-Sounds und Bewegung nach deinem Geschmack."),
-            _ => ("Allgemein", "Internetanschluss und Spiel-Priorisierung.")
+            _ => ("Allgemein", "Automatische Paketpriorisierung und Windows-Start.")
         };
         PageTitle.Text = section == "analysis" ? "Analyse" : $"Einstellungen · {SettingsHeading.Text}";
         SettingsActionBar.Visibility = section == "analysis" ? Visibility.Collapsed : Visibility.Visible;

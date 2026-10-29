@@ -22,32 +22,19 @@ Das DYNEX-Setup prüft den Netzwerkfilter und eine eigene Firewallfreigabe. Fehl
 
 Eine Windows-UAC-Bestätigung erlaubt die nötigen Systemänderungen. Der offizielle MSI-Installer läuft mit Fortschrittsanzeige ohne zusätzlichen Einrichtungsassistenten. Die Verbindung kann kurz unterbrochen werden. Bereits registrierte Filter werden übersprungen und nicht neu installiert. Ein nötiger Neustart wird als Ergebnis 3010 angezeigt; DYNEX erzwingt ihn nicht. Bei Abbruch, fehlendem Internet oder einem Fehler meldet das Setup eine unvollständige Einrichtung und einen Fehlercode. Details stehen unter `%LOCALAPPDATA%\Programs\DYNEX\setup-result.txt`; Setup erneut starten oder die Einrichtung in DYNEX verwenden.
 
-Die eigene Firewallregel gilt nur für die installierte DYNEX.exe, eingehendes UDP 39274, das Windows-Profil Privat und Absender im lokalen Subnetz. Öffentliche und Domänennetze werden dadurch nicht freigegeben. DYNEX ändert das Netzwerkprofil nicht automatisch. Ist das Heimnetz in Windows noch öffentlich, zeigt die App den konkreten Grund und öffnet auf Wunsch die Windows-Netzwerkeinstellungen. Auf allen beteiligten PCs muss DYNEX laufen. Routerseitige Client-Isolation oder zusätzliche Firewallregeln können die Verbindung weiterhin verhindern.
+Die eigene Firewallregel gilt nur für die installierte DYNEX.exe, eingehendes UDP 39274, das Windows-Profil Privat und Absender im lokalen Subnetz. Öffentliche und Domänennetze werden dadurch nicht freigegeben. DYNEX ändert das Netzwerkprofil nicht automatisch. Ein öffentliches Windows-Netzwerk wird von der automatischen privaten Gerätesuche nicht freigegeben; technische Befunde stehen im Diagnoseexport. Auf allen beteiligten PCs muss DYNEX laufen. Routerseitige Client-Isolation oder zusätzliche Firewallregeln können die Verbindung weiterhin verhindern.
 
-Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbarer PC-Verbindung und einem tatsächlich offenen Spiel. Ohne erfolgreiche Messung werden keine Downloadlimits aktiviert. Ein Netzwerkfehler wird nicht als Spielpause bezeichnet.
+Der Speedtest unterscheidet jetzt zwischen laufender Prüfung, nicht verfügbarer PC-Verbindung und einem tatsächlich offenen Spiel. Die Messung dient nur der Diagnose und steuert keine Downloadlimits. Ein Netzwerkfehler wird nicht als Spielpause bezeichnet.
 
-## Wenn der zweite PC fehlt
+## Geräteanzeige
 
-Ab 1.0.6 nennt DYNEX bei einem Verbindungsproblem eine beobachtete Ursache und genau einen nächsten Schritt, in der Übersicht und unter **Einstellungen → Netzwerk**:
+Die Paketpriorisierung arbeitet lokal. Andere DYNEX-Geräte ergänzen die Geräteübersicht um ihre bestätigten Status- und Messwerte.
 
-| Anzeige | Bedeutung | Nächster Schritt |
-| --- | --- | --- |
-| Netzwerk nicht privat | Keine Adresse in einem privaten Windows-Netzwerk | Windows-Netzwerk öffnen und das Profil auf beiden PCs auf **Privat** stellen |
-| Firewallfreigabe fehlt | Die eigene DYNEX-Regel ist nicht vorhanden | DYNEX-Setup auf diesem PC erneut ausführen |
-| Andere DYNEX-Version | Der andere PC meldet eine abweichende Version (ab 1.0.6 signiert im Handshake; ältere als „vor 1.0.6“) oder ein neueres Protokoll | Den älteren PC über **Updates → Jetzt prüfen** aktualisieren |
-| Anderer Verbindungsmodus | Ein PC verbindet automatisch, der andere über eine private Gruppe | Auf beiden PCs denselben Modus wählen bzw. Code neu importieren |
-| Zeitabweichung | Uhrzeiten weichen mehr als 30 s ab | Windows-Uhrzeit auf beiden PCs synchronisieren |
-| Anderes Netz | Pakete kommen über eine nicht freigegebene Schnittstelle | Beide PCs in dasselbe Heimnetz (kein Gast-WLAN) |
-| PC antwortet nicht mehr | Ein verbundener PC ist verschwunden (Standby, Netzwechsel, DYNEX beendet) | Den genannten PC aufwecken und DYNEX dort prüfen |
-| Anderer PC antwortet nicht | Noch nie Pakete eines anderen PCs empfangen | DYNEX dort starten, sonst Gruppencode verwenden und Router-Client-Isolation abschalten |
+DYNEX sucht standardmäßig im selben privaten Netzwerk. **Verbundene Geräte → Gerätesuche aktualisieren** fordert eine neue Suche an. Auf den anderen Geräten muss DYNEX laufen; das Setup richtet die private Firewallfreigabe ein. Die App verändert keine Windows-Netzwerkprofile und umgeht keine Router-Geräteisolation. Fehlende Antworten beweisen keine bestimmte Router- oder Firewallursache. Technische Befunde stehen im Diagnoseexport unter **Einstellungen → Allgemein → Diagnose**.
 
-Nach Standby baut DYNEX die LAN-Verbindung neu auf (frische signierte Sitzung). Kurzzeitige Empfangsfehler beim WLAN-Wechsel beenden die Verbindung nicht mehr dauerhaft; DYNEX versucht es mit wachsender Pause bis 5 s erneut. Ein anderer PC erscheint nach Rückkehr in dasselbe private Netz in der Regel innerhalb weniger Sekunden wieder.
+Bestehende private Gruppen, direkte Gegenadressen und Netzwerkprofile bleiben erhalten. Die frühere manuelle Gruppen-/Adressoberfläche entfällt. Bei einer bestehenden privaten Gruppe ist der Wechsel mit **Automatische Gerätesuche aktivieren** weiterhin ausdrücklich möglich; der gespeicherte Gruppenschlüssel wird dabei nicht gelöscht.
 
-Ab 1.0.5 zeigt **Netzwerk prüfen** unter Einstellungen → Netzwerk die beobachtete Verbindungslage. Der Mauszeiger über dem Hinweis zeigt Modus, lokale Adressen und gesendete/empfangene Pakete. Die Prüfung liest zusätzlich die DYNEX-Firewallfreigabe; sie verändert keine Netzwerkprofile oder Sperrregeln. Der Diagnoseexport enthält diese Werte und die geprüften privaten LAN-Adressen, jedoch keine Kopplungsschlüssel. Fehlende UDP-Nachrichten beweisen allein keine bestimmte Firewall- oder Routerursache.
-
-Für die direkte Kopplung beide PCs aktualisieren. Auf dem ersten PC **Kopieren** wählen und den neu erzeugten Code auf dem zweiten PC **importieren**. Beide verwenden damit dieselbe private Gruppe. Der Code enthält neben dem Gruppenschlüssel nur geprüfte private lokale IPv4-Adressen des ersten PCs. Der zweite PC sendet direkt dorthin; der erste antwortet nur an erfolgreich authentifizierte, aktuelle Teilnehmer. Damit benötigt diese Verbindung kein Multicast. Der Code ist geheim zu halten.
-
-Bis 1.0.4 schaltete nur der Import den Empfänger in die private Gruppe, während der Sender beim Kopieren im Automatikmodus blieb. Diese unterschiedlichen Protokolle konnten sich nicht verbinden. Nach dem Update den Code neu kopieren und importieren. Vorhandene DYNEX1-Codes bleiben gültig, enthalten aber keine Direktadressen. Um zur automatischen Verbindung zurückzukehren, auf allen beteiligten PCs **PCs im selben privaten Netzwerk automatisch verbinden** einschalten und speichern. Auch die direkte Verbindung benötigt erreichbare PCs und eine passende Firewallfreigabe; eine Router-Geräteisolation wird nicht umgangen.
+Nach Standby oder Netzwechsel baut DYNEX eine frische authentifizierte Sitzung auf. Netzwerkprofile übernehmen weiterhin die zum Anschluss gespeicherten Mess- und Verbindungseinstellungen. Normales Speichern allgemeiner Einstellungen überschreibt diese Werte nicht.
 
 ## Wirkungsbereich
 

@@ -556,14 +556,14 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                         routerSampleStarted = 0;
                     }
                     monitoringReady = true;
-                    // Resolve focus after awaiting probes so an Alt-Tab during ping does not
-                    // publish a stale active game. No traffic is bandwidth-limited.
+                    // Focus only selects which active game to show. Every recognized running
+                    // game remains eligible, with its own confirmed packet identity required.
                     var foreground = readForeground();
                     var focusedGame = ForegroundGame.Find(detectedGames, foreground);
-                    var early = GameDetector.ParseAdditionalNames(settings.EarlyLimitGames);
-                    var candidates = settings.Mode == GamingMode.Off ? [] : GameProtection.FindCandidates(detectedGames, foreground, early);
+                    var candidates = GameProtection.FindCandidates(detectedGames);
                     var activity = readGameTraffic();
-                    var protectedGame = candidates.FirstOrDefault(g => HasGameTraffic(g, activity));
+                    var protectedGame = focusedGame is not null && HasGameTraffic(focusedGame, activity)
+                        ? focusedGame : candidates.FirstOrDefault(g => HasGameTraffic(g, activity));
                     var displayedGame = protectedGame ?? focusedGame ?? candidates.FirstOrDefault() ?? detectedGames.FirstOrDefault();
                     var game = displayedGame?.GameName ?? "";
                     var gaming = protectedGame is not null;
@@ -590,8 +590,8 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                             protectionStillNeeded: () => Settings.DriverEnabled && shapingAllowed &&
                                 !IsSpeedTestRunning && !stopping && !token.IsCancellationRequested,
                             observeGameTraffic: canObserve,
-                            observationStillNeeded: () => settings.Mode != GamingMode.Off && GameProtection.FindCandidates(
-                                scanGames(settings.GameProcesses), readForeground(), early).Any(g => g.ProcessId > 0 && g.ProcessStartedAt is not null));
+                            observationStillNeeded: () => Settings.DriverEnabled && GameProtection.FindCandidates(
+                                scanGames(settings.GameProcesses)).Any(g => g.ProcessId > 0 && g.ProcessStartedAt is not null));
                     // Read the release flag before the status: a release completing in between then shows
                     // up as "not yet idle" for one cycle instead of "idle but QoS still active".
                     var captureReleased = shaper.CaptureReleased;
@@ -633,7 +633,7 @@ public sealed partial class DynexRuntime : IAsyncDisposable
                     var homeTraffic = lastRouterSample;
                     // An open game remains visible in playtime history even while its network is idle.
                     var playingGame = protectedGame ?? focusedGame ?? candidates.FirstOrDefault();
-                    if (sessions.Observe(settings.Mode != GamingMode.Off && playingGame is not null,
+                    if (sessions.Observe(playingGame is not null,
                         playingGame?.GameName ?? "", measurement.External.Current, false, now) is { } ended) RecordSession(ended);
                     var point = new HistoryPoint(now, measurement.Router.Current, measurement.External.Current, measurement.Down, driver.QosActive);
                     lock (history) { history.Add(point); if (history.Count > 300) history.RemoveAt(0); }

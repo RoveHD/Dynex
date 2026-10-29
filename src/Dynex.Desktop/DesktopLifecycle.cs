@@ -165,8 +165,8 @@ internal static class DesktopLifecycle
             }
             if (args.Contains("--process-picker-only"))
             {
-                await VerifyProcessPickerAsync(window, runtime, directory);
-                await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), "PASS: focused process-picker UI smoke, isolated settings, search, add/remove, save/reload and 900/1440 rendering. Other UI sections were not tested in this run.\n");
+                await VerifyAutomaticSettingsAsync(window, runtime, directory);
+                await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), "PASS: focused automatic-settings UI smoke; obsolete process picker absent; hidden game/network overrides survive ordinary save/reload and navigation; isolated profile. Other UI sections were not tested in this run.\n");
                 return;
             }
             // Live isolated profile: no fabricated telemetry, no UAC, no startup or production settings changes.
@@ -228,7 +228,7 @@ internal static class DesktopLifecycle
             await VerifyUpdateCheckboxAsync(window, runtime);
             await VerifyRuntimeAsync(runtime);
             await VerifyPeerTrafficAsync(window, runtime, directory);
-            await VerifyProcessPickerAsync(window, runtime, directory);
+            await VerifyAutomaticSettingsAsync(window, runtime, directory);
             await File.WriteAllTextAsync(Path.Combine(directory, "result.txt"), "PASS: live snapshot; WPF render at 900/1000/1240/1440/1920/2560 and maximized work area; live ping-hover screenshot with actual selected timestamp/values/cursor; normalized pointer mapping, bounds clamp, resize-stable sample selection, and distinct missing/zero values; settings validation/persistence; DPAPI pairing roundtrip; diagnostics; peer traffic over encrypted loopback at 900/1240/1440/1920/2560; disconnect expiry; clean shutdown. Peer traffic screenshots use labeled synthetic measurements. No driver or physical two-PC test.\n");
         }
         catch (Exception ex)
@@ -261,25 +261,33 @@ internal static class DesktopLifecycle
     private static async Task VerifyPagesAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
         var originalSettings = runtime.Settings;
-        var configuredProcesses = (System.Windows.Controls.ListBox)window.FindName("ConfiguredProcessesList");
-        var configuredNames = (System.Collections.ObjectModel.ObservableCollection<string>)configuredProcesses.ItemsSource;
-        var originalNames = configuredNames.ToArray();
-        configuredNames.Add("Pending-Unsaved-Game");
+        var notifications = (System.Windows.Controls.CheckBox)window.FindName("NotificationsCheck");
+        notifications.IsChecked = !originalSettings.Notifications;
         var sizes = new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) };
         var sections = new Dictionary<string, string[]>
         {
-            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "CapacityMeasurementText"],
-            ["games"] = ["ModeCombo", "EarlyGamesBox", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList"],
-            ["network"] = ["AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton"],
+            ["general"] = ["CapacityBox", "SpeedTestButton", "AutoStartCheck", "DriverCheck", "SetupHint", "GameText"],
             ["updates"] = ["InstalledVersionText", "AutoUpdateCheck", "UpdateStatusText", "CheckUpdatesButton"],
             ["appearance"] = ["UiSoundsCheck", "UiAnimationsCheck"]
         };
+        if (!((System.Windows.Controls.StackPanel)window.FindName("SettingsSectionsNav")).Children
+            .OfType<System.Windows.Controls.Button>().Select(button => button.Tag?.ToString())
+            .Order().SequenceEqual(new[] { "appearance", "general", "updates" }))
+            throw new Exception("Das Einstellungsmenü enthält zusätzliche Expertenseiten oder verliert einen Standardbereich.");
+        void AssertNoExpertButtons(DependencyObject parent)
+        {
+            if (parent is System.Windows.Controls.Button { Content: string content } &&
+                content is "Zwei-PC-Test" or "Netzwerkprofile")
+                throw new Exception("Die normale Oberfläche enthält weiterhin Expertenaktionen: " + content);
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+                AssertNoExpertButtons(VisualTreeHelper.GetChild(parent, i));
+        }
         foreach (var (width, height) in sizes)
         {
             window.Width = width; window.Height = height;
             window.ShowOverview(); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            foreach (var removedControl in new[] { "ManualLimitBox", "ManualUploadBox", "UploadLimitCheck", "ProfileCombo", "PriorityCombo", "ApplicationRulesButton", "ScheduleSettingsSection" })
+            foreach (var removedControl in new[] { "ManualLimitBox", "ManualUploadBox", "UploadLimitCheck", "ProfileCombo", "PriorityCombo", "ApplicationRulesButton", "ScheduleSettingsSection", "ModeCombo", "EarlyGamesBox", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList", "AutoConnectCheck", "PairingBox", "PeersBox", "RouterBox", "ExternalBox", "NetworkHelpText", "WindowsNetworkButton", "NetworkHelpButton", "gamesSectionButton", "networkSectionButton", "GamesSettingsSection", "NetworkSettingsSection" })
                 if (window.FindName(removedControl) is not null)
                     throw new Exception($"Entfernte Begrenzungsoberfläche ist noch erreichbar: {removedControl}.");
             if (((System.Windows.Controls.DataGrid)window.FindName("DeviceGrid")).Columns.Any(c => string.Equals(c.Header?.ToString(), "LIMIT", StringComparison.OrdinalIgnoreCase)) ||
@@ -315,7 +323,10 @@ internal static class DesktopLifecycle
             Capture(window, Path.Combine(directory, $"overview-{width}x{height}.png"));
             window.ShowDevices(); window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            AssertPageFits(window, "DevicesPage", ["DeviceGrid", "DeviceCount", "NextDevicesButton", "DevicePriorityText"]);
+            AssertNoExpertButtons(window);
+            AssertPageFits(window, "DevicesPage", ["DeviceGrid", "DeviceCount", "CheckConnectionButton", "CoordinationText"]);
+            if (((FrameworkElement)window.FindName("DevicesPagingControls")).Visibility != Visibility.Collapsed)
+                throw new Exception("Die einseitige Geräteliste zeigt unnötige Seitennavigation.");
             var devicesPage = (FrameworkElement)window.FindName("DevicesPage");
             var devicesHeader = (FrameworkElement)window.FindName("DevicesPageHeader");
             var devicesCard = (FrameworkElement)window.FindName("DevicesPageCard");
@@ -323,8 +334,7 @@ internal static class DesktopLifecycle
             var cardSlot = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutSlot(devicesCard);
             if (headerSlot.Bottom > cardSlot.Top + 1)
                 throw new Exception($"Die Kopfzeile der Geräteansicht überlappt bei {width}x{height} den Inhalt.");
-            if (((System.Windows.Controls.TextBlock)window.FindName("DevicePriorityText")).TextWrapping != System.Windows.TextWrapping.Wrap ||
-                ((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).TextWrapping != System.Windows.TextWrapping.Wrap)
+            if (((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).TextWrapping != System.Windows.TextWrapping.Wrap)
                 throw new Exception("Die Gerätehinweise müssen bei schmalen Fenstern umbrechen können.");
             if (((FrameworkElement)window.FindName("OverviewPage")).IsVisible || ((FrameworkElement)window.FindName("SettingsPage")).IsVisible)
                 throw new Exception("Die Geräteansicht überlagert eine andere Seite.");
@@ -335,19 +345,19 @@ internal static class DesktopLifecycle
                 await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 Capture(window, Path.Combine(directory, $"settings-{section}-{width}x{height}.png"));
                 AssertPageFits(window, "SettingsPage", controls);
+                AssertButtonsFit((FrameworkElement)window.FindName("SettingsPage"));
                 if (window.IsOverviewVisible || ((FrameworkElement)window.FindName("OverviewPage")).IsVisible)
                     throw new Exception("Beim Öffnen der Einstellungen bleibt die Übersicht sichtbar.");
                 AssertVisibleControl(window, "SettingsPage", "SettingsSaveButton");
             }
         }
-        if (!configuredNames.Contains("Pending-Unsaved-Game") || runtime.Settings != originalSettings)
+        if (notifications.IsChecked != !originalSettings.Notifications || runtime.Settings != originalSettings)
             throw new Exception("Seitenwechsel verliert ungespeicherte Eingaben oder speichert ohne Aktion.");
-        configuredNames.Clear();
-        foreach (var name in originalNames) configuredNames.Add(name);
+        notifications.IsChecked = originalSettings.Notifications;
         await VerifyToolTipsAsync(window, directory);
         window.ShowOverview(); window.UpdateLayout();
         await File.WriteAllTextAsync(Path.Combine(directory, "pages-result.txt"),
-            "PASS: overview, dedicated PC view and all five settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; no page scrolling; controls reachable; limiting controls and schedule page are absent; navigation preserves unsaved fields and settings.\n");
+            "PASS: overview, Devices and three settings pages fit at 900x650, 1000x720, 1366x768, 1440x940, 1920x650, 1920x1080, 2560x1440; ping/rates/devices preserved; expert game/network and limiting controls absent; one-page paging hidden; navigation preserves unsaved fields and settings.\n");
     }
     private static async Task VerifyToolTipsAsync(MainWindow window, string directory)
     {
@@ -422,69 +432,22 @@ internal static class DesktopLifecycle
     }
     private static async Task VerifyNetworkHelpAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
-        var snapshot = runtime.Snapshot ?? throw new Exception("Snapshot für Netzwerkhinweis fehlt.");
-        var render = typeof(MainWindow).GetMethod("RenderSnapshot", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        const string problem = "Automatische PC-Verbindung nicht verfügbar. Ethernet: öffentliches Windows-Netzwerk. DYNEX verbindet PCs nur in einem privaten Windows-Netzwerk.";
-        try
-        {
-            window.Width = 900; window.Height = 650; window.ShowOverview();
-            var advice = new Dynex.Core.PeerNetworkDiagnostics("Automatisch", [], []).Assess();
-            render.Invoke(window, [snapshot with { NetworkProblem = problem, NetworkStatus = problem, Connection = advice }]);
-            window.UpdateLayout();
-            var help = (System.Windows.Controls.Button)window.FindName("NetworkHelpButton");
-            if (!help.IsVisible || !((System.Windows.Controls.TextBlock)window.FindName("CoordinationText")).Text.Contains("öffentliches"))
-                throw new Exception("Netzwerkproblem ist nicht sichtbar und erreichbar.");
-            AssertVisibleControl(window, "OverviewPage", "NetworkHelpButton");
-            Capture(window, Path.Combine(directory, "network-problem-overview-900.png"));
-            help.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            window.UpdateLayout();
-            var checkButton = (System.Windows.Controls.Button)window.FindName("CheckConnectionButton");
-            var checkStatus = (System.Windows.Controls.TextBlock)window.FindName("NetworkCheckStatusText");
-            if (checkButton.IsEnabled || help.IsEnabled || !checkStatus.IsVisible || !checkStatus.Text.Contains("werden geprüft"))
-                throw new Exception("Verbindungsprüfung zeigt keinen laufenden Zustand oder erlaubt doppelte Klicks.");
-            if (!((FrameworkElement)window.FindName("NetworkSettingsSection")).IsVisible ||
-                ((System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText")).Text != $"{problem} Nächster Schritt: {advice.NextStep}")
-                throw new Exception("Netzwerkhilfe öffnet nicht den vollständigen Fehlergrund.");
-            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "CheckConnectionButton", "ExternalBox", "PairingBox"]);
-            Capture(window, Path.Combine(directory, "network-problem-settings-900.png"));
-            var diagnostic = new Dynex.Core.PeerNetworkDiagnostics("Automatisch", ["192.168.1.2"], [],
-                SentDatagrams: 8, ReceivedDatagrams: 4, OtherModeDatagrams: 4);
-            render.Invoke(window, [snapshot with { NetworkProblem = null, NetworkDiagnostics = diagnostic, Connection = null }]);
-            window.UpdateLayout();
-            var diagnosticText = (System.Windows.Controls.TextBlock)window.FindName("NetworkHelpText");
-            if (diagnosticText.Text != diagnostic.Hint || !diagnosticText.ToolTip.ToString()!.Contains("Gesendet: 8"))
-                throw new Exception("Netzwerkhilfe verliert den beobachteten Moduskonflikt oder Transportzähler.");
-            AssertPageFits(window, "SettingsPage", ["NetworkHelpText", "WindowsNetworkButton", "CheckConnectionButton", "ExternalBox", "PairingBox"]);
-            Capture(window, Path.Combine(directory, "network-mode-diagnostics-fixture-900.png"));
-            var deadline = DateTime.UtcNow.AddSeconds(10);
-            while (!checkButton.IsEnabled && DateTime.UtcNow < deadline) await Task.Delay(20);
-            if (!checkButton.IsEnabled || !help.IsEnabled || !checkStatus.Text.StartsWith("Geprüft um ") ||
-                !checkStatus.Text.Contains("Isolierter Test"))
-                throw new Exception("Verbindungsprüfung liefert kein sichtbares Ergebnis: " + checkStatus.Text);
-            var completedText = checkStatus.Text;
-            render.Invoke(window, [runtime.Snapshot!]);
-            if (checkStatus.Text != completedText)
-                throw new Exception("Die nächste Messung überschreibt das Ergebnis der Verbindungsprüfung.");
-            window.UpdateLayout();
-            AssertPageFits(window, "SettingsPage", ["NetworkCheckStatusText", "NetworkHelpText", "CheckConnectionButton", "ExternalBox"]);
-            AssertVisibleControl(window, "NetworkSettingsSection", "ExternalBox");
-            Capture(window, Path.Combine(directory, "network-check-complete-900.png"));
-        }
-        finally { render.Invoke(window, [snapshot]); window.ShowOverview(); }
+        // The removed expert help panel is replaced by the actual, explicit discovery action in Devices.
+        await NetworkUiSmokeChecks.RunAsync(window, runtime, directory);
     }
 
     private static async Task VerifyStatusRefreshAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
-        window.Width = 900; window.Height = 650; window.ShowSettings("network");
-        var router = (System.Windows.Controls.TextBox)window.FindName("RouterBox");
-        var savedText = router.Text;
+        window.Width = 900; window.Height = 650; window.ShowSettings("general");
+        var notifications = (System.Windows.Controls.CheckBox)window.FindName("NotificationsCheck");
+        var savedValue = notifications.IsChecked;
         var settings = runtime.Settings;
         var before = runtime.Snapshot!.History.Last().Time;
         var button = (System.Windows.Controls.Button)window.FindName("RefreshStatusButton");
         var status = (System.Windows.Controls.TextBlock)window.FindName("StatusRefreshText");
         try
         {
-            router.Text = "192.168.99.1";
+            notifications.IsChecked = !settings.Notifications;
             button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
             if (button.IsEnabled || !status.IsVisible || !status.Text.Contains("werden abgefragt"))
                 throw new Exception("Statusaktualisierung zeigt keinen laufenden Zustand.");
@@ -493,7 +456,7 @@ internal static class DesktopLifecycle
             if (!button.IsEnabled || !status.Text.StartsWith("Status aktualisiert um ") ||
                 runtime.Snapshot!.History.Last().Time <= before)
                 throw new Exception("Statusaktualisierung wartet nicht auf eine frische Messung: " + status.Text);
-            if (runtime.Settings != settings || router.Text != "192.168.99.1" ||
+            if (runtime.Settings != settings || notifications.IsChecked != !settings.Notifications ||
                 new SettingsStore(ProfilePath).Load() != settings)
                 throw new Exception("Statusaktualisierung verändert Einstellungen oder ungespeicherte Eingaben.");
             window.UpdateLayout();
@@ -506,7 +469,7 @@ internal static class DesktopLifecycle
             await File.WriteAllTextAsync(Path.Combine(directory, "status-actions-result.txt"),
                 "PASS: real refresh and connection button clicks show busy/completed states; fresh measurement; unsaved fields and saved settings preserved; diagnostic result survives live updates; installed version visible.\n");
         }
-        finally { router.Text = savedText; window.ShowOverview(); }
+        finally { notifications.IsChecked = savedValue; window.ShowOverview(); }
     }
 
     private static void VerifyProtectionIdle(MainWindow window, DynexRuntime runtime, string directory)
@@ -556,6 +519,8 @@ internal static class DesktopLifecycle
             // queued live updates cannot replace the fixture between assertions.
             render.Invoke(window, [snapshot with { Devices = rows, ParticipantCount = rows.Length }]);
             window.UpdateLayout();
+            if (!((FrameworkElement)window.FindName("DevicesPagingControls")).IsVisible)
+                throw new Exception("Mehrseitige Gerätelisten bieten keine Seitennavigation.");
             if (grid.Items.Count < 3) throw new Exception("Im kleinsten Fenster sind weniger als drei PCs sichtbar.");
             var seen = new HashSet<string>();
             for (var page = 0; page < 13; page++)
@@ -573,6 +538,11 @@ internal static class DesktopLifecycle
             window.UpdateLayout();
             if (!grid.Items.OfType<DeviceView>().Select(d => d.Name).SequenceEqual(pageRows))
                 throw new Exception("Ein Messwert-Update setzt die gewählte Geräteseite zurück.");
+            render.Invoke(window, [snapshot with { Devices = rows.Take(1).ToArray(), ParticipantCount = 1 }]);
+            window.UpdateLayout();
+            if (((FrameworkElement)window.FindName("DevicesPagingControls")).Visibility != Visibility.Collapsed ||
+                grid.Items.OfType<DeviceView>().Single().Name != rows[0].Name)
+                throw new Exception("Beim Wegfall von Geräten wird die Seitennavigation nicht ausgeblendet oder die Seite nicht zurückgesetzt.");
         }
         finally { render.Invoke(window, [snapshot]); window.UpdateLayout(); }
     }
@@ -589,6 +559,26 @@ internal static class DesktopLifecycle
             for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) CheckScroll(VisualTreeHelper.GetChild(node, i));
         }
         CheckScroll(page);
+    }
+    private static void AssertButtonsFit(FrameworkElement page)
+    {
+        void Check(DependencyObject node)
+        {
+            if (node is FrameworkElement hidden && !hidden.IsVisible) return;
+            if (node is System.Windows.Controls.Button button)
+            {
+                for (var parent = VisualTreeHelper.GetParent(button); parent is FrameworkElement ancestor;
+                    parent = VisualTreeHelper.GetParent(parent))
+                {
+                    var bounds = button.TransformToAncestor(ancestor).TransformBounds(new Rect(button.RenderSize));
+                    if (bounds.Left < -1 || bounds.Top < -1 || bounds.Right > ancestor.ActualWidth + 1 || bounds.Bottom > ancestor.ActualHeight + 1)
+                        throw new Exception($"Schaltfläche „{button.Content}“ wird in {page.Name} bei {page.ActualWidth:0}x{page.ActualHeight:0} von {ancestor.GetType().Name} abgeschnitten: {bounds}, Elternbereich {ancestor.ActualWidth:0}x{ancestor.ActualHeight:0}.");
+                    if (ancestor == page) break;
+                }
+            }
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) Check(VisualTreeHelper.GetChild(node, i));
+        }
+        Check(page);
     }
     private static async Task VerifyLiveAsync(MainWindow window, DynexRuntime runtime)
     {
@@ -751,15 +741,13 @@ internal static class DesktopLifecycle
         }
         DeviceView? Remote() => runtime.Snapshot?.Devices.FirstOrDefault(d => d.Name == peerName);
         await WaitFor(() => Remote() is { DownloadMbps: 120.5, UploadMbps: 12.25 });
-        var budgetLabel = (System.Windows.Controls.TextBlock)window.FindName("DevicePriorityText");
-        var measuredCapacity = (System.Windows.Controls.TextBlock)window.FindName("CapacityMeasurementText");
+        var headerState = (System.Windows.Controls.TextBlock)window.FindName("HeaderState");
+        var measuredCapacity = (System.Windows.Controls.TextBox)window.FindName("CapacityBox");
         var coordinationLabel = (System.Windows.Controls.TextBlock)window.FindName("CoordinationText");
-        if (!(runtime.Snapshot!.QosActive
-                ? budgetLabel.Text.Contains("bestätigt QoS-Markierungen", StringComparison.OrdinalIgnoreCase)
-                : budgetLabel.Text.Contains("für QoS", StringComparison.OrdinalIgnoreCase) && !budgetLabel.Text.Contains("bestätigt", StringComparison.OrdinalIgnoreCase)) ||
-            !coordinationLabel.Text.Contains("Router-QoS oder SQM", StringComparison.OrdinalIgnoreCase) ||
+        if (headerState.Text != runtime.Snapshot!.State.ToUpperInvariant() ||
+            string.IsNullOrWhiteSpace(coordinationLabel.Text) || coordinationLabel.Text.Length > 200 ||
             measuredCapacity.Text.Contains("Budget", StringComparison.OrdinalIgnoreCase))
-            throw new Exception("Priorisierungsstatus oder Routerhinweis fehlen in der Oberfläche.");
+            throw new Exception("Globaler Status oder kompakter Gerätehinweis fehlen in der Oberfläche.");
         var grid = (System.Windows.Controls.DataGrid)window.FindName("DeviceGrid");
         string Cell(string property)
         {
@@ -814,167 +802,65 @@ internal static class DesktopLifecycle
         await peer.StopAsync();
         await WaitFor(() => Remote() is null, 14);
     }
-    private static async Task VerifyProcessPickerAsync(MainWindow window, DynexRuntime runtime, string directory)
+    private static async Task VerifyAutomaticSettingsAsync(MainWindow window, DynexRuntime runtime, string directory)
     {
-        var picker = (System.Windows.Controls.ComboBox)window.FindName("RunningProcessesBox");
-        var refresh = (System.Windows.Controls.Button)window.FindName("RefreshProcessesButton");
-        var add = (System.Windows.Controls.Button)window.FindName("AddProcessButton");
-        var search = (System.Windows.Controls.TextBox)window.FindName("ProcessSearchBox");
-        var configured = (System.Windows.Controls.ListBox)window.FindName("ConfiguredProcessesList");
-        var configuredNames = (System.Collections.ObjectModel.ObservableCollection<string>)configured.ItemsSource;
-        var emptyState = (System.Windows.Controls.TextBlock)window.FindName("NoConfiguredProcessesText");
-        var initiallySaved = new SettingsStore(ProfilePath).Load();
-        var initiallyConfigured = SettingsStore.Split(initiallySaved.GameProcesses);
-        if (!configuredNames.SequenceEqual(initiallyConfigured))
-            throw new Exception("Die gespeicherten Programme werden beim Fensterstart nicht in die Liste geladen.");
-
-        window.ShowSettings("games");
-        foreach (var width in new[] { 900, 1440 })
+        if (ProfilePath is null) throw new Exception("Automatische Einstellungen benötigen ein isoliertes Profil.");
+        var original = runtime.Settings;
+        var pairing = runtime.ExportPairingCode();
+        var load = typeof(MainWindow).GetMethod("LoadSettings", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var custom = SettingsStore.Normalize(original with
         {
-            window.Width = width; window.Height = 940; window.UpdateLayout();
+            Mode = GamingMode.Off, GameProcesses = "QA-Custom-Game; QA-Second-Game.exe",
+            EarlyLimitGames = "QA-Early-Game", AutoConnectLan = false,
+            DirectPeers = "10.0.2.2; 192.168.99.2", RouterTarget = "192.168.99.1", ExternalTarget = "9.9.9.9"
+        });
+        try
+        {
+            await runtime.SaveSettingsAsync(custom);
+            load.Invoke(window, [runtime.Settings]);
             window.ShowSettings("games"); window.UpdateLayout();
-            picker.IsDropDownOpen = true; // Exercise the real open -> refresh event, not only the helper.
+            if (!((FrameworkElement)window.FindName("GeneralSettingsSection")).IsVisible ||
+                window.FindName("GameText") is not System.Windows.Controls.TextBlock status || string.IsNullOrWhiteSpace(status.Text))
+                throw new Exception("Der bisherige Spielelink zeigt nicht Allgemein mit rein lesbarem Erkennungsstatus.");
+            foreach (var name in new[] { "ModeCombo", "EarlyGamesBox", "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList", "GamesSettingsSection", "gamesSectionButton" })
+                if (window.FindName(name) is not null) throw new Exception("Die entfernte Spielekonfiguration ist noch vorhanden: " + name);
+
+            var notifications = (System.Windows.Controls.CheckBox)window.FindName("NotificationsCheck");
+            notifications.IsChecked = !custom.Notifications;
+            window.ShowDevices(); window.ShowSettings("network");
+            if (!((FrameworkElement)window.FindName("DevicesPage")).IsVisible)
+                throw new Exception("Der bisherige Netzwerklink führt nicht zur Geräteübersicht.");
+            window.ShowOverview(); window.ShowSettings("appearance"); window.ShowSettings("games");
+            if (notifications.IsChecked != !custom.Notifications || runtime.Settings != custom)
+                throw new Exception("Navigation verwirft ungespeicherte allgemeine Einstellungen oder speichert sie ohne Aktion.");
+            var expected = custom with { Notifications = !custom.Notifications };
+            ((System.Windows.Controls.Button)window.FindName("SettingsSaveButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
             var deadline = Stopwatch.StartNew();
-            while (!refresh.IsEnabled)
+            while (runtime.Settings != expected && deadline.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(25);
+            if (runtime.Settings != expected || new SettingsStore(ProfilePath).Load() != expected ||
+                runtime.ExportPairingCode() != pairing)
+                throw new Exception("Allgemeines Speichern verändert versteckte Spiel-/Netzwerkeinstellungen oder den privaten Gruppenschlüssel.");
+            load.Invoke(window, [new SettingsStore(ProfilePath).Load()]);
+            if (notifications.IsChecked != expected.Notifications || runtime.Settings != expected)
+                throw new Exception("Neu laden stellt allgemeine Einstellungen und versteckte Overrides nicht unverändert wieder her.");
+
+            foreach (var (width, height) in new[] { (900, 650), (1000, 720), (1366, 768), (1440, 940), (1920, 650), (1920, 1080), (2560, 1440) })
             {
-                if (deadline.Elapsed > TimeSpan.FromSeconds(8)) throw new Exception("Prozessauswahl lädt nicht fertig.");
-                await Task.Delay(25);
+                window.Width = width; window.Height = height;
+                window.ShowSettings("games"); window.UpdateLayout();
+                await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                AssertPageFits(window, "SettingsPage", ["GameText", "NotificationsCheck", "DriverCheck", "SettingsSaveButton"]);
+                Capture(window, Path.Combine(directory, $"automatic-settings-{width}x{height}.png"));
             }
-            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            window.UpdateLayout();
-            if (!picker.Items.Cast<string>().SequenceEqual(Games.GameDetector.FilterSelectableProcessNames(picker.Items.Cast<string>())))
-                throw new Exception("Prozessauswahl ändert vorhandene Eingaben oder liefert ungültige Namen.");
-            if (add.IsEnabled) throw new Exception("Hinzufügen ist ohne Auswahl aktiv.");
-            if (picker.SelectedItem is not null) throw new Exception("Die Prozessliste wählt beim Laden automatisch ein Programm aus.");
-            Capture(window, Path.Combine(directory, $"process-picker-{width}.png"));
-            var popup = (System.Windows.Controls.Primitives.Popup)picker.Template.FindName("PART_Popup", picker);
-            if (!popup.IsOpen || popup.Child is not FrameworkElement popupContent) throw new Exception("Prozess-Dropdown öffnet nicht.");
-            Capture(popupContent, Path.Combine(directory, $"process-picker-list-{width}.png"));
-            picker.IsDropDownOpen = false;
+            await File.WriteAllTextAsync(Path.Combine(directory, "process-picker-result.txt"),
+                "PASS: compatible --process-picker-only command now validates simplified automatic settings; obsolete editors absent; game status read-only in General; legacy links route safely; pending general edits survive navigation; normal save/reload preserves custom game processes, early detection, mode, manual/private connection, direct peers, ping targets and group key; seven sizes rendered. No game process launched.\n");
         }
-
-        await window.RefreshRunningProcessesAsync();
-        var sourceField = typeof(MainWindow).GetField("_runningProcessNames", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-            ?? throw new Exception("Ungefilterte Prozessquelle fehlt.");
-        var fullSource = ((IReadOnlyList<string>)sourceField.GetValue(window)!).ToArray();
-        var sample = fullSource.FirstOrDefault(name => name.Length >= 3 && name.Any(char.IsLetter));
-        if (sample is null) throw new Exception("Keine laufenden Prozessnamen für den Such-Smoke-Test verfügbar.");
-        search.Clear(); picker.SelectedItem = null;
-        var take = Math.Min(3, sample.Length - 2);
-        var start = Math.Clamp(sample.Length / 2 - take / 2, 1, sample.Length - take - 1);
-        var fragment = sample.Substring(start, take);
-        search.Text = fragment;
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        var expectedMatches = fullSource.Where(name => name.Contains(fragment, StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (expectedMatches.Length == 0 || !picker.Items.Cast<string>().SequenceEqual(expectedMatches) || add.IsEnabled)
-            throw new Exception("Die Suche nach einem mittleren Teilstring filtert die Laufzeitliste nicht oder aktiviert Hinzufügen ohne Auswahl.");
-        var caseVariant = new string(fragment.Select(character => char.IsLetter(character)
-            ? char.IsUpper(character) ? char.ToLowerInvariant(character) : char.ToUpperInvariant(character)
-            : character).ToArray());
-        search.Text = caseVariant;
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        if (!picker.Items.Cast<string>().SequenceEqual(expectedMatches))
-            throw new Exception("Die Prozesssuche unterscheidet Groß- und Kleinschreibung.");
-        picker.SelectedItem = sample;
-        if (!add.IsEnabled) throw new Exception("Ein ausgewählter Suchtreffer kann nicht hinzugefügt werden.");
-        search.Text = "Dynex-No-Matching-Process-" + Guid.NewGuid().ToString("N");
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        if (picker.Items.Count != 0 || add.IsEnabled || picker.SelectedItem is not null)
-            throw new Exception("Bei keinem Suchtreffer bleibt die Auswahl leer und Hinzufügen deaktiviert.");
-        search.Text = fragment;
-        await window.RefreshRunningProcessesAsync(); // Refresh replaces the source but must retain the active query.
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        var refreshedSource = ((IReadOnlyList<string>)sourceField.GetValue(window)!).ToArray();
-        var refreshedMatches = refreshedSource.Where(name => name.Contains(fragment, StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (!picker.Items.Cast<string>().SequenceEqual(refreshedMatches) || search.Text != fragment || add.IsEnabled)
-            throw new Exception("Aktualisieren verliert den Suchfilter oder wählt ein Ergebnis automatisch aus.");
-        search.Clear();
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        if (!picker.Items.Cast<string>().SequenceEqual(refreshedSource) || picker.SelectedItem is not null || add.IsEnabled)
-            throw new Exception("Leeren der Suche stellt die vollständige Liste nicht ohne Vorauswahl wieder her.");
-
-        // Deterministic selection fixtures; no process is started.
-        configuredNames.Clear();
-        configuredNames.Add("cs2.EXE");
-        configuredNames.Add("Existing-Game");
-        picker.ItemsSource = new[] { "CS2.exe", "DynexPickerTest.exe", "DYNEXPICKERTEST.EXE" };
-        picker.SelectedIndex = 0;
-        add.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        if (!configuredNames.SequenceEqual(new[] { "cs2.EXE", "Existing-Game" }))
-            throw new Exception("Auswahl legt ein .exe-/Großschreibungsduplikat an.");
-        picker.SelectedIndex = 1;
-        if (!add.IsEnabled) throw new Exception("Hinzufügen bleibt trotz Auswahl gesperrt.");
-        add.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        picker.SelectedIndex = 2;
-        add.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        var expected = new[] { "cs2.EXE", "Existing-Game", "DynexPickerTest" };
-        if (!configuredNames.SequenceEqual(expected)) throw new Exception("Hinzufügen überschreibt vorhandene Namen oder erkennt Duplikate nicht case-insensitive.");
-        window.ShowOverview(); window.ShowSettings("games"); window.UpdateLayout();
-        if (!configuredNames.SequenceEqual(expected) || runtime.Settings.GameProcesses != initiallySaved.GameProcesses)
-            throw new Exception("Seitenwechsel verändert oder speichert die ungespeicherte Programmliste.");
-
-        var save = (System.Windows.Controls.Button)window.FindName("SettingsSaveButton");
-        async Task SaveAndWait(string expectedProcesses)
+        finally
         {
-            save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-            var saveDeadline = Stopwatch.StartNew();
-            while ((runtime.Settings.GameProcesses != expectedProcesses || new SettingsStore(ProfilePath).Load().GameProcesses != expectedProcesses ||
-                    ((System.Windows.Controls.TextBlock)window.FindName("ErrorText")).Text != "Einstellungen gespeichert.") &&
-                   saveDeadline.Elapsed < TimeSpan.FromSeconds(8)) await Task.Delay(25);
-            if (new SettingsStore(ProfilePath).Load().GameProcesses != expectedProcesses || runtime.Settings.GameProcesses != expectedProcesses)
-                throw new Exception("Der Speichern-Knopf auf der Spieleseite übernimmt die Programme nicht korrekt.");
+            await runtime.SaveSettingsAsync(original);
+            load.Invoke(window, [runtime.Settings]);
+            window.ShowOverview();
         }
-        await SaveAndWait(string.Join("; ", expected));
-        var loadSettings = typeof(MainWindow).GetMethod("LoadSettings", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-            ?? throw new Exception("Der bestehende Fenster-Ladepfad für Einstellungen fehlt.");
-        var savedConfigured = new SettingsStore(ProfilePath).Load();
-        loadSettings.Invoke(window, [savedConfigured]);
-        if (!configuredNames.SequenceEqual(expected) || emptyState.Visibility == Visibility.Visible)
-            throw new Exception("Erneutes Laden stellt die gespeicherte Programmliste nicht wieder her.");
-        search.Text = fragment;
-        foreach (var width in new[] { 900, 1440 })
-        {
-            window.Width = width; window.Height = width == 900 ? 650 : 940;
-            window.ShowSettings("games"); window.UpdateLayout();
-            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            foreach (var control in new[] { "ProcessSearchBox", "RunningProcessesBox", "AddProcessButton", "ConfiguredProcessesList", "SettingsSaveButton" })
-                AssertVisibleControl(window, "SettingsPage", control);
-            Capture((FrameworkElement)window.FindName("SettingsPage"), Path.Combine(directory, $"process-configured-{width}.png"));
-        }
-        search.Clear();
-
-        configured.ScrollIntoView("DynexPickerTest"); configured.UpdateLayout();
-        await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        var item = configured.ItemContainerGenerator.ContainerFromItem("DynexPickerTest") as System.Windows.Controls.ListBoxItem
-            ?? throw new Exception("Hinzugefügtes Programm besitzt keinen sichtbaren Listeneintrag.");
-        var remove = FindVisualChild<System.Windows.Controls.Button>(item)
-            ?? throw new Exception("Entfernen-Schaltfläche fehlt im Programmeintrag.");
-        if (!Equals(remove.Tag, "DynexPickerTest") || !Equals(remove.Content, "Entfernen"))
-            throw new Exception("Entfernen-Schaltfläche enthält nicht den Programmnamen oder die erwartete Beschriftung.");
-        remove.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        if (configuredNames.Contains("DynexPickerTest")) throw new Exception("Entfernen entfernt das Programm nicht aus der Liste.");
-        foreach (var name in configuredNames.ToArray())
-        {
-            configured.ScrollIntoView(name); configured.UpdateLayout();
-            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            var row = configured.ItemContainerGenerator.ContainerFromItem(name) as System.Windows.Controls.ListBoxItem
-                ?? throw new Exception("Programmeintrag fehlt vor dem Entfernen.");
-            var button = FindVisualChild<System.Windows.Controls.Button>(row)
-                ?? throw new Exception("Entfernen-Schaltfläche fehlt.");
-            button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        }
-        window.UpdateLayout();
-        if (configuredNames.Count != 0 || emptyState.Visibility != Visibility.Visible)
-            throw new Exception("Nach dem Entfernen aller Programme wird der Leerzustand nicht angezeigt.");
-        await SaveAndWait("");
-        var saved = new SettingsStore(ProfilePath).Load();
-        if (saved.GameProcesses != "" || runtime.Settings.GameProcesses != "") throw new Exception("Leere Programmliste wurde nicht gespeichert.");
-        configuredNames.Add("Reload-Fixture");
-        loadSettings.Invoke(window, [saved]);
-        if (configuredNames.Count != 0 || emptyState.Visibility != Visibility.Visible)
-            throw new Exception("Erneutes Laden stellt den gespeicherten Leerzustand nicht wieder her.");
-        await File.WriteAllTextAsync(Path.Combine(directory, "process-picker-result.txt"),
-            "PASS: live source search by substring/mixed case/no hit/clear; refresh preserves filter; no auto-selection; duplicate protection for .exe and case variants; remove controls and empty state; explicit save and settings reload. No game process launched.\n");
     }
     private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
     {

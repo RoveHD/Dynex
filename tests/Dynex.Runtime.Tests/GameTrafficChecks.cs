@@ -22,7 +22,7 @@ internal static class GameTrafficChecks
         using var process = Process.GetCurrentProcess();
         var started = new DateTimeOffset(process.StartTime.ToUniversalTime());
         GameDetectionResult[] games = [new("Packet test game", "packetgame", process.Id, started, true, "test")];
-        ForegroundProcess? foreground = new(process.Id, "packetgame", started);
+        ForegroundProcess? foreground = null;
         await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
             _ => Volatile.Read(ref games), () => Volatile.Read(ref foreground), fixture.Controller);
         // Keep real time/observations but allow this bounded synthetic session to
@@ -31,7 +31,7 @@ internal static class GameTrafficChecks
             .SetValue(runtime, new SessionTracker(TimeSpan.Zero));
         await runtime.SaveSettingsAsync(runtime.Settings with
         {
-            DriverEnabled = true, ManualLimitMbps = 20, UploadCapacityMbps = 40,
+            DriverEnabled = true, Mode = GamingMode.Off, ManualLimitMbps = 20, UploadCapacityMbps = 40,
             UploadLimitEnabled = true, ManualUploadLimitMbps = 5
         });
         await runtime.StartAsync();
@@ -46,7 +46,14 @@ internal static class GameTrafficChecks
             return runtime.Snapshot is { IsGaming: true, DriverActive: false, QosActive: true, LimitMbps: null, UploadLimitMbps: null };
         });
         check(runtime.Snapshot!.Devices[0].Gaming && runtime.PlannedDownloadLimitMbps is null,
-            "a real owner-table match for synthetic inbound game packets activates helper, IPC and runtime prioritization without caps");
+            "a background game with matching captured packets activates prioritization even after legacy Mode.Off import");
+        check(runtime.Settings.Mode == GamingMode.Auto && runtime.Settings.EarlyLimitGames.Length == 0,
+            "automatic packet-based gaming requires neither focus nor an early-process setting");
+        Volatile.Write(ref foreground, new(999, "Discord", started));
+        fixture.Inject(Packet(port, PacketDirection.Inbound));
+        var background = await runtime.RefreshStatusAsync();
+        check(background is { IsGaming: true, Game: "Packet test game" } && background.Devices[0].Gaming,
+            "switching to Discord does not revoke a running game's packet-based priority");
 
         await Until(() => runtime.Snapshot is
             { WaitingForGameTraffic: true, ObservingGameTraffic: true, IsGaming: false, DriverActive: false, QosActive: true, UploadLimitMbps: null }, 20);
@@ -80,25 +87,65 @@ internal static class GameTrafficChecks
         });
         check(runtime.PlannedDownloadLimitMbps is null,
             "outbound game packets reactivate protection after an idle period without restarting the game");
-        Volatile.Write(ref games, []);
-        Volatile.Write(ref foreground, null);
-        await Until(() => runtime.Snapshot is { IsGaming: false, QosActive: true, ObservingGameTraffic: false });
         await runtime.SaveSettingsAsync(runtime.Settings with { DriverEnabled = false });
         await Until(() => runtime.Snapshot is { ProtectionIdle: true, QosActive: false });
         check(fixture.Controller.CaptureReleased && fixture.Created == fixture.Disposed,
-            "closing the game clears observation; disabling general priority releases the fake capture completely");
+            "the global driver switch releases capture even while a recognized game remains running");
+        Volatile.Write(ref games, []);
+        Volatile.Write(ref foreground, null);
+        await runtime.RefreshStatusAsync();
+        await Until(() => runtime.Snapshot is { IsGaming: false, ObservingGameTraffic: false });
         check(runtime.Snapshot!.LastSession is { LimitedFor: var limitedFor } && limitedFor == TimeSpan.Zero,
             "a session with active QoS records zero bandwidth-limited time");
         await runtime.StopAsync();
         check(await fixture.Helper.WaitAsync(TimeSpan.FromSeconds(8)) == 0,
             "the packet-observation integration helper shuts down cleanly without native capture or UAC");
 
-        var early = new GameDetectionResult("Early game", "earlygame", 202, started, true, "test");
-        var focused = new GameDetectionResult("Focused game", "focusedgame", 101, started, true, "test");
-        var candidates = GameProtection.FindCandidates([focused, early], new(101, "focusedgame", started),
-            GameDetector.ParseAdditionalNames("earlygame"));
-        check(candidates.SequenceEqual([focused, early]),
-            "a quiet focused game does not hide a second early-protection game from packet-based selection");
+        await CheckCandidateIdentitiesAsync(check, started);
+    }
+
+    private static async Task CheckCandidateIdentitiesAsync(Action<bool, string> check, DateTimeOffset started)
+    {
+        var first = new GameDetectionResult("First game", "firstgame", 101, started, true, "test");
+        var second = new GameDetectionResult("Background game", "backgroundgame", 202, started.AddMinutes(1), true, "test");
+        var stopped = new GameDetectionResult("Stopped game", "stoppedgame", 303, started, false, "test");
+        check(GameProtection.FindCandidates([first, second, stopped, first, GameDetectionResult.None])
+                .SequenceEqual([first, second]),
+            "automatic candidates include every recognized running game once and exclude stopped/empty detections");
+
+        using var profile = new TestProfile(measured: true);
+        GameTrafficIdentity[]? activity = null;
+        GameDetectionResult[] games = [first, second, stopped];
+        await using var runtime = new DynexRuntime(profile.Path, new ControlledSpeedTest(),
+            _ => Volatile.Read(ref games), () => new(101, "firstgame", started),
+            readGameTraffic: () => Volatile.Read(ref activity));
+        await runtime.StartAsync();
+        foreach (var (evidence, label) in new (GameTrafficIdentity[]?, string)[]
+        {
+            (null, "unavailable packet status"),
+            ([], "expired packet activity"),
+            ([new(999, started.UtcTicks)], "unrelated process packets"),
+            ([new(101, started.AddSeconds(-1).UtcTicks)], "reused PID with an old process start"),
+            ([new(303, started.UtcTicks)], "orphan packets from a stopped game")
+        })
+        {
+            Volatile.Write(ref activity, evidence);
+            var snapshot = await runtime.RefreshStatusAsync();
+            check(!snapshot.IsGaming && !snapshot.Devices[0].Gaming,
+                label + " cannot establish automatic Gaming");
+        }
+        Volatile.Write(ref activity, [new(202, second.ProcessStartedAt!.Value.UtcTicks)]);
+        var active = await runtime.RefreshStatusAsync();
+        check(active is { IsGaming: true, Game: "Background game" },
+            "a quiet foreground game cannot hide captured packets from another running background game");
+        Volatile.Write(ref games, [first]);
+        var closed = await runtime.RefreshStatusAsync();
+        check(!closed.IsGaming,
+            "fresh-looking evidence for a game removed from the process scan is ignored");
+        Volatile.Write(ref games, [first with { ProcessId = null }, second with { ProcessStartedAt = null }]);
+        var unknown = await runtime.RefreshStatusAsync();
+        check(!unknown.IsGaming,
+            "missing PID or process-start identity never establishes automatic Gaming");
     }
 
     private static async Task Until(Func<bool> condition, int seconds = 10)

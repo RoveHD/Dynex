@@ -11,7 +11,7 @@ internal static class PriorityOnlyChecks
         {
             ManualLimitMbps = 25, UploadLimitEnabled = true, ManualUploadLimitMbps = 5,
             Adaptive = true, ReservePerGamerMbps = 10, NightFree = true, WeekendProfile = "Turnier",
-            GameProcesses = "testgame", EarlyLimitGames = "testgame",
+            GameProcesses = "testgame", EarlyLimitGames = "testgame", Mode = GamingMode.Off,
             ApplicationRules = [new("steam", 12, 3)],
             NetworkProfiles = [new(profileId, "Saved LAN", DateTimeOffset.UtcNow,
                 new NetworkProfilePolicy { ManualLimitMbps = 4, UploadLimitEnabled = true, ManualUploadLimitMbps = 2 })]
@@ -22,6 +22,12 @@ internal static class PriorityOnlyChecks
         await using (var runtime = new DynexRuntime(profile.Path, speed, _ => []))
         {
             CheckNoLimits(runtime.Settings, check, "upgrade");
+            check(runtime.Settings.Mode == GamingMode.Auto,
+                "upgrade migrates a retired Off mode to automatic packet-based detection");
+            var rejectedInvalidMode = false;
+            try { SettingsStore.Validate(SettingsStore.Normalize(runtime.Settings with { Mode = (GamingMode)99 })); }
+            catch (ArgumentException) { rejectedInvalidMode = true; }
+            check(rejectedInvalidMode, "automatic-mode migration still rejects invalid enum values");
             check(runtime.Settings.GameProcesses == "testgame" && runtime.Settings.EarlyLimitGames == "testgame" &&
                 runtime.Settings.CapacityMbps == legacy.CapacityMbps && runtime.Settings.CapacityMeasuredAtUtc == legacy.CapacityMeasuredAtUtc,
                 "upgrade preserves game recognition and existing diagnostic measurements");
@@ -36,6 +42,9 @@ internal static class PriorityOnlyChecks
                 "device overview, measurements and ping history survive removal of limits");
             await runtime.ImportSettingsAsync(JsonSerializer.Serialize(new { Format = 1, Version = "1.0.15", Settings = legacy }));
             CheckNoLimits(runtime.Settings, check, "legacy import");
+            check(runtime.Settings.Mode == GamingMode.Auto && runtime.Settings.GameProcesses == legacy.GameProcesses &&
+                runtime.Settings.EarlyLimitGames == legacy.EarlyLimitGames,
+                "legacy import migrates mode without losing custom or early process names");
             CheckNoLimits(new SettingsStore(profile.Path).Load(), check, "persisted migration");
         }
 

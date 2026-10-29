@@ -121,6 +121,8 @@ internal sealed class SettingsStore
     internal static UserSettings Normalize(UserSettings value) => NetworkProfiles.Capture(value with
     {
         DeviceName = Environment.MachineName,
+        // Automatic detection replaces the retired focus/always-on/off selector.
+        Mode = value.Mode is GamingMode.On or GamingMode.Off ? GamingMode.Auto : value.Mode,
         // Legacy fields remain readable so an upgrade/import never loses unrelated settings.
         // None may restore bandwidth shaping in the prioritization-only product.
         ApplicationRules = [],
